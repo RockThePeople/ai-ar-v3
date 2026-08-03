@@ -19,12 +19,13 @@ GPU·네트워크·모델 의존은 없다.
 
 | 경로 | 내용 |
 |---|---|
-| [docs/](docs/) | `PROGRESS.md` (단일 진실) · [adr/](docs/adr/) |
+| [docs/](docs/) | `PROGRESS.md` (단일 진실) · `INFRA.md` · `DESIGN_INTENT.md` · [adr/](docs/adr/) |
 | [contract/](contract/) | `.cbin` 포맷 계약 — `cbin-delta` 를 있는 그대로 편입 |
-| [server/](server/) | 오케스트레이터 · DebugView — **비어 있다.** S2 에서 구현 |
+| [server/](server/) | S2 순수 파이프라인 + D5 지표. HTTP·DebugView 는 아직 없다 |
 | [.github/](.github/) | CI (conformance + gitleaks) |
 
 ## 현재 위치
 
-`docs/PROGRESS.md` §5 의 **S1 (게이트 G1)** — 부트스트랩. 다음은 **S2 (관통)**:
-GPU 없이 눈사람에 호박 머리를 붙여, 효능·보존·절감이 처음으로 함께 성립하는지 본다.
+`docs/PROGRESS.md` §5 의 **S2 (관통)** — 맥북 담당 순수 로직이 합성 픽스처로 돌고 있다.
+효능·보존·절감이 **동시에** 성립하는 것을 처음으로 확인했다 (`server/tests/`).
+남은 것은 실자산 연결과 DebugView(3090 담당).

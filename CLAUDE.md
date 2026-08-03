@@ -49,6 +49,9 @@ cd contract/conformance && python3 run_conformance.py
 # C# 미러 필드 대조 (pydantic 불필요)
 cd contract/conformance && python3 mirror_check.py
 
+# S2 파이프라인 — 합성 픽스처 관통 + D5 지표. GPU·네트워크·실자산을 쓰지 않는다
+python3 -m pytest server/tests/ -q
+
 # pytest 가 있으면 동일한 테스트를 이렇게도 돌린다
 python3 -m pytest contract/conformance/
 

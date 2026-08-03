@@ -14,6 +14,10 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=2048"]
       - id: end-of-file-fixer
-        exclude: '^contract/conformance/golden/'
+        # 🔴 contract/ 전체를 제외한다. cbin-delta 는 **있는 그대로** 편입한 것이고
+        #    골든 200개가 바이트 단위로 잠겨 있다. 포매터가 손대면 안 된다.
+        exclude: '^contract/'
       - id: trailing-whitespace
-        exclude: '^contract/conformance/golden/'
+        # 🔴 contract/ 전체를 제외한다. cbin-delta 는 **있는 그대로** 편입한 것이고
+        #    골든 200개가 바이트 단위로 잠겨 있다. 포매터가 손대면 안 된다.
+        exclude: '^contract/'
