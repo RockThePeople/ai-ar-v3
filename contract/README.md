@@ -119,6 +119,65 @@ MESH_RES     256               VOXEL × 4       (FlexiCubes 내부 격자)
 
 ---
 
+## 🔴 청크 바이트를 받아오는 두 경로 — 손으로 URL 을 만들지 마라
+
+W3/3090 이 여기서 **181개 청크를 전부 404 로 받았다.** 원인은 둘 다 "옆 경로에서
+유추했다" 이고, 둘 다 계약 함수를 썼으면 처음부터 안 났다.
+
+### ① 응답 항목에는 `uri` 가 없다 — `chunk_id` 다
+
+같은 "청크 1개" 를 가리키는 모양이 **두 개**이고 필드 이름이 다르다.
+
+| | 쓰는 곳 | 식별 필드 |
+|---|---|---|
+| `ChunkEntry` | `ChunkManifest.chunks` (Unity 가 받는 매니페스트) | **`uri`** — `/v2/assets/{asset}/chunks/{key}.v{n}.cbin` |
+| `BChunkResponse.chunks[]` | A5000 → 3090 잡 결과 | **`chunk_id`** — `"3_1_5"` 문자열. `uri` **없음** |
+
+A5000 실측(2026-08-04) 응답 항목:
+
+```json
+{"chunk_id": "0_3_1", "hash": "6f73cb…", "byte_length": 1308,
+ "vertex_count": 29, "index_count": 114, "voxel_count": 2, "version": 1}
+```
+
+`entry["uri"]` 로 읽으면 `KeyError` 다. 매니페스트 모양을 잡 응답에 기대하지 마라.
+
+### ② 커밋 전 바이트는 staging 에 있고, 그 경로만 접두사가 비대칭이다
+
+`generate`/`edit`/`assemble` 결과는 **커밋 전까지 staging** 에 있다. 그리고
+staging 경로는 일반 청크 경로에서 유추할 수 **없다** — 두 군데가 다르다:
+
+```
+일반 청크 (커밋 후)   /v2/trellis/assets/{asset}/chunks/{key}.v{n}.cbin
+                       └─ 3090↔A5000 은 /v2/trellis 접두사        버전 있음
+
+staging (커밋 전)     /v2/assets/{asset}/staging/{job}/chunks/{key}.cbin
+                       └─ **/v2/trellis 가 붙지 않는다**           버전 **없음**
+```
+
+버전이 없는 것은 실수가 아니다 — 커밋되지 않았으므로 `v{n}` 이 존재하지 않고,
+바이트를 식별하는 것은 `(asset_id, job_id, chunk_key)` 다.
+
+**그래서 함수를 써라.** 두 홉(Unity←3090, 3090←A5000)이 같은 문자열이다.
+
+```python
+from deltacontract.uris import chunk_uri, staging_chunk_uri
+
+chunk_uri(asset_id, chunk_key, version)      # 커밋 후
+staging_chunk_uri(asset_id, job_id, chunk_key)  # 커밋 전 (ephemeral)
+```
+
+`staging_chunk_uri()` 는 `validate_job_id()` 로 traversal 도 같이 막는다. 손으로
+f-string 을 쓰면 그 검증까지 건너뛴다.
+
+> **왜 404 가 최악의 실패 모양인가.** 경로가 틀렸는지, 잡이 없는지, 커밋이 안 됐는지,
+> 권한이 없는지가 전부 같은 404 로 보인다. 원인이 드러나지 않으므로 **추측이 시작되고**,
+> W3 은 그 자리에서 "재생성하면 되겠지" 로 갈 뻔했다 — A5000 은 같은 `asset_id`
+> 재생성을 `VersionConflict` 로 거부하므로 그건 자산을 잃는 길이었다.
+> 이미 끝난 잡에서 다시 받아오는 것이 정답이다.
+
+---
+
 ## 라이선스
 
 `LICENSE` 를 참조. 골든 벡터는 합성 픽스처(`conformance/fixture.py`)에서 생성됐고
