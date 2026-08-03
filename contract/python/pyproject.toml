@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deltacontract"
+version = "1.0.0"
+description = "3090 / A5000 / Unity 세 세션이 공유하는 청크 델타 파이프라인 계약 정본"
+requires-python = ">=3.10"   # A5000 trellis2 env 가 3.10 이므로 하한을 여기 맞춘다
+dependencies = [
+    "numpy>=1.24",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["deltacontract*"]
+
+[tool.pytest.ini_options]
+testpaths = ["../conformance"]

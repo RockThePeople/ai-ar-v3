@@ -1,0 +1,1532 @@
+{
+  "contract": {
+    "chunk_grid_res": 8,
+    "chunk_size": 8,
+    "contract_version": 3,
+    "coord_order": "canonical",
+    "mesh_res": 256,
+    "normalized_max": 0.5,
+    "normalized_min": -0.5,
+    "position_quant_bits": 20,
+    "requires_deterministic_algorithms": false,
+    "slat_channels": 8,
+    "voxel_res": 64
+  },
+  "delta_v1_to_v2": {
+    "changed": [
+      "5_2_3",
+      "5_2_4",
+      "5_3_2",
+      "5_3_3",
+      "5_3_4",
+      "5_3_5",
+      "5_4_2",
+      "5_4_3",
+      "5_4_4",
+      "5_4_5",
+      "5_5_3",
+      "5_5_4",
+      "6_2_3",
+      "6_2_4",
+      "6_3_2",
+      "6_3_3",
+      "6_3_4",
+      "6_3_5",
+      "6_4_2",
+      "6_4_3",
+      "6_4_4",
+      "6_4_5",
+      "6_5_3",
+      "6_5_4",
+      "7_2_3",
+      "7_2_4",
+      "7_3_3",
+      "7_3_4",
+      "7_4_3",
+      "7_4_4",
+      "7_5_3",
+      "7_5_4"
+    ],
+    "removed": [],
+    "unchanged": [
+      "0_2_3",
+      "0_2_4",
+      "0_3_3",
+      "0_3_4",
+      "0_4_3",
+      "0_4_4",
+      "0_5_3",
+      "0_5_4",
+      "1_1_3",
+      "1_1_4",
+      "1_2_3",
+      "1_2_4",
+      "1_3_3",
+      "1_3_4",
+      "1_4_3",
+      "1_4_4",
+      "1_5_3",
+      "1_5_4",
+      "1_6_3",
+      "1_6_4",
+      "2_0_3",
+      "2_0_4",
+      "2_1_3",
+      "2_1_4",
+      "2_2_3",
+      "2_2_4",
+      "2_3_3",
+      "2_3_4",
+      "2_4_3",
+      "2_4_4",
+      "2_5_3",
+      "2_5_4",
+      "2_6_3",
+      "2_6_4",
+      "2_7_3",
+      "2_7_4",
+      "3_0_3",
+      "3_0_4",
+      "3_1_3",
+      "3_1_4",
+      "3_2_3",
+      "3_2_4",
+      "3_5_3",
+      "3_5_4",
+      "3_6_3",
+      "3_6_4",
+      "3_7_3",
+      "3_7_4",
+      "4_0_3",
+      "4_0_4",
+      "4_1_3",
+      "4_1_4",
+      "4_2_3",
+      "4_2_4",
+      "4_5_3",
+      "4_5_4",
+      "4_6_3",
+      "4_6_4",
+      "4_7_3",
+      "4_7_4",
+      "5_0_3",
+      "5_0_4",
+      "5_1_3",
+      "5_1_4",
+      "5_6_3",
+      "5_6_4",
+      "5_7_3",
+      "5_7_4",
+      "6_1_3",
+      "6_1_4",
+      "6_6_3",
+      "6_6_4"
+    ]
+  },
+  "versions": {
+    "v1": {
+      "0_2_3": {
+        "byte_length": 136,
+        "hash": "3df05f48733e5503e7735a5cbaf099b1c45ed9442c26b209f3da17f690bfd25f",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 1
+      },
+      "0_2_4": {
+        "byte_length": 204,
+        "hash": "357374f97abc09e31297e6c7812f33c02b3f2b9918285da39daabc5688760f74",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 2
+      },
+      "0_3_3": {
+        "byte_length": 560,
+        "hash": "a8cfde46d86fa1b40d205a4278ad6d0813c06b72047f669c35d22dbc750d5e54",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 4
+      },
+      "0_3_4": {
+        "byte_length": 600,
+        "hash": "e07decfc42c2d236d2614368d8b35985208a5204a53387e75d9353dd2fc36c25",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 6
+      },
+      "0_4_3": {
+        "byte_length": 600,
+        "hash": "31d9401f6d5b5fb41eefcb1c1f5f82727bb2123f51009eed82bfda559599148a",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 7
+      },
+      "0_4_4": {
+        "byte_length": 560,
+        "hash": "3b6052b4bc9983a77f7806c34a2039782c22182c20c28b86d57caf8964b7a61a",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 10
+      },
+      "0_5_3": {
+        "byte_length": 204,
+        "hash": "2f8d4039f4c3ff5d0df2ccffc140be4cb451ab01dcb129674a61e3a5f8a09f75",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 1
+      },
+      "0_5_4": {
+        "byte_length": 136,
+        "hash": "0874fef3b4e6d9ff2af0fdd09150a9cea28a01d1f417d47a6c0f489b19d3a89a",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 2
+      },
+      "1_1_3": {
+        "byte_length": 480,
+        "hash": "4f93c6742f1bbc64c8624eb757fab1ad4ee8891083c3d88384b0829bc855f009",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 4
+      },
+      "1_1_4": {
+        "byte_length": 480,
+        "hash": "40632c0ecbc8d71ea90ea3a18163219e273e48015bace9a01fdbc351f7ac594c",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 5
+      },
+      "1_2_3": {
+        "byte_length": 1088,
+        "hash": "25c2d55fdfb37d119870e873b7f2012ae322e78b840c104579a8a6e3184312bd",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 15
+      },
+      "1_2_4": {
+        "byte_length": 1180,
+        "hash": "5c3af990d00447c5a1fbe8fe4ecad6fe6a4710b09cb29f681bc998dd3a3b7c18",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 17
+      },
+      "1_3_3": {
+        "byte_length": 1100,
+        "hash": "04a7cc3dc706b9bdc1e5a75bf44e856368ed61d5edda12bf3c358036c13d6f27",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "1_3_4": {
+        "byte_length": 1076,
+        "hash": "070bfd2984c5d03f4905d947e2685871390f88b9608fa841622e0dcc4f730b00",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "1_4_3": {
+        "byte_length": 1076,
+        "hash": "6d25e26db2ff3befe36226d0e24341c7bd43cd7b7fb1de17301ef240cc586e11",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "1_4_4": {
+        "byte_length": 1100,
+        "hash": "c771a701343f3708f5c0d426bd1ffc33ee5e36ee7bde7d1464cf25149fb0b9aa",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "1_5_3": {
+        "byte_length": 1180,
+        "hash": "3e0c50382365a8a234e6b736d29bb2d7d43566150eac65d19babd4a8aacf3123",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 15
+      },
+      "1_5_4": {
+        "byte_length": 1088,
+        "hash": "fb156a31ed7a1f610732aa36cf8e0a81235b59622312105f4441b5bafd539dc5",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 17
+      },
+      "1_6_3": {
+        "byte_length": 480,
+        "hash": "1cf6579253aecd413c8b0ab3df94962fbd70a66d830d615ef5a2640f3460645a",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 4
+      },
+      "1_6_4": {
+        "byte_length": 480,
+        "hash": "12f326aba5ade308c09d27a0385e48adbee210f3d314ab38711c16db34a14da9",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 5
+      },
+      "2_0_3": {
+        "byte_length": 204,
+        "hash": "8b909b9a9c5d3bf8349dc591ccfecba1c481f780f6d2084f7cf063b586b6887a",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 1
+      },
+      "2_0_4": {
+        "byte_length": 136,
+        "hash": "b3f2ca24a5f64c3f39b0d67bd1fbd6a77d22b9bd8ec77aee876b3ed130a79b71",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 2
+      },
+      "2_1_3": {
+        "byte_length": 1180,
+        "hash": "497e90df05ec79af8085263f5ac6ee6ca3b96d5c4f60d582c58e732c1f886f7a",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 15
+      },
+      "2_1_4": {
+        "byte_length": 1088,
+        "hash": "ceb2b53d8c5fd4d4c8de39156e75e5a314f125ed49868047c9c8c44e6483dd1f",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 17
+      },
+      "2_2_3": {
+        "byte_length": 1404,
+        "hash": "9d5fbe829d1e8b57aea8828b8dd2fbef6ce91400852598161b8889e22a79eee8",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 17
+      },
+      "2_2_4": {
+        "byte_length": 1404,
+        "hash": "13c3b1f3b22c756d0ac98fd86132d5cbe0379cacef87b8eed88bf939a4253ca6",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 18
+      },
+      "2_3_3": {
+        "byte_length": 1492,
+        "hash": "5174c3d6c7fa6c28f3d041b68f1c2601a68c1f0e5b2470f886e2121aea30c622",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 18
+      },
+      "2_3_4": {
+        "byte_length": 1532,
+        "hash": "e7fd0b1e89e65db3d66774976759dbc376a0eddacbfdb01985131024ec68310a",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 23
+      },
+      "2_4_3": {
+        "byte_length": 1532,
+        "hash": "567fd84c87fc2d65273655a6657f17b20b07d3cea190408edaaff45a50503919",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 22
+      },
+      "2_4_4": {
+        "byte_length": 1492,
+        "hash": "d5a086ce3adf27be0b8ad13175ab24606f94c7bea513b4bfccb2208cae33d0b8",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 28
+      },
+      "2_5_3": {
+        "byte_length": 1404,
+        "hash": "52b73df36d5fa0b71111b7a0b11e9b75da568366366eefa19821cdcd47259f5b",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 17
+      },
+      "2_5_4": {
+        "byte_length": 1404,
+        "hash": "ab504993498f0c2cc7a54a25dcb0bd222382c4726e4bfad29e6ed83cd4dd1ac7",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 18
+      },
+      "2_6_3": {
+        "byte_length": 1088,
+        "hash": "5151cd7c5dddd69e49d1ee118903752450895f1e3b7631eab4875e36850a86d8",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 15
+      },
+      "2_6_4": {
+        "byte_length": 1180,
+        "hash": "a04997f76bb8b6701b34ee5bce8cb59dfc312285ac6c528f608ade1eeaa05be3",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 17
+      },
+      "2_7_3": {
+        "byte_length": 136,
+        "hash": "cf92128c1df00ccc95c98a8ed0696cb394225cd9de3d3e2c38a96879c2bfab85",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 1
+      },
+      "2_7_4": {
+        "byte_length": 204,
+        "hash": "5d03772d1dedcaf452d8d7d044eb0c20c25a94f8446a939f2e82b3abd02f37f8",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 2
+      },
+      "3_0_3": {
+        "byte_length": 600,
+        "hash": "57fb03198dc28823ec29e0c0687283a3e4982b16285ba33f4f4e14d8262cefeb",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 7
+      },
+      "3_0_4": {
+        "byte_length": 560,
+        "hash": "2fb31f39c56e12c2bfb8dfbaeb9f67fb29214af8eb9f41c749c7157aa9c88f61",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 10
+      },
+      "3_1_3": {
+        "byte_length": 1076,
+        "hash": "df6006b72d4eb0260308f7c1b265b4577885603e0605f2d1aab788cce720d726",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "3_1_4": {
+        "byte_length": 1100,
+        "hash": "8825e10b9b00332f008eff176b0a1892390016a23ea6ef7e5410c68eeaecab30",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "3_2_3": {
+        "byte_length": 1532,
+        "hash": "753df41c6c1ac8d7c118e4f611c6d3aeeb29938f36eeacd76c3e2139e8d56c33",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 22
+      },
+      "3_2_4": {
+        "byte_length": 1492,
+        "hash": "583a40e6197d861c9000ffbdd9af712a9ca46ce9aa9ed088fab8afd3541aa0a9",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 28
+      },
+      "3_5_3": {
+        "byte_length": 1492,
+        "hash": "9970595989282e8324f10da82efa4236556ba12854e9930ed26e6c7b5b4c7e46",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 18
+      },
+      "3_5_4": {
+        "byte_length": 1532,
+        "hash": "81c573acccc06a460e622d0e907ff6bfaa7fd22f4e0efe7c229c35b171cdcfd2",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 23
+      },
+      "3_6_3": {
+        "byte_length": 1100,
+        "hash": "a0550b34520804b7d26d989d345081dc332325d827e83b1d7d15c96f8b8ae7a4",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "3_6_4": {
+        "byte_length": 1076,
+        "hash": "8a29ea1bbaf0a94651be625884c645ed6008b49963b01a2821456595b9059355",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "3_7_3": {
+        "byte_length": 560,
+        "hash": "210ebb73bde450e92cb4acbfae1acec6d71db2f2fd59d65f4c43014f540f88c5",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 4
+      },
+      "3_7_4": {
+        "byte_length": 600,
+        "hash": "aa1a55a245cdbb4a0ad3be2618229b27d9587fd4b95921437c2ecf964e2d19ec",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 6
+      },
+      "4_0_3": {
+        "byte_length": 560,
+        "hash": "7b648dbb492031621a5907e6125ea4e91e36f8571232c01ddda33e745f882cc6",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 4
+      },
+      "4_0_4": {
+        "byte_length": 600,
+        "hash": "d14ecba037f30e12b83cebc59e50c78e02254b8348bb125449394cb906be8fe2",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 6
+      },
+      "4_1_3": {
+        "byte_length": 1100,
+        "hash": "859d02bd2a990a3795143ce6b89004290d56dda7dd95b36b22bfca958498be81",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "4_1_4": {
+        "byte_length": 1076,
+        "hash": "b2fec1b48acc246b6aeac9a9190f2c9dc6e76c0ceeff30f1612d20608a0a7005",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "4_2_3": {
+        "byte_length": 1492,
+        "hash": "317b16bec2d6da6f287491185f9379accbcfdd84398476db3f0052cbc63447b2",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 18
+      },
+      "4_2_4": {
+        "byte_length": 1532,
+        "hash": "f7e43a7427757947c3ec09226d47626a0979887cc3681bd32aa783c7a89e4d5b",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 23
+      },
+      "4_5_3": {
+        "byte_length": 1532,
+        "hash": "c590285e022b48b11deb6698f1836906b549cc783b3213588613f57dfcf3fb86",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 22
+      },
+      "4_5_4": {
+        "byte_length": 1492,
+        "hash": "4c87fee61b8c03727664393dd448a84e818f8327820de89d83e6b0db4aa1f0c9",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 28
+      },
+      "4_6_3": {
+        "byte_length": 1076,
+        "hash": "62e6539bb4d4cf169e5d51be0f63e2bc019fc9ddff988d4b8dd55c5e61cd5842",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "4_6_4": {
+        "byte_length": 1100,
+        "hash": "b4dac039c79fc000fd1d581bd4894367313f913c0bd41af3180a9942e27a5cbd",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "4_7_3": {
+        "byte_length": 600,
+        "hash": "b08296c20116a4c58823b316fa5e424782b601687d60e27ffda2d713fe3bd745",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 7
+      },
+      "4_7_4": {
+        "byte_length": 560,
+        "hash": "689a2af330edfc5d327fdd71255a5353f588e2b304f9ce0a7ff24c87a723d852",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 10
+      },
+      "5_0_3": {
+        "byte_length": 136,
+        "hash": "097d3f8cec9b4af99cea9c3a984246a90409bc8ff9eb7cedde63418a19cb108a",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 1
+      },
+      "5_0_4": {
+        "byte_length": 204,
+        "hash": "078876307c662933c25823c6f7b48a9b342e08c8c5ec2df4c1cbde9d3024112f",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 2
+      },
+      "5_1_3": {
+        "byte_length": 1088,
+        "hash": "c0b1e7753602c55c7ec361bc6cf69f90d2881a51cdf25752abce8f7a38820610",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 15
+      },
+      "5_1_4": {
+        "byte_length": 1180,
+        "hash": "5e6a3a155cfacd7e4c16e0f9a88bc89ee58568d075a2b5280f81473ac535b650",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 17
+      },
+      "5_2_3": {
+        "byte_length": 1404,
+        "hash": "3488e2919c803b9d9f583b93438ae54db0800dec7d01774fe6f755e1524e78e1",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 17
+      },
+      "5_2_4": {
+        "byte_length": 1404,
+        "hash": "03605db752098b088cb2e169d597af8fe455fe2b2fee5457e202a1b305a7792a",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 18
+      },
+      "5_3_3": {
+        "byte_length": 1532,
+        "hash": "55de30119977d9e347183d89b19768a630f0916735bf1d6eb688b5b6336ce4da",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 18
+      },
+      "5_3_4": {
+        "byte_length": 1492,
+        "hash": "35d181bf5a7e64d2aa98d636b2ce65b0645147d3fde80c06d341c2a7238f5490",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 23
+      },
+      "5_4_3": {
+        "byte_length": 1492,
+        "hash": "0db0816b97ac67cfa584d5834a371a4f5583dd419cf1d2b085f3d43a0ef14afb",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 22
+      },
+      "5_4_4": {
+        "byte_length": 1532,
+        "hash": "70dc22b957c76e8b16a620e68fe7e2ab32eecb4687ae8b45ef22f3f38d2fbd87",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 28
+      },
+      "5_5_3": {
+        "byte_length": 1404,
+        "hash": "eeb62fd21459a4a5389b4afab5e0584f85d22450303d5bb37d78087be9cff2b9",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 17
+      },
+      "5_5_4": {
+        "byte_length": 1404,
+        "hash": "071692a2da902b2a622a77024aca7d699452d568836096bb08c4d73a1f51a821",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 18
+      },
+      "5_6_3": {
+        "byte_length": 1180,
+        "hash": "205678a8c7b13c048687512899976b9029399d802c140fce1981b0ee213569cb",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 15
+      },
+      "5_6_4": {
+        "byte_length": 1088,
+        "hash": "46d96c5b4ca5413e82d983a5c28fa58a18c368a931d0f987d7c189ea80f2062d",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 17
+      },
+      "5_7_3": {
+        "byte_length": 204,
+        "hash": "841df6c0d3281c024297b82d98ec7ef471ade9a5684484c0a98c7ac05df43a97",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 1
+      },
+      "5_7_4": {
+        "byte_length": 136,
+        "hash": "1cc6664214f1ea511dfef764c516de20e4f9aa72f1652322ae78e454f09b6527",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 2
+      },
+      "6_1_3": {
+        "byte_length": 480,
+        "hash": "b7998dcdfc6a4d5cd223d52db4ffe23137cb8c8df96c350a0043fcee499031a4",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 4
+      },
+      "6_1_4": {
+        "byte_length": 480,
+        "hash": "241fda3ab73d31edb03737fa4c237c5450ea5d3a33f7964b01d84c01d835be9a",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 5
+      },
+      "6_2_3": {
+        "byte_length": 1180,
+        "hash": "35a842a42c810acf5496e3c596aadc9ced7e1de75120b4a08f2f2e22f9293b5c",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 15
+      },
+      "6_2_4": {
+        "byte_length": 1088,
+        "hash": "9605b9d27c309322c0ffb599b877de129432299935c088ee2e125ba686ce9c0d",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 17
+      },
+      "6_3_3": {
+        "byte_length": 1076,
+        "hash": "5c357218d1662c1952f02959e1e33c58ef39b88bbc7301429bd928403134792d",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "6_3_4": {
+        "byte_length": 1100,
+        "hash": "7e38ad368e32795e80a8e5ca84b690b2919fe22bddb92f9dc97c43275d8c56dd",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "6_4_3": {
+        "byte_length": 1100,
+        "hash": "0a9a01552f1dba2309098c372f8fdd8ff1ee48c7b6d359ddf0894fb8ceead1df",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "6_4_4": {
+        "byte_length": 1076,
+        "hash": "7e2eaf11a916153ea2518b7ccc769f525c775cd8a0a73ff27acf3b1f54750863",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "6_5_3": {
+        "byte_length": 1088,
+        "hash": "5d2f2f48b779cdab97f1d2044d3c6042b84dd62414b628cdfc8b65d376a5c9c7",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 15
+      },
+      "6_5_4": {
+        "byte_length": 1180,
+        "hash": "84df7bc695213719ed2a69d2d5c2adf60a285e991b1fca41c28f5d0a7f1b7fae",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 17
+      },
+      "6_6_3": {
+        "byte_length": 480,
+        "hash": "f02b2f60008e0948e8e4b17dc89dc7e1dce02c2c875187f109daa5d4d6bc2e4c",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 4
+      },
+      "6_6_4": {
+        "byte_length": 480,
+        "hash": "8102f135f3b29469e285dab309570aa64d329b47607ef6b711fe5699aa011978",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 5
+      },
+      "7_2_3": {
+        "byte_length": 204,
+        "hash": "044289df3ae9d89febff1a0d4dc4a1c9ba66ecc196f20197eaacbaa50eb894fb",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 1
+      },
+      "7_2_4": {
+        "byte_length": 136,
+        "hash": "2deed39c351d409dcaa7a2bde9382907c1714c256024ce2dc8856a2ae6461073",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 2
+      },
+      "7_3_3": {
+        "byte_length": 600,
+        "hash": "6793a4a90f6834d22cab8456cb95114a88988fbe364cff8d71b39db5c7321d39",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 4
+      },
+      "7_3_4": {
+        "byte_length": 560,
+        "hash": "59ba6d264a6f33c2ae495d79b4c0734fe8c3b0445f133a8b5528a9e6382b4092",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 6
+      },
+      "7_4_3": {
+        "byte_length": 560,
+        "hash": "96e7cb5e2d5276bf84be51f7148669d16878793263d1e5a65b3bdf81426b89d0",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 7
+      },
+      "7_4_4": {
+        "byte_length": 600,
+        "hash": "1449a604ef1687651d9181f9397679c3b311946ae220ce3fd86147724a41a840",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 10
+      },
+      "7_5_3": {
+        "byte_length": 136,
+        "hash": "e4c39ffb1337c03c8cf32bcd118e70c51816f3c000799463d58120a973d12827",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 1
+      },
+      "7_5_4": {
+        "byte_length": 204,
+        "hash": "03dc8ada4bd40496aa6710b53c346535393fa30de9777277ad19fb01773e2ef7",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 2
+      }
+    },
+    "v2": {
+      "0_2_3": {
+        "byte_length": 136,
+        "hash": "3df05f48733e5503e7735a5cbaf099b1c45ed9442c26b209f3da17f690bfd25f",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 1
+      },
+      "0_2_4": {
+        "byte_length": 204,
+        "hash": "357374f97abc09e31297e6c7812f33c02b3f2b9918285da39daabc5688760f74",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 2
+      },
+      "0_3_3": {
+        "byte_length": 560,
+        "hash": "a8cfde46d86fa1b40d205a4278ad6d0813c06b72047f669c35d22dbc750d5e54",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 4
+      },
+      "0_3_4": {
+        "byte_length": 600,
+        "hash": "e07decfc42c2d236d2614368d8b35985208a5204a53387e75d9353dd2fc36c25",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 6
+      },
+      "0_4_3": {
+        "byte_length": 600,
+        "hash": "31d9401f6d5b5fb41eefcb1c1f5f82727bb2123f51009eed82bfda559599148a",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 7
+      },
+      "0_4_4": {
+        "byte_length": 560,
+        "hash": "3b6052b4bc9983a77f7806c34a2039782c22182c20c28b86d57caf8964b7a61a",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 10
+      },
+      "0_5_3": {
+        "byte_length": 204,
+        "hash": "2f8d4039f4c3ff5d0df2ccffc140be4cb451ab01dcb129674a61e3a5f8a09f75",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 1
+      },
+      "0_5_4": {
+        "byte_length": 136,
+        "hash": "0874fef3b4e6d9ff2af0fdd09150a9cea28a01d1f417d47a6c0f489b19d3a89a",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 2
+      },
+      "1_1_3": {
+        "byte_length": 480,
+        "hash": "4f93c6742f1bbc64c8624eb757fab1ad4ee8891083c3d88384b0829bc855f009",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 4
+      },
+      "1_1_4": {
+        "byte_length": 480,
+        "hash": "40632c0ecbc8d71ea90ea3a18163219e273e48015bace9a01fdbc351f7ac594c",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 5
+      },
+      "1_2_3": {
+        "byte_length": 1088,
+        "hash": "25c2d55fdfb37d119870e873b7f2012ae322e78b840c104579a8a6e3184312bd",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 15
+      },
+      "1_2_4": {
+        "byte_length": 1180,
+        "hash": "5c3af990d00447c5a1fbe8fe4ecad6fe6a4710b09cb29f681bc998dd3a3b7c18",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 17
+      },
+      "1_3_3": {
+        "byte_length": 1100,
+        "hash": "04a7cc3dc706b9bdc1e5a75bf44e856368ed61d5edda12bf3c358036c13d6f27",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "1_3_4": {
+        "byte_length": 1076,
+        "hash": "070bfd2984c5d03f4905d947e2685871390f88b9608fa841622e0dcc4f730b00",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "1_4_3": {
+        "byte_length": 1076,
+        "hash": "6d25e26db2ff3befe36226d0e24341c7bd43cd7b7fb1de17301ef240cc586e11",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "1_4_4": {
+        "byte_length": 1100,
+        "hash": "c771a701343f3708f5c0d426bd1ffc33ee5e36ee7bde7d1464cf25149fb0b9aa",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "1_5_3": {
+        "byte_length": 1180,
+        "hash": "3e0c50382365a8a234e6b736d29bb2d7d43566150eac65d19babd4a8aacf3123",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 15
+      },
+      "1_5_4": {
+        "byte_length": 1088,
+        "hash": "fb156a31ed7a1f610732aa36cf8e0a81235b59622312105f4441b5bafd539dc5",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 17
+      },
+      "1_6_3": {
+        "byte_length": 480,
+        "hash": "1cf6579253aecd413c8b0ab3df94962fbd70a66d830d615ef5a2640f3460645a",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 4
+      },
+      "1_6_4": {
+        "byte_length": 480,
+        "hash": "12f326aba5ade308c09d27a0385e48adbee210f3d314ab38711c16db34a14da9",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 5
+      },
+      "2_0_3": {
+        "byte_length": 204,
+        "hash": "8b909b9a9c5d3bf8349dc591ccfecba1c481f780f6d2084f7cf063b586b6887a",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 1
+      },
+      "2_0_4": {
+        "byte_length": 136,
+        "hash": "b3f2ca24a5f64c3f39b0d67bd1fbd6a77d22b9bd8ec77aee876b3ed130a79b71",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 2
+      },
+      "2_1_3": {
+        "byte_length": 1180,
+        "hash": "497e90df05ec79af8085263f5ac6ee6ca3b96d5c4f60d582c58e732c1f886f7a",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 15
+      },
+      "2_1_4": {
+        "byte_length": 1088,
+        "hash": "ceb2b53d8c5fd4d4c8de39156e75e5a314f125ed49868047c9c8c44e6483dd1f",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 17
+      },
+      "2_2_3": {
+        "byte_length": 1404,
+        "hash": "9d5fbe829d1e8b57aea8828b8dd2fbef6ce91400852598161b8889e22a79eee8",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 17
+      },
+      "2_2_4": {
+        "byte_length": 1404,
+        "hash": "13c3b1f3b22c756d0ac98fd86132d5cbe0379cacef87b8eed88bf939a4253ca6",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 18
+      },
+      "2_3_3": {
+        "byte_length": 1492,
+        "hash": "5174c3d6c7fa6c28f3d041b68f1c2601a68c1f0e5b2470f886e2121aea30c622",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 18
+      },
+      "2_3_4": {
+        "byte_length": 1532,
+        "hash": "e7fd0b1e89e65db3d66774976759dbc376a0eddacbfdb01985131024ec68310a",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 23
+      },
+      "2_4_3": {
+        "byte_length": 1532,
+        "hash": "567fd84c87fc2d65273655a6657f17b20b07d3cea190408edaaff45a50503919",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 22
+      },
+      "2_4_4": {
+        "byte_length": 1492,
+        "hash": "d5a086ce3adf27be0b8ad13175ab24606f94c7bea513b4bfccb2208cae33d0b8",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 28
+      },
+      "2_5_3": {
+        "byte_length": 1404,
+        "hash": "52b73df36d5fa0b71111b7a0b11e9b75da568366366eefa19821cdcd47259f5b",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 17
+      },
+      "2_5_4": {
+        "byte_length": 1404,
+        "hash": "ab504993498f0c2cc7a54a25dcb0bd222382c4726e4bfad29e6ed83cd4dd1ac7",
+        "index_count": 117,
+        "vertex_count": 32,
+        "voxel_count": 18
+      },
+      "2_6_3": {
+        "byte_length": 1088,
+        "hash": "5151cd7c5dddd69e49d1ee118903752450895f1e3b7631eab4875e36850a86d8",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 15
+      },
+      "2_6_4": {
+        "byte_length": 1180,
+        "hash": "a04997f76bb8b6701b34ee5bce8cb59dfc312285ac6c528f608ade1eeaa05be3",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 17
+      },
+      "2_7_3": {
+        "byte_length": 136,
+        "hash": "cf92128c1df00ccc95c98a8ed0696cb394225cd9de3d3e2c38a96879c2bfab85",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 1
+      },
+      "2_7_4": {
+        "byte_length": 204,
+        "hash": "5d03772d1dedcaf452d8d7d044eb0c20c25a94f8446a939f2e82b3abd02f37f8",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 2
+      },
+      "3_0_3": {
+        "byte_length": 600,
+        "hash": "57fb03198dc28823ec29e0c0687283a3e4982b16285ba33f4f4e14d8262cefeb",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 7
+      },
+      "3_0_4": {
+        "byte_length": 560,
+        "hash": "2fb31f39c56e12c2bfb8dfbaeb9f67fb29214af8eb9f41c749c7157aa9c88f61",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 10
+      },
+      "3_1_3": {
+        "byte_length": 1076,
+        "hash": "df6006b72d4eb0260308f7c1b265b4577885603e0605f2d1aab788cce720d726",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "3_1_4": {
+        "byte_length": 1100,
+        "hash": "8825e10b9b00332f008eff176b0a1892390016a23ea6ef7e5410c68eeaecab30",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "3_2_3": {
+        "byte_length": 1532,
+        "hash": "753df41c6c1ac8d7c118e4f611c6d3aeeb29938f36eeacd76c3e2139e8d56c33",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 22
+      },
+      "3_2_4": {
+        "byte_length": 1492,
+        "hash": "583a40e6197d861c9000ffbdd9af712a9ca46ce9aa9ed088fab8afd3541aa0a9",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 28
+      },
+      "3_5_3": {
+        "byte_length": 1492,
+        "hash": "9970595989282e8324f10da82efa4236556ba12854e9930ed26e6c7b5b4c7e46",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 18
+      },
+      "3_5_4": {
+        "byte_length": 1532,
+        "hash": "81c573acccc06a460e622d0e907ff6bfaa7fd22f4e0efe7c229c35b171cdcfd2",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 23
+      },
+      "3_6_3": {
+        "byte_length": 1100,
+        "hash": "a0550b34520804b7d26d989d345081dc332325d827e83b1d7d15c96f8b8ae7a4",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "3_6_4": {
+        "byte_length": 1076,
+        "hash": "8a29ea1bbaf0a94651be625884c645ed6008b49963b01a2821456595b9059355",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "3_7_3": {
+        "byte_length": 560,
+        "hash": "210ebb73bde450e92cb4acbfae1acec6d71db2f2fd59d65f4c43014f540f88c5",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 4
+      },
+      "3_7_4": {
+        "byte_length": 600,
+        "hash": "aa1a55a245cdbb4a0ad3be2618229b27d9587fd4b95921437c2ecf964e2d19ec",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 6
+      },
+      "4_0_3": {
+        "byte_length": 560,
+        "hash": "7b648dbb492031621a5907e6125ea4e91e36f8571232c01ddda33e745f882cc6",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 4
+      },
+      "4_0_4": {
+        "byte_length": 600,
+        "hash": "d14ecba037f30e12b83cebc59e50c78e02254b8348bb125449394cb906be8fe2",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 6
+      },
+      "4_1_3": {
+        "byte_length": 1100,
+        "hash": "859d02bd2a990a3795143ce6b89004290d56dda7dd95b36b22bfca958498be81",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "4_1_4": {
+        "byte_length": 1076,
+        "hash": "b2fec1b48acc246b6aeac9a9190f2c9dc6e76c0ceeff30f1612d20608a0a7005",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 12
+      },
+      "4_2_3": {
+        "byte_length": 1492,
+        "hash": "317b16bec2d6da6f287491185f9379accbcfdd84398476db3f0052cbc63447b2",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 18
+      },
+      "4_2_4": {
+        "byte_length": 1532,
+        "hash": "f7e43a7427757947c3ec09226d47626a0979887cc3681bd32aa783c7a89e4d5b",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 23
+      },
+      "4_5_3": {
+        "byte_length": 1532,
+        "hash": "c590285e022b48b11deb6698f1836906b549cc783b3213588613f57dfcf3fb86",
+        "index_count": 135,
+        "vertex_count": 34,
+        "voxel_count": 22
+      },
+      "4_5_4": {
+        "byte_length": 1492,
+        "hash": "4c87fee61b8c03727664393dd448a84e818f8327820de89d83e6b0db4aa1f0c9",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 28
+      },
+      "4_6_3": {
+        "byte_length": 1076,
+        "hash": "62e6539bb4d4cf169e5d51be0f63e2bc019fc9ddff988d4b8dd55c5e61cd5842",
+        "index_count": 84,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "4_6_4": {
+        "byte_length": 1100,
+        "hash": "b4dac039c79fc000fd1d581bd4894367313f913c0bd41af3180a9942e27a5cbd",
+        "index_count": 90,
+        "vertex_count": 25,
+        "voxel_count": 16
+      },
+      "4_7_3": {
+        "byte_length": 600,
+        "hash": "b08296c20116a4c58823b316fa5e424782b601687d60e27ffda2d713fe3bd745",
+        "index_count": 42,
+        "vertex_count": 14,
+        "voxel_count": 7
+      },
+      "4_7_4": {
+        "byte_length": 560,
+        "hash": "689a2af330edfc5d327fdd71255a5353f588e2b304f9ce0a7ff24c87a723d852",
+        "index_count": 39,
+        "vertex_count": 13,
+        "voxel_count": 10
+      },
+      "5_0_3": {
+        "byte_length": 136,
+        "hash": "097d3f8cec9b4af99cea9c3a984246a90409bc8ff9eb7cedde63418a19cb108a",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 1
+      },
+      "5_0_4": {
+        "byte_length": 204,
+        "hash": "078876307c662933c25823c6f7b48a9b342e08c8c5ec2df4c1cbde9d3024112f",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 2
+      },
+      "5_1_3": {
+        "byte_length": 1088,
+        "hash": "c0b1e7753602c55c7ec361bc6cf69f90d2881a51cdf25752abce8f7a38820610",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 15
+      },
+      "5_1_4": {
+        "byte_length": 1180,
+        "hash": "5e6a3a155cfacd7e4c16e0f9a88bc89ee58568d075a2b5280f81473ac535b650",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 17
+      },
+      "5_2_3": {
+        "byte_length": 1352,
+        "hash": "abddc97c999f00a215e2072127eb585f053b46388d92efd4d5955fc35e5c7dec",
+        "index_count": 111,
+        "vertex_count": 31,
+        "voxel_count": 17
+      },
+      "5_2_4": {
+        "byte_length": 1340,
+        "hash": "ea80c32fd102c34bc03e57580b5a8bbec0b1cd6e2edf70584a707cb6a8fdf8fa",
+        "index_count": 108,
+        "vertex_count": 31,
+        "voxel_count": 18
+      },
+      "5_3_2": {
+        "byte_length": 336,
+        "hash": "a7c5ba91f02097d0aa91326341473fe6e5ae4c0acb474d6a9859113b01e1c4b1",
+        "index_count": 18,
+        "vertex_count": 8,
+        "voxel_count": 4
+      },
+      "5_3_3": {
+        "byte_length": 1492,
+        "hash": "837ea4be0180e7536d9602bbf6e7e2f8082d75b6f2b0a0acab0da31361bc70db",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 15
+      },
+      "5_3_4": {
+        "byte_length": 1548,
+        "hash": "6aa12a9c798c49032418ba0eef99e8ad274e975445e07c8f936e043a2b3ffbf5",
+        "index_count": 132,
+        "vertex_count": 35,
+        "voxel_count": 19
+      },
+      "5_3_5": {
+        "byte_length": 296,
+        "hash": "ac04c15109b0ad7458f3842f027c9d334c8fd14161294794e08e7b54708c1578",
+        "index_count": 15,
+        "vertex_count": 7,
+        "voxel_count": 4
+      },
+      "5_4_2": {
+        "byte_length": 296,
+        "hash": "403f810ed1cb1f4e11055f24acfc31297af537fe1786e4f38b070a21214ab123",
+        "index_count": 15,
+        "vertex_count": 7,
+        "voxel_count": 5
+      },
+      "5_4_3": {
+        "byte_length": 1548,
+        "hash": "506c85d85a26429c4567022ac149258671dba7d50282140aa0ac929a437a19cd",
+        "index_count": 132,
+        "vertex_count": 35,
+        "voxel_count": 18
+      },
+      "5_4_4": {
+        "byte_length": 1492,
+        "hash": "e6fd78af25b426709f267f79c7f19589f95e90abe69fad844641bfc3f43a6fd7",
+        "index_count": 132,
+        "vertex_count": 33,
+        "voxel_count": 23
+      },
+      "5_4_5": {
+        "byte_length": 336,
+        "hash": "a19ae96d4453653f4c73805e35fdd9f7c5078208fd3e12f092195fd5c6e1be73",
+        "index_count": 18,
+        "vertex_count": 8,
+        "voxel_count": 5
+      },
+      "5_5_3": {
+        "byte_length": 1340,
+        "hash": "06e700e9a1cbdbac5435dd62864e454d525752a7ec6629503fb86936b7e2e33f",
+        "index_count": 108,
+        "vertex_count": 31,
+        "voxel_count": 17
+      },
+      "5_5_4": {
+        "byte_length": 1352,
+        "hash": "a9e97fa487bca7eba310be5bbb31efaacd65bc19bddb3c2552bdfd5aad034fdf",
+        "index_count": 111,
+        "vertex_count": 31,
+        "voxel_count": 18
+      },
+      "5_6_3": {
+        "byte_length": 1180,
+        "hash": "205678a8c7b13c048687512899976b9029399d802c140fce1981b0ee213569cb",
+        "index_count": 96,
+        "vertex_count": 27,
+        "voxel_count": 15
+      },
+      "5_6_4": {
+        "byte_length": 1088,
+        "hash": "46d96c5b4ca5413e82d983a5c28fa58a18c368a931d0f987d7c189ea80f2062d",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 17
+      },
+      "5_7_3": {
+        "byte_length": 204,
+        "hash": "841df6c0d3281c024297b82d98ec7ef471ade9a5684484c0a98c7ac05df43a97",
+        "index_count": 6,
+        "vertex_count": 5,
+        "voxel_count": 1
+      },
+      "5_7_4": {
+        "byte_length": 136,
+        "hash": "1cc6664214f1ea511dfef764c516de20e4f9aa72f1652322ae78e454f09b6527",
+        "index_count": 3,
+        "vertex_count": 3,
+        "voxel_count": 2
+      },
+      "6_1_3": {
+        "byte_length": 480,
+        "hash": "b7998dcdfc6a4d5cd223d52db4ffe23137cb8c8df96c350a0043fcee499031a4",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 4
+      },
+      "6_1_4": {
+        "byte_length": 480,
+        "hash": "241fda3ab73d31edb03737fa4c237c5450ea5d3a33f7964b01d84c01d835be9a",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 5
+      },
+      "6_2_3": {
+        "byte_length": 1140,
+        "hash": "4a4f7600a35b874a2638f3603db9841d4c50f29a3eb26f4932a14f35ba624db0",
+        "index_count": 93,
+        "vertex_count": 26,
+        "voxel_count": 15
+      },
+      "6_2_4": {
+        "byte_length": 1088,
+        "hash": "438f196c4d1df5e3882f4eb2b98cd2faa1bc214da9bfee5fbc99b3e112705cf4",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 17
+      },
+      "6_3_2": {
+        "byte_length": 692,
+        "hash": "7f935c9e7cb515a1d6703d5b03d3f7f6f1f2167e15434da146a78eb56cd0782e",
+        "index_count": 51,
+        "vertex_count": 16,
+        "voxel_count": 9
+      },
+      "6_3_3": {
+        "byte_length": 216,
+        "hash": "da87cae3eec6074c593db1a0df6483c084bc5bb4d44c047df67ea7974f917b67",
+        "index_count": 9,
+        "vertex_count": 5,
+        "voxel_count": 0
+      },
+      "6_3_4": {
+        "byte_length": 284,
+        "hash": "697e8c518fc6ce93691ca833aa9fa46a7ae45c647a20f166d64fcd6611bdd081",
+        "index_count": 12,
+        "vertex_count": 7,
+        "voxel_count": 0
+      },
+      "6_3_5": {
+        "byte_length": 732,
+        "hash": "44440aec7bb6cd2b86539800c347ad92f34888b84d22615e84f99994b4b2155a",
+        "index_count": 54,
+        "vertex_count": 17,
+        "voxel_count": 9
+      },
+      "6_4_2": {
+        "byte_length": 732,
+        "hash": "09beddded06263535e89745e8a52c178388cb89ff9ff9401f7b89a3f376caebc",
+        "index_count": 54,
+        "vertex_count": 17,
+        "voxel_count": 13
+      },
+      "6_4_3": {
+        "byte_length": 284,
+        "hash": "c4163888b011a33f4bdd948fee1fa7b8df48c2fdfe82c1f61103fae2a10cb23a",
+        "index_count": 12,
+        "vertex_count": 7,
+        "voxel_count": 0
+      },
+      "6_4_4": {
+        "byte_length": 216,
+        "hash": "3ca627b687d79ab0796903c3ae171fe013339c8a576a7cdda0a6acccbd14a155",
+        "index_count": 9,
+        "vertex_count": 5,
+        "voxel_count": 0
+      },
+      "6_4_5": {
+        "byte_length": 692,
+        "hash": "f6415287ef6ebb2e8bb79f58677c88667a023fce49828b2a7735649ed6cd0ea0",
+        "index_count": 51,
+        "vertex_count": 16,
+        "voxel_count": 13
+      },
+      "6_5_3": {
+        "byte_length": 1088,
+        "hash": "c2901de43e37944fe365325fcf6325eb8e11c0fccd476263e6870f2a8e1ef05f",
+        "index_count": 87,
+        "vertex_count": 25,
+        "voxel_count": 15
+      },
+      "6_5_4": {
+        "byte_length": 1140,
+        "hash": "9489c45869c2b2eae53c44e130077d0e3005150796cd37519c5b58bf9941d4a1",
+        "index_count": 93,
+        "vertex_count": 26,
+        "voxel_count": 17
+      },
+      "6_6_3": {
+        "byte_length": 480,
+        "hash": "f02b2f60008e0948e8e4b17dc89dc7e1dce02c2c875187f109daa5d4d6bc2e4c",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 4
+      },
+      "6_6_4": {
+        "byte_length": 480,
+        "hash": "8102f135f3b29469e285dab309570aa64d329b47607ef6b711fe5699aa011978",
+        "index_count": 33,
+        "vertex_count": 11,
+        "voxel_count": 5
+      },
+      "7_2_3": {
+        "byte_length": 296,
+        "hash": "11fe62803b9fb33eb4e236e3594ba593446b98cc04721fe6699dbfbe5056de3c",
+        "index_count": 15,
+        "vertex_count": 7,
+        "voxel_count": 1
+      },
+      "7_2_4": {
+        "byte_length": 256,
+        "hash": "a607906e682befebe927fdf95d2747a3c036eaf81a3cf23ac785ca5a438a49e8",
+        "index_count": 12,
+        "vertex_count": 6,
+        "voxel_count": 2
+      },
+      "7_3_3": {
+        "byte_length": 692,
+        "hash": "027e2659f678f5a34baa7aed136f9eae3343c9205a2d4ecb209f1f23156fa0e9",
+        "index_count": 51,
+        "vertex_count": 16,
+        "voxel_count": 6
+      },
+      "7_3_4": {
+        "byte_length": 652,
+        "hash": "1711121e31d6ca4c22b2127f819bad045238bcb720102625f5da41d7a4fdb659",
+        "index_count": 48,
+        "vertex_count": 15,
+        "voxel_count": 8
+      },
+      "7_4_3": {
+        "byte_length": 652,
+        "hash": "eb6c682d25bab8fa7c8b7c9f4a2bf9c7b965e20cf13bf45dfe96307480b105e5",
+        "index_count": 48,
+        "vertex_count": 15,
+        "voxel_count": 9
+      },
+      "7_4_4": {
+        "byte_length": 692,
+        "hash": "1ad34085972322afdd38409a5e86032c9efbb7e88ed4c1ecef3ed9419fd536cc",
+        "index_count": 51,
+        "vertex_count": 16,
+        "voxel_count": 12
+      },
+      "7_5_3": {
+        "byte_length": 256,
+        "hash": "07e1751ac7a0af97bd8fb69ecd21152688bfac5e166638e529412a62f1e07265",
+        "index_count": 12,
+        "vertex_count": 6,
+        "voxel_count": 1
+      },
+      "7_5_4": {
+        "byte_length": 296,
+        "hash": "db32d0c7b0b65cd42ebf14e194d71ed82b3e61f6331e7b28815259f3a2162a02",
+        "index_count": 15,
+        "vertex_count": 7,
+        "voxel_count": 2
+      }
+    }
+  }
+}

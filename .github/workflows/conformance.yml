@@ -1,0 +1,40 @@
+# 계약을 잠근다 — contract/ 가 바뀌면 골든 벡터 200개가 지켜지는지 매번 본다.
+# 그리고 비밀이 커밋에 섞이지 않았는지 본다 (docs/PROGRESS.md §7).
+name: conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install deps
+        run: python -m pip install --upgrade pip numpy "pydantic>=2.0"
+
+      - name: run_conformance
+        run: python run_conformance.py
+        working-directory: contract/conformance
+
+      - name: mirror_check
+        run: python mirror_check.py
+        working-directory: contract/conformance
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

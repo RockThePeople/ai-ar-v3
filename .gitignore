@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────
+# 비밀 — 사전 방어 (docs/PROGRESS.md §7)
+# 이 블록은 절대 완화하지 않는다.
+# ─────────────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+
+*.key
+*.pem
+*.p12
+*.jks
+*.keystore
+*.crt
+id_rsa*
+id_ed25519*
+secrets*
+credentials*
+ngrok.yml
+ngrok.yaml
+
+# ai-ar-v2 에서 넘어오면 안 되는 것 (실제 64-hex 키가 들어 있다)
+blockedit_local_key.txt
+
+# ─────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+
+# ─────────────────────────────────────────────────────────────
+# 모델 가중치 · 대용량 산출물
+# 리포에 가중치를 넣지 않는다. 경로는 환경변수로 준다.
+# ─────────────────────────────────────────────────────────────
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.bin
+!contract/conformance/golden/*.cbin
+*.onnx
+*.gguf
+*.npz
+weights/
+checkpoints/
+models/
+*.glb
+*.gltf
+*.ply
+*.obj
+*.fbx
+*.usdz
+
+# ─────────────────────────────────────────────────────────────
+# Unity
+# ─────────────────────────────────────────────────────────────
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.user
+*.booproj
+*.pidb
+*.svd
+sysinfo.txt
+crashlytics-build.properties
+
+# ─────────────────────────────────────────────────────────────
+# 로그 · 런타임 산출물 · OS
+# ─────────────────────────────────────────────────────────────
+*.log
+out/
+outputs/
+runs/
+tmp/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

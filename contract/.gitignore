@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+.DS_Store
+
+# 비밀 — 사전 방어
+.env
+*.env
+!*.env.example
+*.key
+*.pem
+*.p12
+*.jks
+*.keystore
+id_rsa*
+secrets*
+ngrok.yml
+*.log

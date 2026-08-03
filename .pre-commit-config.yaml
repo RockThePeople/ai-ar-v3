@@ -1,0 +1,19 @@
+# docs/PROGRESS.md §7 — 비밀은 코드·문서·커밋에 절대 넣지 않는다.
+# 설치:  pre-commit install
+# 전체 1회 검사:  pre-commit run --all-files
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: end-of-file-fixer
+        exclude: '^contract/conformance/golden/'
+      - id: trailing-whitespace
+        exclude: '^contract/conformance/golden/'
