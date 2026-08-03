@@ -29,6 +29,20 @@ jobs:
         run: python mirror_check.py
         working-directory: contract/conformance
 
+  # S2 파이프라인 + D5 지표 + D9 좌표 규약. GPU·네트워크·실자산을 쓰지 않으므로
+  # CI 에서 그대로 돈다. D9 회귀 테스트가 여기서 축 순열 드리프트를 막는다.
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install deps
+        run: python -m pip install --upgrade pip -r server/requirements.txt
+      - name: pytest
+        run: python -m pytest server/tests/ -q
+
   secrets:
     runs-on: ubuntu-latest
     steps:

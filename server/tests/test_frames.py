@@ -1,0 +1,206 @@
+"""D9 좌표 프레임 규약 — 회귀 테스트.
+
+이 파일의 목적은 하나다: **항등 변환을 쓰면 반드시 실패한다.**
+
+`docs/PROGRESS.md` §2 D9 는 A5000 이 48개 부호付 순열을 전수 탐색해 확정했다
+(정답 IoU 0.9365 vs 차점 0.1943, 4.8배). 그 사실 자체는 GPU 위에서 실자산으로
+확인된 것이고, 여기서 다시 증명하지는 않는다.
+
+여기가 막는 것은 **조용한 드리프트**다:
+  · 누가 상수를 바꾼다
+  · 누가 GLB 좌표를 변환 없이 복셀 격자에 넣는다
+  · 누가 `frame="glb"` 를 정상 경로에 쓴다
+
+셋 다 예외를 내지 않는다. 마스크는 여전히 "위쪽 35%" 를 잡고 지표도 숫자를 낸다 —
+다만 그 숫자가 전부 다른 물체에 대한 것이다. 그래서 문서가 아니라 테스트로 둔다
+(방법론 5조 4번: 규칙만 적고 함수를 안 주면 그 규칙은 안 지켜진다).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from server.metrics import _codes, _iou
+from server.pipeline import build_mask, occupancy_to_mesh, surface_voxelize
+from server.pipeline.frames import (
+    GLB_TO_VOXEL,
+    IDENTITY,
+    VOXEL_TO_GLB,
+    AxisTransform,
+    all_signed_permutations,
+    assert_not_identity,
+    to_voxel_frame,
+)
+from server.tests.fixtures import (
+    asymmetric_asset_glb_frame,
+    asymmetric_asset_voxel_frame,
+)
+
+
+def _iou_of(cells_a: np.ndarray, cells_b: np.ndarray) -> float:
+    return _iou(_codes(cells_a), _codes(cells_b))
+
+
+def _voxelize_with(transform: AxisTransform) -> np.ndarray:
+    """GLB 프레임 자산을 주어진 변환으로 복셀화한다."""
+    verts, faces = asymmetric_asset_glb_frame()
+    return surface_voxelize(transform.apply(verts), faces)
+
+
+# ══════════════════════════════════════════════════ 1. 상수 자체
+def test_d9_constant_matches_progress_md():
+    """D9 문구와 상수가 글자 그대로 같은지. 상수를 바꾸면 여기서 먼저 걸린다."""
+    assert GLB_TO_VOXEL.perm == (0, 2, 1)
+    assert GLB_TO_VOXEL.sign == (1, -1, 1)
+    assert str(GLB_TO_VOXEL) == "(x, -z, y)"
+
+
+def test_transform_roundtrip_is_exact():
+    """순열·부호뿐이므로 왕복이 **정확히** 항등이다 (부동소수 오차 없음)."""
+    pts = np.array([[0.1, -0.2, 0.3], [-0.5, 0.5, 0.0]], dtype=np.float64)
+    assert np.array_equal(VOXEL_TO_GLB.apply(GLB_TO_VOXEL.apply(pts)), pts)
+    assert np.array_equal(GLB_TO_VOXEL.apply(VOXEL_TO_GLB.apply(pts)), pts)
+
+
+def test_transform_preserves_integer_dtype():
+    """정수 복셀 좌표가 float 로 승격되면 하류에서 조용히 반올림이 생긴다."""
+    cells = np.array([[1, 2, 3]], dtype=np.int64)
+    assert GLB_TO_VOXEL.apply(cells).dtype == np.int64
+
+
+def test_there_are_exactly_48_signed_permutations():
+    perms = all_signed_permutations()
+    assert len(perms) == 48
+    assert len({(p.perm, p.sign) for p in perms}) == 48
+    assert any(p.perm == GLB_TO_VOXEL.perm and p.sign == GLB_TO_VOXEL.sign
+               for p in perms)
+
+
+# ══════════════════════════════════ 2. ★ 항등이 실패하는 회귀 테스트
+def test_identity_transform_is_rejected_explicitly():
+    """`assert_not_identity` 가 항등을 막는다."""
+    assert IDENTITY.is_identity
+    assert not GLB_TO_VOXEL.is_identity
+    assert_not_identity(GLB_TO_VOXEL, "정상 경로")
+    with pytest.raises(ValueError, match="항등"):
+        assert_not_identity(IDENTITY, "정상 경로")
+
+
+def test_identity_transform_produces_a_different_object():
+    """★★ 항등을 쓰면 **다른 물체**가 나온다. 예외는 안 난다 — 그게 위험한 이유다.
+
+    이 테스트가 D9 의 핵심 방어다. 상수를 항등으로 바꾸면 여기서 죽는다.
+    """
+    reference = surface_voxelize(*asymmetric_asset_voxel_frame())
+
+    correct = _iou_of(_voxelize_with(GLB_TO_VOXEL), reference)
+    identity = _iou_of(_voxelize_with(IDENTITY), reference)
+
+    assert correct > 0.95, f"D9 변환이 참조와 안 맞는다: IoU {correct:.4f}"
+    assert identity < 0.5, f"항등이 참조와 맞아 버렸다: IoU {identity:.4f}"
+    # A5000 실측은 0.9365 vs 0.1943 = 4.8배. 합성에서도 같은 자릿수의 격차가 난다.
+    assert correct / max(identity, 1e-9) > 3.0
+
+
+def test_d9_is_the_unique_best_of_all_48_permutations():
+    """★ A5000 의 전수 탐색을 합성 픽스처로 재현한다.
+
+    48개 중 **정답 하나만** 참조와 정확히 겹친다(IoU 1.0). 상수를 어떻게 바꿔도
+    1위가 아니게 되므로 여기서 걸린다.
+
+    ⚠️ 합성 격차는 실측보다 작다 — 1위 1.000 vs 2위 0.734(1.36배)이고, A5000 의
+       실자산은 0.9365 vs 0.1943(4.8배)였다. 2위 세 개는 세로축을 맞게 잡고
+       가로축만 뒤집은 순열이라, 물체가 좌우·앞뒤로 더 비대칭일수록 벌어진다.
+       **이 테스트의 일은 D9 를 재증명하는 것이 아니라 드리프트를 막는 것이다** —
+       근거는 A5000 의 실측이고, 여기서 픽스처를 더 비대칭으로 깎아 숫자를 키우는
+       것은 대리 지표를 만드는 짓이다.
+    """
+    reference = surface_voxelize(*asymmetric_asset_voxel_frame())
+    scored = sorted(
+        ((_iou_of(_voxelize_with(t), reference), t) for t in all_signed_permutations()),
+        key=lambda kv: kv[0],
+        reverse=True,
+    )
+    best_iou, best = scored[0]
+    runner_iou, runner = scored[1]
+
+    assert (best.perm, best.sign) == (GLB_TO_VOXEL.perm, GLB_TO_VOXEL.sign), (
+        f"전수 탐색 1위가 D9 상수가 아니다: {best} (IoU {best_iou:.4f})"
+    )
+    # 정답은 두 기술을 **정확히** 겹치게 한다 — 같은 물체를 두 프레임에서 쓴 것이니까.
+    assert best_iou > 0.99, f"D9 상수인데 참조와 정확히 안 겹친다: {best_iou:.4f}"
+    # 그리고 2위와 명확히 떨어져 있다 — 동점이면 탐색이 답을 고른 것이 아니다.
+    assert best_iou - runner_iou > 0.2, (
+        f"1위 {best_iou:.4f}({best}) 와 2위 {runner_iou:.4f}({runner}) 가 너무 가깝다"
+    )
+
+
+def test_to_voxel_frame_is_the_shared_entry_point():
+    verts, _ = asymmetric_asset_glb_frame()
+    assert np.array_equal(to_voxel_frame(verts), GLB_TO_VOXEL.apply(verts))
+
+
+# ══════════════════════════════ 3. GLB 적재 경로가 실제로 통과하는가
+def test_load_mesh_applies_the_frame(tmp_path):
+    """GLB 파일을 실제로 써서 읽어 본다. 기본값이 voxel 프레임이어야 한다."""
+    trimesh = pytest.importorskip("trimesh", reason="GLB 적재 경로 전용")
+    from server.pipeline import load_mesh
+
+    verts, faces = asymmetric_asset_glb_frame()
+    path = tmp_path / "asset.glb"
+    trimesh.Trimesh(vertices=verts, faces=faces, process=False).export(path)
+
+    got_voxel, _ = load_mesh(str(path), frame="voxel")
+    got_glb, _ = load_mesh(str(path), frame="glb")
+
+    # 기본값은 voxel 프레임이다.
+    assert np.allclose(load_mesh(str(path))[0], got_voxel)
+    # 두 프레임이 실제로 다르다 — 변환이 no-op 이 아니다.
+    assert not np.allclose(got_voxel, got_glb)
+    assert np.allclose(got_voxel, GLB_TO_VOXEL.apply(got_glb))
+
+
+def test_load_mesh_rejects_unknown_frame(tmp_path):
+    pytest.importorskip("trimesh", reason="GLB 적재 경로 전용")
+    from server.pipeline import load_mesh
+
+    with pytest.raises(ValueError, match="frame"):
+        load_mesh(str(tmp_path / "nope.glb"), frame="world")
+
+
+# ══════════════════ 4. ★ 프레임이 틀리면 파이프라인이 통째로 무의미해진다
+def test_wrong_frame_makes_the_head_mask_select_the_wrong_part():
+    """★★ "조용히 전부 무의미해진다" 를 숫자로 보인다.
+
+    머리 마스크는 복셀 격자의 **위쪽(+Z)** 을 잡는다. 프레임이 틀리면 그 자리에
+    머리가 없다 — 몸통 옆구리가 잡힌다. 마스크는 정상 동작하고, 조립도 돌고,
+    지표도 숫자를 낸다. 다만 전부 엉뚱한 부위에 대한 것이다.
+    """
+    head_bbox = ((-0.12, -0.12, 0.05), (0.12, 0.12, 0.26))
+    mask = build_mask(bbox=head_bbox, halo=1)
+    mask_codes = _codes(mask.cells)
+
+    correct = _voxelize_with(GLB_TO_VOXEL)
+    wrong = _voxelize_with(IDENTITY)
+
+    def occupied_in_mask(cells):
+        return np.intersect1d(_codes(cells), mask_codes, assume_unique=True).size
+
+    n_correct = occupied_in_mask(correct)
+    n_wrong = occupied_in_mask(wrong)
+
+    # 올바른 프레임에서는 머리가 마스크 안에 실제로 있다.
+    assert n_correct > 0
+    # 항등에서는 같은 마스크가 전혀 다른 양의 기하를 집는다.
+    assert n_wrong != n_correct
+    # 그리고 두 결과의 겹침이 작다 — 다른 부위를 보고 있다는 뜻이다.
+    both = _iou_of(correct, wrong)
+    assert both < 0.5, f"두 프레임 결과가 너무 비슷하다 (IoU {both:.4f})"
+
+
+def test_occupancy_roundtrip_is_frame_agnostic():
+    """복셀 → 메시 → 복셀 왕복은 프레임을 바꾸지 않는다 (합성 디코더 자체 점검)."""
+    cells = surface_voxelize(*asymmetric_asset_voxel_frame())
+    again = surface_voxelize(*occupancy_to_mesh(cells))
+    assert _iou_of(cells, again) > 0.99

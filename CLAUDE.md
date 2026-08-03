@@ -87,6 +87,7 @@ pre-commit run --all-files
 | `T2I_OUT_DIR` | t2i 산출 이미지 디렉터리 |
 
 **문서에는 `<EDIT_HOST>:<PORT>` 형태로만 쓴다.** 실제 값을 예시로도 쓰지 않는다.
+**`docs/PROGRESS.md` 도 이 규칙의 대상이다** (rev6 원칙 10 — rev5 에서 실제로 위반했다).
 
 - `.env.example` 에는 **키 이름만**. 값은 비워 둔다.
 - `.env` 는 `.gitignore` 로 봉쇄돼 있고 gitleaks pre-commit 이 한 번 더 막는다.
@@ -94,6 +95,22 @@ pre-commit run --all-files
   들어 있다. 이 리포로 복사하지 않는다.** 파일명 자체가 `.gitignore` 에 박혀 있다.
 
 ---
+
+## 🔴 좌표 프레임 — 틀리면 조용히 전부 무의미해진다 (D9)
+
+```
+GLB       Y-up      복셀 격자  Z-up
+변환      voxel = (x, -z, y)     perm=(0,2,1) sign=(1,-1,1)
+```
+
+정본은 [server/pipeline/frames.py](server/pipeline/frames.py) 의 `GLB_TO_VOXEL` 이다.
+**매직넘버를 흩뿌리지 말고 이 상수를 참조한다.** GLB 를 읽는 경로는 `load_mesh()`
+하나이고 기본값으로 이 변환을 적용한다.
+
+항등 변환을 쓰면 IoU 0.19 대가 나오는데 **예외가 안 난다** — 마스크도 조립도 지표도
+정상 동작하고, 다만 전부 다른 물체에 대한 숫자다. A5000 이 48개 부호付 순열을 전수
+탐색해 확정했다 (정답 0.9365 vs 차점 0.1943). `server/tests/test_frames.py` 가 그
+탐색을 합성으로 재현해 드리프트를 막는다.
 
 ## 계약 변경 규칙
 

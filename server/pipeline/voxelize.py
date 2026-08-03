@@ -46,6 +46,8 @@ from deltacontract.coords import (  # type: ignore[import-not-found]
     canonical_sort,
 )
 
+from .frames import GLB_TO_VOXEL
+
 __all__ = [
     "FACE_INSET",
     "load_mesh",
@@ -61,17 +63,26 @@ FACE_INSET = 0.1
 
 
 # ══════════════════════════════════════════════════════════════════ 적재
-def load_mesh(path: str) -> Tuple[np.ndarray, np.ndarray]:
+def load_mesh(path: str, *, frame: str = "voxel") -> Tuple[np.ndarray, np.ndarray]:
     """GLB/glTF/OBJ → (vertices (V,3) float64, faces (F,3) int64).
+
+    🔴 **기본값이 `frame="voxel"` 이다.** GLB 는 Y-up, 복셀 격자는 Z-up 이므로
+       읽은 좌표를 그대로 쓰면 안 된다 (D9). 이 함수가 GLB 를 읽는 유일한 경로이고,
+       여기서 `frames.GLB_TO_VOXEL` 을 적용한다.
+
+       `frame="glb"` 는 **진단·대조군 전용**이다. 이걸로 받은 좌표를 복셀 격자에
+       넣으면 IoU 0.19 대가 나오고 예외는 안 난다.
 
     ⚠️ trimesh 는 **지연 import** 한다. 이 세션의 테스트는 합성 픽스처만 쓰므로
        trimesh 가 없는 환경에서도 나머지 파이프라인이 전부 돌아야 한다.
        실자산 적재는 3090 담당이다.
 
-    좌표계는 손대지 않는다 — NORMALIZED 로 옮기는 것은 `normalize_to_normalized`
+    스케일은 손대지 않는다 — NORMALIZED 로 옮기는 것은 `normalize_to_normalized`
     의 일이고, 그 둘을 한 함수에 섞으면 "이미 정규화된 자산" 을 두 번 정규화하는
-    사고가 난다.
+    사고가 난다. 축 순열은 스케일이 아니므로 여기서 해도 그 문제가 없다.
     """
+    if frame not in ("voxel", "glb"):
+        raise ValueError(f"frame 은 'voxel'|'glb' 여야 한다: {frame!r}")
     try:
         import trimesh  # noqa: PLC0415
     except ImportError as e:  # pragma: no cover - 환경 의존
@@ -85,6 +96,8 @@ def load_mesh(path: str) -> Tuple[np.ndarray, np.ndarray]:
     faces = np.asarray(obj.faces, dtype=np.int64).reshape(-1, 3)
     if faces.size == 0:
         raise ValueError(f"삼각형이 없다: {path}")
+    if frame == "voxel":
+        verts = GLB_TO_VOXEL.apply(verts)
     return verts, faces
 
 
@@ -165,9 +178,15 @@ def surface_voxelize(
     return canonical_sort(np.unique(np.concatenate(out, axis=0), axis=0))
 
 
-def voxelize_asset(path: str, *, oversample: float = 2.0) -> np.ndarray:
-    """GLB/glTF 파일 → VOXEL 셀 집합. 적재 → 정규화 → 표면 복셀화."""
-    verts, faces = load_mesh(path)
+def voxelize_asset(
+    path: str, *, oversample: float = 2.0, frame: str = "voxel"
+) -> np.ndarray:
+    """GLB/glTF 파일 → VOXEL 셀 집합. 적재(D9 축 변환) → 정규화 → 표면 복셀화.
+
+    `frame="glb"` 는 **대조군 전용**이다 — 그 결과를 정상 경로의 복셀과 비교하면
+    D9 가 왜 필요한지가 숫자로 나온다 (`server/tests/test_frames.py`).
+    """
+    verts, faces = load_mesh(path, frame=frame)
     return surface_voxelize(
         normalize_to_normalized(verts), faces, oversample=oversample
     )

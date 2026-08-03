@@ -18,7 +18,13 @@ from typing import Sequence, Tuple
 
 import numpy as np
 
-__all__ = ["cube_mesh", "snowman_mesh", "sphere_mesh"]
+__all__ = [
+    "asymmetric_asset_glb_frame",
+    "asymmetric_asset_voxel_frame",
+    "cube_mesh",
+    "snowman_mesh",
+    "sphere_mesh",
+]
 
 
 def sphere_mesh(
@@ -49,19 +55,28 @@ def sphere_mesh(
     return verts, np.asarray(faces, dtype=np.int64)
 
 
-def cube_mesh(
-    center: Sequence[float] = (0.0, 0.0, 0.0), size: float = 0.3
+def box_mesh(
+    center: Sequence[float] = (0.0, 0.0, 0.0),
+    size: Sequence[float] = (0.3, 0.3, 0.3),
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """축정렬 정육면체. 삼각형 12개."""
+    """축정렬 직육면체. 축마다 다른 크기를 준다.
+
+    D9 전수 탐색 픽스처에 필요하다 — 세 축의 **크기가 전부 달라야** 축을 바꾼
+    순열이 원본과 안 겹친다. 정육면체를 쓰면 여러 순열이 동점이 되어 탐색이
+    답을 못 고른다 (실측: 정육면체 조합에서 1위 1.000 vs 2위 0.908).
+    """
     c = np.asarray(center, dtype=np.float64)
-    h = size / 2.0
-    verts = np.array(
+    h = np.asarray(size, dtype=np.float64) / 2.0
+    if h.shape != (3,):
+        raise ValueError(f"size 는 길이 3 이어야 한다: {np.shape(size)}")
+    signs = np.array(
         [
-            [-h, -h, -h], [h, -h, -h], [h, h, -h], [-h, h, -h],
-            [-h, -h, h], [h, -h, h], [h, h, h], [-h, h, h],
+            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+            [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
         ],
         dtype=np.float64,
-    ) + c
+    )
+    verts = signs * h + c
     faces = np.array(
         [
             [0, 3, 2], [0, 2, 1],
@@ -74,6 +89,13 @@ def cube_mesh(
         dtype=np.int64,
     )
     return verts, faces
+
+
+def cube_mesh(
+    center: Sequence[float] = (0.0, 0.0, 0.0), size: float = 0.3
+) -> Tuple[np.ndarray, np.ndarray]:
+    """축정렬 정육면체. `box_mesh` 의 등방 특수형."""
+    return box_mesh(center, (size, size, size))
 
 
 def snowman_mesh(
@@ -92,3 +114,63 @@ def snowman_mesh(
     verts = np.concatenate([bv, hv], axis=0)
     faces = np.concatenate([bf, hf + bv.shape[0]], axis=0)
     return verts, faces
+
+
+# ══════════════════════════════════════════════════ D9 좌표 프레임 픽스처
+#
+# 같은 **물리적 물체**를 두 프레임에서 각각 손으로 기술한다. 한쪽을 다른 쪽에
+# 변환을 적용해서 만들면 순환 논증이 되므로, 둘 다 아래 물리적 서술에서 직접 쓴다.
+#
+#     물체   큰 상자(몸통) 위에 중간 상자(머리), 머리의 **앞쪽·오른쪽**으로 뻗은 주둥이
+#     방향   위=GLB +Y / VOXEL +Z        앞=GLB +Z / VOXEL **-Y**       오른쪽=둘 다 +X
+#
+# 세 부분의 크기가 전부 다르고 주둥이가 x·앞뒤 양쪽으로 치우쳐 있어서, 48개 부호付
+# 순열 중 **정답 하나만** 두 기술을 정확히 겹치게 만든다. 대칭인 물체를 쓰면 여러
+# 순열이 동점이 되어 전수 탐색이 답을 못 고른다.
+
+# 물리적 치수 — 폭(좌우) · 앞뒤 · 높이. **셋이 전부 다르다.**
+#   몸통  폭 0.36 · 앞뒤 0.22 · 높이 0.30      아래
+#   머리  폭 0.20 · 앞뒤 0.14 · 높이 0.18      위
+#   주둥이 폭 0.10 · 앞뒤 0.26 · 높이 0.10     머리 앞·오른쪽으로 크게 돌출
+#
+# 주둥이가 커야 하는 이유: 앞뒤 뒤집기(x,z,y)와 좌우 뒤집기(-x,-z,y)를 구분하는 것이
+# 이 돌출부뿐이다. 작게 두면 그 순열들이 IoU 0.935 로 따라붙어 전수 탐색의 격차가
+# 1.07배까지 좁아진다 (실측). A5000 이 실자산에서 4.8배를 얻은 것은 실제 물체가
+# 그만큼 비대칭이기 때문이다.
+
+def asymmetric_asset_glb_frame():
+    """GLB(Y-up) 프레임에서 기술한 비대칭 물체.
+
+    GLB 축 = (폭, 높이, 앞뒤) = (x, y, z).
+    """
+    parts = [
+        #          (폭,   높이,  앞뒤)
+        box_mesh((0.00, -0.10, 0.00), (0.36, 0.30, 0.22)),   # 몸통 — 아래(-Y)
+        box_mesh((0.00, 0.15, 0.00), (0.20, 0.18, 0.14)),    # 머리 — 위(+Y)
+        box_mesh((0.06, 0.15, 0.17), (0.10, 0.10, 0.26)),    # 주둥이 — 앞(+Z)·오른쪽(+X)
+    ]
+    return _concat(parts)
+
+
+def asymmetric_asset_voxel_frame():
+    """VOXEL(Z-up) 프레임에서 기술한 **같은** 물체.
+
+    VOXEL 축 = (폭, 앞뒤, 높이) = (x, y, z). 위 → +Z, 앞 → **-Y**, 오른쪽 → +X.
+    D9 변환을 적용한 적이 없다 — 위와 같은 물리적 치수에서 직접 좌표를 썼다.
+    """
+    parts = [
+        #          (폭,   앞뒤,  높이)
+        box_mesh((0.00, 0.00, -0.10), (0.36, 0.22, 0.30)),   # 몸통 — 아래(-Z)
+        box_mesh((0.00, 0.00, 0.15), (0.20, 0.14, 0.18)),    # 머리 — 위(+Z)
+        box_mesh((0.06, -0.17, 0.15), (0.10, 0.26, 0.10)),   # 주둥이 — 앞(-Y)·오른쪽(+X)
+    ]
+    return _concat(parts)
+
+
+def _concat(parts):
+    verts, faces, off = [], [], 0
+    for v, f in parts:
+        verts.append(v)
+        faces.append(f + off)
+        off += v.shape[0]
+    return np.concatenate(verts, axis=0), np.concatenate(faces, axis=0)

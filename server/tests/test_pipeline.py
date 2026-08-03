@@ -49,6 +49,17 @@ DONOR_SIZE = 0.24
 DONOR_CROP_FRACTION = 0.85
 HALO = 1
 
+# 🔴 잡음 바닥값 (D5-b). **이 값은 실자산에 쓰면 안 된다.**
+#
+# 합성 경로에서 0.0 인 것은 추정이 아니라 **유도된 사실**이다: 부기 밖 청크는
+# 재디코딩되지 않고 부모 바이트를 그대로 승계하므로(package.py), 재디코딩 잡음이
+# 존재할 자리가 없다. 즉 "재디코딩 영역" 이 공집합이다.
+#
+# 실자산의 바닥값은 **편집 없이 인코드→디코드만 왕복시킨 대조군**에서 나오고,
+# 그것은 W3-A5000 에 배정돼 있다. 그 전에는 어떤 값도 가정하지 않는다 —
+# `test_preservation_refuses_to_judge_without_noise_floor` 가 그걸 강제한다.
+SYNTHETIC_NOISE_FLOOR = 0.0
+
 
 # ══════════════════════════════════════════════════════════════ 헬퍼
 def _chunks_of(cells: np.ndarray):
@@ -86,13 +97,14 @@ def _run_pipeline():
     report = metrics.evaluate(
         before=base_cells,
         after=sp.cells,
-        mask_cells=mask.cells,            # 효능 — 사용자가 지정한 원본 마스크
-        book_region_cells=mask.dilated,   # 보존 — halo 까지 팽창시킨 부기 영역
+        mask_cells=mask.cells,              # 효능 — 사용자가 지정한 원본 마스크
+        edited_region_cells=mask.dilated,   # 보존 — halo 까지 팽창시킨 편집 영역
         parent_blobs=parent_blobs,
-        child_blobs=pkg.blobs,            # 승계가 적용된 **최종** 세트
+        child_blobs=pkg.blobs,              # 승계가 적용된 **최종** 세트
         book=bk.book,
         full_bytes=pkg.full_bytes,
         delta_bytes=pkg.delta_bytes,
+        noise_floor=SYNTHETIC_NOISE_FLOOR,
     )
     return {
         "base": base_cells, "donor": donor_cells, "mask": mask, "splice": sp,
@@ -284,25 +296,112 @@ def test_manifest_carries_contract_and_mask_fingerprints(run):
     assert mf["bookkeeping"]["book"] == run["bk"].book
 
 
-# ══════════════════════════════════════════════════ 6. ★ 게이트 G2
-def test_efficacy_new_voxels_is_positive(run):
-    """★ 효능-필수. 0 이면 아무것도 안 한 것이다 (D5)."""
+# ══════════════════════════════════════════════════ 6. ★ 게이트 G2 (rev6)
+def test_efficacy_reports_new_and_removed_as_a_pair(run):
+    """★ 효능-필수 (D5-a ①). 신규만 보면 삭제에 눈이 먼다.
+
+    A5000 실측에서 신규 274 뒤에 제거 245 가 숨어 있었고 순증은 +29 였다.
+    제거가 0 이면 기증자가 옛 기하 **위에 겹쳐 박힌** 것이다 (비우기가 일을 안 했다).
+    """
+    d = run["report"].delta_in_mask
+    assert d.new > 0
+    assert d.removed > 0
+    assert d.churn == d.new + d.removed
+
+
+def test_largest_component_penalizes_the_assemble_path(run):
+    """🔴 **W3 발견.** rev6 G2 의 "최대 연결성분 / 신규 ≥ 0.8" 이 assemble 을 떨어뜨린다.
+
+    이 테스트는 통과를 주장하지 않는다 — **실측을 기록한다.** 픽스처를 깎아
+    0.8 을 넘기는 것은 대리 지표를 만드는 짓이라 하지 않았다.
+
+    원인은 구조적이다. 기증자 껍질이 옛 껍질과 교차하고, 교차한 셀은 before 에도
+    있으므로 "신규" 가 아니다. 그 링이 빠지면서 **한 덩어리인 껍질이 갈라진다.**
+
+        배치된 기증자 껍질의 최대성분비   1.000   ← 실제로는 한 덩어리
+        결과 점유 전체의 최대성분비       1.000
+        신규 복셀만의 최대성분비          0.731   ← G2 지표. 0.8 미달
+
+    A5000 의 273/274 = 0.996 은 **가산** 편집(빈 공간에 주둥이)이라 이 현상이 없다.
+    즉 이 문턱은 VoxHammer 경로에 맞춰져 있고 assemble 경로에는 안 맞는다.
+    D5 가 고친 것과 같은 종류의 병이다 — 판정 기준 변경은 Chat 의 몫이다.
+    """
     r = run["report"]
-    assert r.efficacy_new_voxels > 0
-    # 추가만 있고 제거가 0 이면 기증자가 옛 기하 위에 겹쳐 박힌 것이다.
-    assert r.efficacy_removed_voxels > 0
+    sp = run["splice"]
+
+    gate_metric = r.efficacy_largest_component
+    diagnostic = r.reference["efficacy_largest_component_of_result"]
+    donor_blob = metrics._largest_component_size(sp.donor_placed) / len(sp.donor_placed)
+
+    assert 0.7 < gate_metric < 0.8, f"실측이 바뀌었다: {gate_metric:.3f}"
+    assert diagnostic == 1.0, "결과 점유는 한 덩어리여야 한다"
+    assert donor_blob == 1.0, "배치된 기증자는 한 덩어리여야 한다"
+
+    # 지표가 잡음을 걸러내는 능력 자체는 살아 있다 (아래 음성 대조가 그걸 본다).
+    assert gate_metric > 0.5, "그렇다고 잡음 수준까지 떨어지지는 않는다"
 
 
-def test_efficacy_iou_in_mask_shows_real_change(run):
-    """★ 효능-정도. 마스크 안 IoU < 0.8 (D5)."""
-    assert run["report"].efficacy_iou_in_mask < 0.8
+def test_churn_ratio(run):
+    """★ 효능-필수 (D5-a ④). churn(안)/churn(밖) ≥ 3.0.
 
-
-def test_preservation_outside_mask(run):
-    """★ 보존. 마스크 밖 IoU > 0.99 AND 바이트 동일률 100%."""
+    ⚠️ 합성 디코더는 마스크 밖 churn 이 **구조적으로 0** 이라 `inf` 가 나온다.
+       실자산에서는 절대 안 나온다 (A5000 실측 4.97배). 그래서 이 통과는
+       "국소성이 증명됐다" 가 아니라 "합성 경로에서는 정의상 완전 국소" 라는 뜻이다.
+    """
     r = run["report"]
-    assert r.preservation_iou_out > 0.99
-    assert r.preservation_byte_identity == 1.0
+    assert r.churn_ratio >= 3.0
+    assert r.delta_outside.churn == 0, "합성 디코더인데 마스크 밖이 흔들렸다"
+    assert r.churn_ratio == float("inf")
+
+
+def test_inherited_byte_identity_is_a_regression_check_not_proof(run):
+    """★ 보존-A (D5-b). 승계 청크 바이트 동일률 100%.
+
+    🔴 이것은 **항진명제**다 — 부기 밖은 부모 바이트를 그대로 물려주니까.
+       100% 가 아니면 승계 경로가 깨진 것이지 기하가 바뀐 것이 아니다.
+    """
+    assert run["report"].inherited_byte_identity == 1.0
+
+
+def test_preservation_geometry_distance(run):
+    """★ 보존-B (D5-b). 재디코딩 영역 기하 거리 ≤ 잡음 바닥값.
+
+    합성 경로에서는 재디코딩 영역이 **공집합**이므로 거리가 0.0 이고 판정이 자명하다.
+    실자산에서는 A5000 이 대조군으로 바닥값을 만들어야 판정이 가능하다.
+    """
+    p = run["report"].preservation
+    assert p.distance == 0.0
+    assert p.baseline == SYNTHETIC_NOISE_FLOOR
+    assert p.passes is True
+
+
+def test_preservation_refuses_to_judge_without_noise_floor(run):
+    """★★ 잡음 바닥값 없이는 **판정을 거부**한다 (D5-b).
+
+    추정값으로 통과시키면 0.853 의 13% 가 잡음인지 누출인지 못 가른 채
+    "보존됨" 이라고 적게 된다. 계측은 되지만 판정은 안 된다.
+    """
+    r = run["report"]
+    bare = metrics.preservation_geometry_distance(
+        run["base"], run["splice"].cells, run["mask"].dilated
+    )
+    assert bare.distance == r.preservation.distance  # 계측은 된다
+    assert bare.baseline is None
+    with pytest.raises(metrics.NoiseFloorUnknown, match="잡음 바닥값"):
+        _ = bare.passes
+
+
+def test_gate_g2_refuses_without_noise_floor(run):
+    """게이트도 같은 이유로 거부한다 — 뒷문이 없어야 규칙이 지켜진다."""
+    bare = metrics.evaluate(
+        before=run["base"], after=run["splice"].cells,
+        mask_cells=run["mask"].cells, edited_region_cells=run["mask"].dilated,
+        parent_blobs=run["parent"], child_blobs=run["pkg"].blobs, book=run["bk"].book,
+        full_bytes=run["pkg"].full_bytes, delta_bytes=run["pkg"].delta_bytes,
+        noise_floor=None,
+    )
+    with pytest.raises(metrics.NoiseFloorUnknown):
+        bare.gate_g2()
 
 
 def test_transfer_saving(run):
@@ -310,10 +409,62 @@ def test_transfer_saving(run):
     assert run["report"].transfer_saving > 0.40
 
 
-def test_gate_g2_all_three_hold_together(run):
-    """(A)(B)(C) 가 **처음으로 함께** 성립하는지. 이 셋이 동시에 나와야 의미가 있다."""
-    gate = run["report"].gate_g2()
-    assert gate == {"efficacy": True, "preservation": True, "saving": True}
+def test_gate_g2_matches_rev6_wording(run):
+    """G2 판정이 rev6 §5 S2 문구와 1:1 인지.
+
+    ★ 효능 = 육안 확인 AND 신규>0 AND 연결성분≥0.8 AND churn비≥3.0
+    ★ 보존 = 승계 바이트 100% AND 기하거리 ≤ 바닥값
+    ★ 절감 = 절감 > 40%
+
+    보존·절감은 성립한다. 효능은 **연결성분 조건 하나 때문에** 떨어진다 —
+    위 `test_largest_component_penalizes_the_assemble_path` 가 그 이유다.
+    이걸 통과로 적으면 G2 를 잘못 닫는 것이므로 실측대로 둔다.
+    """
+    r = run["report"]
+    gate = r.gate_g2()
+
+    assert gate["preservation"] is True
+    assert gate["saving"] is True
+
+    # 효능의 세 숫자 조건 중 둘은 성립하고 하나가 안 된다.
+    assert r.delta_in_mask.new > 0
+    assert r.churn_ratio >= 3.0
+    assert r.efficacy_largest_component < 0.8
+    assert gate["efficacy_numeric"] is False
+
+
+def test_gate_g2_visual_confirmation_semantics():
+    """★ 원칙 7 — 육안 산출물이 없으면 미검증이다.
+
+    게이트 **로직**만 본다 (픽스처 수치와 무관하게). 숫자가 다 맞아도
+    `visual_confirmed` 가 없으면 효능은 **미결(None)** 이다 — 통과도 실패도 아니다.
+    코드가 만들 수 없는 사실을 코드가 통과시키지 않는다.
+    """
+    passing = metrics.MetricReport(
+        delta_in_mask=metrics.VoxelDelta(new=500, removed=400),
+        delta_outside=metrics.VoxelDelta(new=0, removed=0),
+        efficacy_largest_component=0.99,
+        churn_ratio=5.0,
+        inherited_byte_identity=1.0,
+        preservation=metrics.PreservationDistance(distance=0.0, baseline=0.0),
+        transfer_saving=0.68,
+    )
+    assert passing.gate_g2()["efficacy"] is None, "육안 확인 없이 효능이 판정됐다"
+    assert passing.gate_g2()["visual_confirmed"] is None
+    assert passing.gate_g2(visual_confirmed=True)["efficacy"] is True
+    assert passing.gate_g2(visual_confirmed=False)["efficacy"] is False
+
+    # 숫자가 안 되면 육안과 무관하게 False 다 (미결이 아니다).
+    failing = metrics.MetricReport(
+        delta_in_mask=metrics.VoxelDelta(new=0, removed=0),
+        delta_outside=metrics.VoxelDelta(new=0, removed=0),
+        efficacy_largest_component=0.0,
+        churn_ratio=0.0,
+        inherited_byte_identity=1.0,
+        preservation=metrics.PreservationDistance(distance=0.0, baseline=0.0),
+        transfer_saving=1.0,
+    )
+    assert failing.gate_g2()["efficacy"] is False
 
 
 # ══════════════════════════════════════════════ 7. ★★ 음성 대조
@@ -349,25 +500,58 @@ def test_noop_passes_preservation_and_saving_but_fails_efficacy():
     pkg = package_delta(parent_blobs, child_blobs, bk, mask=mask)
     report = metrics.evaluate(
         before=base_cells, after=noop.cells,
-        mask_cells=mask.cells, book_region_cells=mask.dilated,
+        mask_cells=mask.cells, edited_region_cells=mask.dilated,
         parent_blobs=parent_blobs, child_blobs=pkg.blobs, book=bk.book,
         full_bytes=pkg.full_bytes, delta_bytes=pkg.delta_bytes,
+        noise_floor=SYNTHETIC_NOISE_FLOOR,
     )
 
     # 보존·절감은 만점으로 통과한다.
-    assert report.preservation_iou_out == 1.0
-    assert report.preservation_byte_identity == 1.0
+    assert report.inherited_byte_identity == 1.0
+    assert report.preservation.distance == 0.0
+    assert report.preservation.passes is True
     assert report.transfer_saving == 1.0
 
-    # 효능은 반드시 떨어진다.
-    assert report.efficacy_new_voxels == 0
-    assert report.efficacy_iou_in_mask == 1.0
+    # 효능은 반드시 떨어진다 — 신규 복셀도, 연결성분도, churn 비도 전부.
+    assert report.delta_in_mask.new == 0
+    assert report.delta_in_mask.removed == 0
+    assert report.efficacy_largest_component == 0.0
+    assert report.churn_ratio == 0.0
 
-    gate = report.gate_g2()
+    gate = report.gate_g2(visual_confirmed=True)  # 육안까지 통과했다고 쳐도
     assert gate["preservation"] is True, "no-op 은 보존을 통과해야 한다 (그게 요점이다)"
     assert gate["saving"] is True, "no-op 은 절감을 통과해야 한다 (그게 요점이다)"
     assert gate["efficacy"] is False, (
         "🔴 no-op 이 효능을 통과했다. 효능 지표가 아무것도 막지 못한다는 뜻이다."
+    )
+
+
+def test_noise_only_edit_fails_the_largest_component_gate():
+    """★★ 두 번째 음성 대조 (D5-a ②) — **흩뿌려진 잡음**을 걸러내는지.
+
+    신규 복셀 수만 보면 "호박 머리 하나" 와 "표면 잡음 수백 개" 가 구분되지 않는다.
+    A5000 이 등록한 맹점이고, 273/274 라는 실측이 그것을 메웠다.
+
+    여기서는 마스크 안에 **서로 떨어진 복셀들**을 흩뿌려 놓는다. 신규 복셀 수는
+    많지만 최대 연결성분 비율이 낮아야 하고, 그래서 효능에서 떨어져야 한다.
+    """
+    base_cells = surface_voxelize(*snowman_mesh())
+    mask = build_mask(bbox=HEAD_BBOX, halo=HALO)
+
+    # 마스크 안에서 3칸 간격으로 셀을 흩뿌린다 — 26-이웃으로 서로 안 닿는다.
+    m = mask.cells
+    scattered = m[(m[:, 0] % 3 == 0) & (m[:, 1] % 3 == 0) & (m[:, 2] % 3 == 0)]
+    assert scattered.shape[0] > 20, "픽스처가 잡음을 충분히 못 만든다"
+
+    noisy = np.unique(np.concatenate([base_cells, scattered], axis=0), axis=0)
+
+    delta = metrics.efficacy_voxel_delta(base_cells, noisy, mask.cells)
+    largest = metrics.efficacy_largest_component(base_cells, noisy, mask.cells)
+
+    assert delta.new > 20, "신규 복셀 수 자체는 많다 — 그래서 이 지표만으론 못 거른다"
+    assert largest < 0.8, (
+        f"🔴 흩뿌린 잡음이 연결성분 게이트를 통과했다 ({largest:.3f}). "
+        "그러면 '호박 머리' 와 '표면 잡음' 을 구분하지 못한다."
     )
 
 
