@@ -64,7 +64,12 @@ __all__ = [
     "z_profile",
 ]
 
-SLAT = "slat"
+# 🔴 정본은 `pipeline/frames.py` 의 `VOXEL_GRID_SOURCE` 다 (D28, 맥북 소유).
+#    여기서 값을 **복사**하는 이유: 이 모듈은 A5000 이 리포 없이 단독으로 돌린다
+#    (deltacontract + numpy 만 있으면 된다). frames 를 import 하면 그 경로가 막힌다.
+#    복사본이 정본과 갈라지는 것은 `test_slatmask.py` 가 대조로 잡는다 —
+#    값을 두 곳에 두되 **드리프트는 테스트가 막는다.**
+SLAT = "slat_coords"      # == frames.VOXEL_GRID_SOURCE
 SURFACE = "surface"
 
 
@@ -181,8 +186,8 @@ def build_head3_mask(
 
     Args:
         cells:  (N,3) **slat 좌표**. 표면 복셀화 결과를 넣으면 거부된다.
-        source: 반드시 `SLAT`. 기본값을 두지 않는다 — 기본값이 있으면 다음
-                세션이 안 적고 지나가고, 그 순간 D28 이 무력해진다.
+        source: 반드시 `SLAT`(= `frames.VOXEL_GRID_SOURCE`). 기본값을 두지 않는다 —
+                기본값이 있으면 다음 세션이 안 적고 지나가고, 그 순간 D28 이 무력해진다.
         width_multiple: 머리 폭의 몇 배씩 좌우로 넓힐지. 1.0 = 좌우 각각 머리
                 폭만큼 → 총 3배 폭 (머리 3개 자리).
         manifest: 있으면 슬랫 총계와 대조해 입력이 정말 slat 인지 한 번 더 본다.

@@ -323,6 +323,44 @@ def debug_recolor(side: str) -> Response:
     return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
+# ── W9 편집 결과 자리 (A5000 이 낸다) ────────────────────────────────────
+#
+# recolor 자리와 같은 규칙이다: **import 로 묶지 않는다.** 산출물 모양은 `.cbin`
+# 청크 세트 하나뿐이므로(D8) 디렉터리 경로만 받는다. A5000 이 무엇을 노출하든
+# 이 화면은 다시 안 고친다. 없으면 "미도착" 이라고 적는다.
+#
+# ⚠️ 여기서 하는 표면 복셀화는 **그림용이다** (D28: 진단 전용). 이 좌표로 마스크를
+#    만들지 않는다 — 마스크는 A5000 이 slat 격자에서 만든다 (D34).
+W9_BEFORE = Path(os.environ.get("W9_BEFORE_DIR", str(ASSET_ROOT / "dragon-c" / "chunks")))
+W9_AFTER = Path(os.environ.get("W9_AFTER_DIR", str(ASSET_ROOT / "dragon-c" / "chunks_w9")))
+
+
+def _w9_ready() -> bool:
+    return any(W9_BEFORE.glob("*.cbin")) and any(W9_AFTER.glob("*.cbin"))
+
+
+@app.get("/debug/w9/{side}.{kind}.png")
+def debug_w9(side: str, kind: str) -> Response:
+    """W9 편집 결과 before/after. `kind` ∈ front · depth.
+
+    실루엣은 형태 변화(머리 3개)를, 깊이맵은 오목 디테일을 본다 — D19 가
+    육안 게이트의 정본을 깊이맵으로 정한 것과 같은 이유로 둘 다 낸다.
+    """
+    from server import debugview
+    from server.realasset import cbin_dir_to_occupancy
+
+    if side not in ("before", "after") or kind not in ("front", "depth"):
+        raise HTTPException(status_code=404, detail=f"side/kind 가 틀렸다: {side}.{kind}")
+    d = W9_BEFORE if side == "before" else W9_AFTER
+    if not any(d.glob("*.cbin")):
+        return Response(debugview.placeholder_png(), media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+    cells = cbin_dir_to_occupancy(d)          # 그림용 (D28 진단 전용)
+    png = (debugview.depth_png(cells) if kind == "depth"
+           else debugview.pane_png({"x": {1: debugview.silhouette_png_arr(cells, 1)}}, "x", 1))
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
 # ── W8 인계 (D27) ──────────────────────────────────────────────────────
 #
 # A5000 에 **밀어 넣을 수 없다**: tcp/22(ssh)·873(rsync) 이 닫혀 있고, 열려 있는
