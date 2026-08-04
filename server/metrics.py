@@ -72,7 +72,9 @@ __all__ = [
     "NoiseFloorUnknown",
     "PreservationDistance",
     "VoxelDelta",
+    "ContainmentNotEnforced",
     "churn_ratio",
+    "efficacy_change_component",
     "efficacy_iou_in_mask",
     "efficacy_largest_component",
     "efficacy_largest_component_of_result",
@@ -90,7 +92,7 @@ __all__ = [
 # rev6 §5 S2 의 G2 문구와 1:1 이다.
 GATE_METRICS = (
     "efficacy_new_voxels",           # > 0
-    "efficacy_largest_component",    # ≥ 0.8
+    "efficacy_change_component",     # ≥ 0.8  (D12: 신규 ∪ 제거)
     "churn_ratio",                   # ≥ 3.0
     "inherited_byte_identity",       # == 1.0
     "preservation_geometry_distance",  # ≤ 잡음 바닥값 (baseline 필수)
@@ -102,9 +104,18 @@ REFERENCE_METRICS = (
     "reference_silhouette_global_mean",
     "silhouette_masked_max",
     "efficacy_iou_in_mask",
+    "efficacy_largest_component",
     "efficacy_largest_component_of_result",
     "preservation_iou_out",
 )
+
+
+class ContainmentNotEnforced(RuntimeError):
+    """D13 — `strict_containment=False` 로 얻은 결과로 게이트를 재려 했다.
+
+    끄면 기증자가 마스크 밖으로 나가 보존이 조용히 무너진다 (W3/3090 실측
+    preservation_iou_out 0.345 · 절감 14.05%). 옵션이 아니라 **전제**다.
+    """
 
 
 class NoiseFloorUnknown(RuntimeError):
@@ -243,6 +254,43 @@ def efficacy_largest_component(
     if new_codes.size == 0:
         return 0.0
     return _largest_component_size(_decode(new_codes)) / float(new_codes.size)
+
+
+def efficacy_change_component(
+    before: np.ndarray, after: np.ndarray, region: np.ndarray
+) -> float:
+    """★ 효능-필수 (D12, rev7). **(신규 ∪ 제거)** 의 최대 연결성분 비율. [0,1].
+
+    ────────────────────────────────────────────────────────────────────
+    왜 "신규만" 에서 "신규 ∪ 제거" 로 바꿨나
+    ────────────────────────────────────────────────────────────────────
+    D5-a ② 의 원래 정의는 **가산 편집 전용**이었다. VoxHammer 가 빈 공간에 주둥이를
+    더한 경우에는 신규 복셀이 곧 변화 전체라 273/274 = 0.996 이 나온다.
+
+    치환 편집(assemble)에서는 기증자 껍질이 옛 껍질과 교차한다. 교차한 셀은
+    before 에도 있어 "신규" 가 아니고, 그 링이 신규 집합에서 빠지면서 **한 덩어리인
+    껍질이 두 조각으로 갈린다.** W3/맥북 실측:
+
+        배치된 기증자 껍질   1.000   ← 실제로는 한 덩어리
+        결과 점유 전체       1.000
+        신규 복셀만          0.731   ← 옛 정의. 문턱 0.8 미달
+
+    편집은 더하든 치환하든 **하나의 응집된 변화**여야 한다. 신규와 제거를 합치면
+    교차 링이 제거 쪽에 들어와 구멍이 메워지고, 두 경로가 같은 정의로 잡힌다.
+    문턱은 0.8 단일 유지 — 경로별 분리는 rev7 에서 기각됐다(그게 대리 지표를 만든다).
+
+    변화가 전혀 없으면 0.0 이다. no-op 이 여기서 떨어져야 하므로 1.0 이 아니다.
+    """
+    m = _codes(region)
+    b = np.intersect1d(_codes(before), m, assume_unique=True)
+    a = np.intersect1d(_codes(after), m, assume_unique=True)
+    changed = np.union1d(
+        np.setdiff1d(a, b, assume_unique=True),
+        np.setdiff1d(b, a, assume_unique=True),
+    )
+    if changed.size == 0:
+        return 0.0
+    return _largest_component_size(_decode(changed)) / float(changed.size)
 
 
 def efficacy_largest_component_of_result(
@@ -485,7 +533,7 @@ class MetricReport:
 
     delta_in_mask: VoxelDelta
     delta_outside: VoxelDelta
-    efficacy_largest_component: float
+    efficacy_change_component: float
     churn_ratio: float
     inherited_byte_identity: float
     preservation: PreservationDistance
@@ -499,7 +547,7 @@ class MetricReport:
             "efficacy_net_voxels": self.delta_in_mask.net,
             "outside_new_voxels": self.delta_outside.new,
             "outside_removed_voxels": self.delta_outside.removed,
-            "efficacy_largest_component": self.efficacy_largest_component,
+            "efficacy_change_component": self.efficacy_change_component,
             "churn_ratio": self.churn_ratio,
             "inherited_byte_identity": self.inherited_byte_identity,
             "preservation_geometry_distance": self.preservation.distance,
@@ -513,7 +561,7 @@ class MetricReport:
         *,
         visual_confirmed: Optional[bool] = None,
         min_new_voxels: int = 1,
-        min_largest_component: float = 0.8,
+        min_change_component: float = 0.8,
         min_churn_ratio: float = 3.0,
         min_inherited_identity: float = 1.0,
         min_transfer_saving: float = 0.40,
@@ -522,7 +570,7 @@ class MetricReport:
 
             ★ 효능   DebugView 에서 호박 머리가 육안으로 보인다 (사용자 확인)
                      AND 마스크 내 신규 복셀 > 0
-                     AND 최대 연결성분 / 신규 ≥ 0.8
+                     AND (신규 ∪ 제거)의 최대 연결성분 ≥ 0.8      ← D12 (rev7)
                      AND churn(안)/churn(밖) ≥ 3.0
             ★ 보존   승계 청크 바이트 동일률 100%
                      AND 재디코딩 영역 기하 거리 ≤ 잡음 바닥값
@@ -537,7 +585,7 @@ class MetricReport:
         """
         numeric_efficacy = (
             self.delta_in_mask.new >= min_new_voxels
-            and self.efficacy_largest_component >= min_largest_component
+            and self.efficacy_change_component >= min_change_component
             and self.churn_ratio >= min_churn_ratio
         )
         if visual_confirmed is None:
@@ -568,6 +616,7 @@ def evaluate(
     book: Sequence[str],
     full_bytes: int,
     delta_bytes: int,
+    containment_enforced: bool,
     noise_floor: Optional[float] = None,
 ) -> MetricReport:
     """전 지표를 한 번에 계산한다.
@@ -576,12 +625,25 @@ def evaluate(
         mask_cells:          효능을 재는 영역 — 사용자가 지정한 원본 마스크.
         edited_region_cells: 건드리겠다고 선언한 영역 — halo 까지 팽창시킨 마스크.
                              보존은 이 **밖**에서 잰다.
+        containment_enforced: 🔴 D13 — `SpliceResult.strict_containment` 를 그대로 넘겨라.
+                             False 면 계측조차 하지 않고 거부한다. 마스크 밖으로 나간
+                             기증자는 보존을 **정의상** 깨므로, 그 상태의 숫자는
+                             게이트로서 아무 뜻이 없다.
         noise_floor:         잡음 바닥값. None 이면 보존 **판정**이 거부된다 (계측은 됨).
+
+    Raises:
+        ContainmentNotEnforced: `containment_enforced=False` 일 때.
     """
+    if not containment_enforced:
+        raise ContainmentNotEnforced(
+            "strict_containment=False 로 얻은 결과로는 게이트를 잴 수 없다 (D13). "
+            "기증자가 마스크 밖으로 나가면 보존이 정의상 깨진다 — W3/3090 실측 "
+            "preservation_iou_out 0.345 · 절감 14.05%, 켜면 1.000000."
+        )
     return MetricReport(
         delta_in_mask=efficacy_voxel_delta(before, after, mask_cells),
         delta_outside=_delta_outside(before, after, edited_region_cells),
-        efficacy_largest_component=efficacy_largest_component(
+        efficacy_change_component=efficacy_change_component(
             before, after, mask_cells
         ),
         churn_ratio=churn_ratio(before, after, edited_region_cells),
@@ -596,6 +658,8 @@ def evaluate(
             "silhouette_global_mean": reference_silhouette_global_mean(before, after),
             "silhouette_masked_max": silhouette_masked_max(before, after, mask_cells),
             "efficacy_iou_in_mask": efficacy_iou_in_mask(before, after, mask_cells),
+            "efficacy_largest_component_new_only":
+                efficacy_largest_component(before, after, mask_cells),
             "efficacy_largest_component_of_result":
                 efficacy_largest_component_of_result(before, after, mask_cells),
             "preservation_iou_out": preservation_iou_out(

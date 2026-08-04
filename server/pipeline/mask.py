@@ -139,17 +139,31 @@ def build_mask(
 
 
 def top_region_cells(
-    occupancy: np.ndarray, fraction: float = 0.35, *, axis: int = 2
+    occupancy: np.ndarray,
+    fraction: float = 0.35,
+    *,
+    axis: int = 2,
+    per_slice: bool = True,
 ) -> np.ndarray:
-    """자산 점유의 **위쪽 `fraction`** 을 덮는 dense 박스 셀. `find_head_bbox` 이식분.
+    """자산 점유의 **위쪽 `fraction`** 을 덮는 마스크 셀. `find_head_bbox` 이식분.
 
-    눈사람의 머리처럼 "위쪽 일부" 를 고르는 관례적 마스크다. 기준은 [0,64) 전체가
-    아니라 **자산의 실제 점유 구간**이다 — 전체 격자를 기준으로 자르면 자산이 한쪽에
-    치우쳤을 때 아무것도 안 잡히거나 전부 잡힌다 (`assemble.crop_rows` 와 같은 이유).
+    기준은 [0,64) 전체가 아니라 **자산의 실제 점유 구간**이다 — 전체 격자를 기준으로
+    자르면 자산이 한쪽에 치우쳤을 때 아무것도 안 잡히거나 전부 잡힌다
+    (`assemble.crop_rows` 와 같은 이유).
 
-    가로 방향은 점유 bbox 전체를 덮는다. 머리만 좁게 감싸려고 가로까지 줄이면
-    마스크가 형상에 의존하게 되고, 그러면 마스크가 무엇을 덮었는지가 자산마다
-    달라져서 계측을 비교할 수 없다.
+    ────────────────────────────────────────────────────────────────────
+    🔴 `per_slice` — D11 부수 결정. 기본값이 True 다
+    ────────────────────────────────────────────────────────────────────
+    False 면 가로 방향으로 점유 bbox **전체**를 덮는 단일 직육면체가 나온다.
+    눈사람은 머리가 몸통보다 훨씬 좁아서, 그러면 머리 위 허공까지 마스크가 된다 —
+    W3 실측에서 마스크가 격자의 **21%(56,350셀)** 였다. 마스크가 그만큼 크면
+    "국소 편집" 이라는 전제 자체가 성립하지 않고, 전송 절감도 과대평가된다.
+
+    True 면 `axis` 방향 **슬라이스마다** 그 슬라이스의 점유 bbox 를 따로 잡는다.
+    결과는 형상을 계단 모양으로 감싸는 마스크다.
+
+    ⚠️ 대가: 마스크가 형상에 의존하게 된다. 자산이 다르면 마스크도 다르므로
+       **자산 간 계측을 직접 비교하지 마라.** 같은 자산의 before/after 비교는 무관하다.
     """
     a = np.asarray(occupancy, dtype=np.int64).reshape(-1, 3)
     if a.size == 0:
@@ -159,17 +173,34 @@ def top_region_cells(
     if axis not in (0, 1, 2):
         raise ValueError(f"axis 는 0/1/2 여야 한다: {axis}")
 
+    from deltacontract.coords import dense_cells  # noqa: PLC0415
+
     lo = a.min(axis=0)
     hi = a.max(axis=0)
     span = int(hi[axis] - lo[axis])
     cut = int(np.ceil(lo[axis] + span * (1.0 - fraction)))
-
-    box_lo = lo.copy()
-    box_hi = hi.copy() + 1  # [lo, hi) 반열림
-    box_lo[axis] = cut
-    if box_hi[axis] <= box_lo[axis]:
+    if hi[axis] + 1 <= cut:
         raise MaskEmpty(f"위쪽 {fraction:.0%} 영역이 비었다")
 
-    from deltacontract.coords import dense_cells  # noqa: PLC0415
+    if not per_slice:
+        box_lo, box_hi = lo.copy(), hi.copy() + 1
+        box_lo[axis] = cut
+        return dense_cells(box_lo, box_hi)
 
-    return dense_cells(box_lo, box_hi)
+    others = [i for i in (0, 1, 2) if i != axis]
+    parts = []
+    for s in range(cut, int(hi[axis]) + 1):
+        sl = a[a[:, axis] == s]
+        if sl.shape[0] == 0:
+            continue  # 그 높이에 아무것도 없으면 마스크도 없다
+        box_lo = np.empty(3, dtype=np.int64)
+        box_hi = np.empty(3, dtype=np.int64)
+        box_lo[axis], box_hi[axis] = s, s + 1
+        for i in others:
+            box_lo[i] = int(sl[:, i].min())
+            box_hi[i] = int(sl[:, i].max()) + 1
+        parts.append(dense_cells(box_lo, box_hi))
+
+    if not parts:
+        raise MaskEmpty(f"위쪽 {fraction:.0%} 영역이 비었다")
+    return canonical_sort(np.unique(np.concatenate(parts, axis=0), axis=0))

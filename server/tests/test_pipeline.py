@@ -22,10 +22,12 @@ from server.pipeline import (
     encode_chunks,
     occupancy_to_mesh,
     package_delta,
+    revoxelize_to_extent,
     splice,
     surface_voxelize,
     top_region_cells,
 )
+from server.pipeline.splice import fit_donor_to_mask
 from server.pipeline.delta import (
     Bookkeeping,
     audit_against_bytes,
@@ -33,7 +35,7 @@ from server.pipeline.delta import (
     verify_bookkeeping,
 )
 from server.pipeline.splice import SpliceResult
-from server.tests.fixtures import cube_mesh, snowman_mesh, sphere_mesh
+from server.tests.fixtures import cube_mesh, donor_mesh, snowman_mesh, sphere_mesh
 
 from deltacontract.assemble import AssemblyError
 from deltacontract.chunkbin import blob_hash, decode
@@ -42,12 +44,13 @@ from deltacontract.errors import BookkeepingMismatch, MaskEmpty
 from deltacontract.partition import partition_mesh
 
 # ── 픽스처 형상 상수 ───────────────────────────────────────────────────
-# 머리를 감싸는 NORMALIZED bbox. 머리 구(중심 z=0.20, 반지름 0.13)를 여유 있게 덮되,
-# 몸통을 물지 않는다 — 물면 보존 영역이 줄어서 절감률이 실제보다 좋아 보인다.
-HEAD_BBOX = ((-0.145, -0.145, 0.065), (0.145, 0.145, 0.335))
-DONOR_SIZE = 0.24
-DONOR_CROP_FRACTION = 0.85
+# 머리 마스크는 점유의 위쪽 HEAD_FRACTION 을 **슬라이스별 bbox** 로 감싼다 (D11 부수).
+# 예전의 단일 직육면체 bbox 는 가로로 몸통 폭까지 덮어서 마스크가 격자의 21% 였다.
+HEAD_FRACTION = 0.30
 HALO = 1
+
+# 예전 방식 — 비교·회귀용으로만 남긴다.
+HEAD_BBOX = ((-0.145, -0.145, 0.065), (0.145, 0.145, 0.335))
 
 # 🔴 잡음 바닥값 (D5-b). **이 값은 실자산에 쓰면 안 된다.**
 #
@@ -74,17 +77,25 @@ def _hashes(blobs):
 
 
 def _run_pipeline():
-    """관통 1회. 결과 일체를 돌려준다."""
+    """관통 1회. 결과 일체를 돌려준다.
+
+    D11(rev7) 이후 기증자는 **크롭하지 않는다.** 마스크의 복셀 범위에 맞춰 메시를
+    다시 복셀화하므로 호박 전체가 들어간다 — 뚜껑만 남던 문제가 여기서 사라진다.
+    마스크도 `per_slice=True` 로 머리를 계단 모양으로 감싼다.
+    """
     base_cells = surface_voxelize(*snowman_mesh())
-    donor_cells = surface_voxelize(*cube_mesh(size=DONOR_SIZE))
-    mask = build_mask(bbox=HEAD_BBOX, halo=HALO)
+    head_cells = top_region_cells(base_cells, fraction=HEAD_FRACTION)
+    mask = build_mask(head_cells, halo=HALO)
+
+    donor_verts, donor_faces = donor_mesh()
+    donor_cells, used_fill = fit_donor_to_mask(donor_verts, donor_faces, mask)
 
     sp = splice(
         base_cells,
         donor_cells,
         mask,
-        crop_fraction=DONOR_CROP_FRACTION,
-        strict_containment=True,
+        crop_fraction=1.0,          # 🔴 D11 — 크롭으로 크기를 맞추지 않는다
+        strict_containment=True,    # D13 — 전제
     )
 
     parent_blobs = _chunks_of(base_cells)
@@ -104,12 +115,13 @@ def _run_pipeline():
         book=bk.book,
         full_bytes=pkg.full_bytes,
         delta_bytes=pkg.delta_bytes,
+        containment_enforced=sp.strict_containment,
         noise_floor=SYNTHETIC_NOISE_FLOOR,
     )
     return {
         "base": base_cells, "donor": donor_cells, "mask": mask, "splice": sp,
         "parent": parent_blobs, "child": child_blobs, "bk": bk, "pkg": pkg,
-        "report": report,
+        "report": report, "used_fill": used_fill, "head_cells": head_cells,
     }
 
 
@@ -205,7 +217,7 @@ def test_splice_rejects_fractional_offset(run):
     with pytest.raises(AssemblyError, match="정수"):
         splice(
             run["base"], run["donor"], run["mask"],
-            crop_fraction=DONOR_CROP_FRACTION, offset=[0.5, 0, 0],
+            crop_fraction=1.0, offset=[0.5, 0, 0],
         )
 
 
@@ -309,36 +321,48 @@ def test_efficacy_reports_new_and_removed_as_a_pair(run):
     assert d.churn == d.new + d.removed
 
 
-def test_largest_component_penalizes_the_assemble_path(run):
-    """🔴 **W3 발견.** rev6 G2 의 "최대 연결성분 / 신규 ≥ 0.8" 이 assemble 을 떨어뜨린다.
+def test_d12_fixes_the_assemble_fragmentation_that_w3_found():
+    """★ D12 회귀 — W3 이 찾은 파편화를 새 정의가 실제로 고치는지.
 
-    이 테스트는 통과를 주장하지 않는다 — **실측을 기록한다.** 픽스처를 깎아
-    0.8 을 넘기는 것은 대리 지표를 만드는 짓이라 하지 않았다.
+    W3 구성(넓은 bbox 마스크 + 크롭한 정육면체 기증자)을 그대로 재현한다.
+    그 구성에서 기증자 껍질은 **한 덩어리**인데 "신규만" 정의는 0.8 을 못 넘겼다:
 
-    원인은 구조적이다. 기증자 껍질이 옛 껍질과 교차하고, 교차한 셀은 before 에도
-    있으므로 "신규" 가 아니다. 그 링이 빠지면서 **한 덩어리인 껍질이 갈라진다.**
+        배치된 기증자 껍질   1.000   ← 실제로는 한 덩어리
+        결과 점유 전체       1.000
+        신규 복셀만          0.731   ← 옛 정의. 문턱 미달
 
-        배치된 기증자 껍질의 최대성분비   1.000   ← 실제로는 한 덩어리
-        결과 점유 전체의 최대성분비       1.000
-        신규 복셀만의 최대성분비          0.731   ← G2 지표. 0.8 미달
+    원인은 구조적이다 — 기증자 껍질이 옛 껍질과 교차하고, 교차한 셀은 before 에도
+    있어 "신규" 가 아니다. 그 링이 빠지며 껍질이 두 조각으로 갈린다.
 
-    A5000 의 273/274 = 0.996 은 **가산** 편집(빈 공간에 주둥이)이라 이 현상이 없다.
-    즉 이 문턱은 VoxHammer 경로에 맞춰져 있고 assemble 경로에는 안 맞는다.
-    D5 가 고친 것과 같은 종류의 병이다 — 판정 기준 변경은 Chat 의 몫이다.
+    D12 는 제거를 합쳐서 그 링을 메운다. 같은 입력에서 문턱을 넘어야 한다.
     """
-    r = run["report"]
-    sp = run["splice"]
+    base_cells = surface_voxelize(*snowman_mesh())
+    mask = build_mask(bbox=HEAD_BBOX, halo=HALO)      # W3 의 넓은 bbox 마스크
+    donor_cells = surface_voxelize(*cube_mesh(size=0.24))
+    sp = splice(base_cells, donor_cells, mask, crop_fraction=0.85)
 
-    gate_metric = r.efficacy_largest_component
-    diagnostic = r.reference["efficacy_largest_component_of_result"]
+    new_only = metrics.efficacy_largest_component(base_cells, sp.cells, mask.cells)
+    d12 = metrics.efficacy_change_component(base_cells, sp.cells, mask.cells)
     donor_blob = metrics._largest_component_size(sp.donor_placed) / len(sp.donor_placed)
 
-    assert 0.7 < gate_metric < 0.8, f"실측이 바뀌었다: {gate_metric:.3f}"
-    assert diagnostic == 1.0, "결과 점유는 한 덩어리여야 한다"
     assert donor_blob == 1.0, "배치된 기증자는 한 덩어리여야 한다"
+    assert 0.7 < new_only < 0.8, f"W3 실측이 재현되지 않는다: {new_only:.3f}"
+    assert d12 >= 0.8, (
+        f"D12 정의가 파편화를 못 고쳤다: 신규만 {new_only:.3f} → 신규∪제거 {d12:.3f}"
+    )
 
-    # 지표가 잡음을 걸러내는 능력 자체는 살아 있다 (아래 음성 대조가 그걸 본다).
-    assert gate_metric > 0.5, "그렇다고 잡음 수준까지 떨어지지는 않는다"
+
+def test_d12_holds_on_the_current_pipeline(run):
+    """현재(D11) 파이프라인에서도 D12 가 성립한다.
+
+    마스크를 좁히고 기증자를 재복셀화한 뒤에는 옛 정의도 0.99 대로 올라온다 —
+    파편화가 **넓은 마스크 + 크롭**이 만든 것이었다는 방증이다. D12 는 두 구성
+    모두에서 성립한다.
+    """
+    r = run["report"]
+    assert r.efficacy_change_component == 1.0
+    assert r.reference["efficacy_largest_component_new_only"] > 0.98
+    assert r.reference["efficacy_largest_component_of_result"] == 1.0
 
 
 def test_churn_ratio(run):
@@ -398,7 +422,7 @@ def test_gate_g2_refuses_without_noise_floor(run):
         mask_cells=run["mask"].cells, edited_region_cells=run["mask"].dilated,
         parent_blobs=run["parent"], child_blobs=run["pkg"].blobs, book=run["bk"].book,
         full_bytes=run["pkg"].full_bytes, delta_bytes=run["pkg"].delta_bytes,
-        noise_floor=None,
+        containment_enforced=True, noise_floor=None,
     )
     with pytest.raises(metrics.NoiseFloorUnknown):
         bare.gate_g2()
@@ -416,21 +440,18 @@ def test_gate_g2_matches_rev6_wording(run):
     ★ 보존 = 승계 바이트 100% AND 기하거리 ≤ 바닥값
     ★ 절감 = 절감 > 40%
 
-    보존·절감은 성립한다. 효능은 **연결성분 조건 하나 때문에** 떨어진다 —
-    위 `test_largest_component_penalizes_the_assemble_path` 가 그 이유다.
-    이걸 통과로 적으면 G2 를 잘못 닫는 것이므로 실측대로 둔다.
+    rev7 에서 D11(재복셀화)·D12(신규 ∪ 제거)가 들어간 뒤 **숫자 조건 셋이 전부**
+    성립한다. 육안 확인만 남았고 그건 코드가 만들 수 없다 (원칙 7).
     """
     r = run["report"]
     gate = r.gate_g2()
 
+    assert r.delta_in_mask.new > 0
+    assert r.efficacy_change_component >= 0.8
+    assert r.churn_ratio >= 3.0
+    assert gate["efficacy_numeric"] is True
     assert gate["preservation"] is True
     assert gate["saving"] is True
-
-    # 효능의 세 숫자 조건 중 둘은 성립하고 하나가 안 된다.
-    assert r.delta_in_mask.new > 0
-    assert r.churn_ratio >= 3.0
-    assert r.efficacy_largest_component < 0.8
-    assert gate["efficacy_numeric"] is False
 
 
 def test_gate_g2_visual_confirmation_semantics():
@@ -443,7 +464,7 @@ def test_gate_g2_visual_confirmation_semantics():
     passing = metrics.MetricReport(
         delta_in_mask=metrics.VoxelDelta(new=500, removed=400),
         delta_outside=metrics.VoxelDelta(new=0, removed=0),
-        efficacy_largest_component=0.99,
+        efficacy_change_component=0.99,
         churn_ratio=5.0,
         inherited_byte_identity=1.0,
         preservation=metrics.PreservationDistance(distance=0.0, baseline=0.0),
@@ -458,7 +479,7 @@ def test_gate_g2_visual_confirmation_semantics():
     failing = metrics.MetricReport(
         delta_in_mask=metrics.VoxelDelta(new=0, removed=0),
         delta_outside=metrics.VoxelDelta(new=0, removed=0),
-        efficacy_largest_component=0.0,
+        efficacy_change_component=0.0,
         churn_ratio=0.0,
         inherited_byte_identity=1.0,
         preservation=metrics.PreservationDistance(distance=0.0, baseline=0.0),
@@ -503,7 +524,7 @@ def test_noop_passes_preservation_and_saving_but_fails_efficacy():
         mask_cells=mask.cells, edited_region_cells=mask.dilated,
         parent_blobs=parent_blobs, child_blobs=pkg.blobs, book=bk.book,
         full_bytes=pkg.full_bytes, delta_bytes=pkg.delta_bytes,
-        noise_floor=SYNTHETIC_NOISE_FLOOR,
+        containment_enforced=True, noise_floor=SYNTHETIC_NOISE_FLOOR,
     )
 
     # 보존·절감은 만점으로 통과한다.
@@ -515,7 +536,7 @@ def test_noop_passes_preservation_and_saving_but_fails_efficacy():
     # 효능은 반드시 떨어진다 — 신규 복셀도, 연결성분도, churn 비도 전부.
     assert report.delta_in_mask.new == 0
     assert report.delta_in_mask.removed == 0
-    assert report.efficacy_largest_component == 0.0
+    assert report.efficacy_change_component == 0.0
     assert report.churn_ratio == 0.0
 
     gate = report.gate_g2(visual_confirmed=True)  # 육안까지 통과했다고 쳐도
@@ -568,3 +589,86 @@ def test_noop_is_invisible_to_the_discarded_global_metric():
         "재현하지 못한다"
     )
     assert "silhouette_global_mean" not in metrics.GATE_METRICS
+
+
+# ══════════════════════════════════ 8. D11 부수 — 마스크 축소
+def test_per_slice_mask_is_much_smaller_than_bbox_mask():
+    """★ D11 부수 — 슬라이스별 bbox 가 마스크를 실제로 좁히는지.
+
+    단일 직육면체 bbox 는 가로로 **몸통 폭까지** 덮는다. 눈사람은 머리가 몸통보다
+    훨씬 좁으므로 머리 위 허공이 통째로 마스크가 된다. 마스크가 크면 "국소 편집"
+    전제가 무너지고 전송 절감도 과대평가된다 (W3/3090 실측 격자의 21%).
+    """
+    base = surface_voxelize(*snowman_mesh())
+    flat = top_region_cells(base, fraction=HEAD_FRACTION, per_slice=False)
+    stair = top_region_cells(base, fraction=HEAD_FRACTION, per_slice=True)
+
+    assert stair.shape[0] < flat.shape[0] * 0.5, (
+        f"슬라이스별 bbox 가 마스크를 못 좁혔다: {flat.shape[0]} → {stair.shape[0]}"
+    )
+    # 계단 마스크는 평면 마스크의 부분집합이다 — 새 셀을 만들어내지 않는다.
+    assert set(metrics._codes(stair).tolist()) <= set(metrics._codes(flat).tolist())
+
+
+def test_per_slice_mask_still_covers_the_head_occupancy():
+    """좁히더라도 머리 점유는 전부 덮어야 한다 — 안 덮으면 옛 기하가 남는다."""
+    base = surface_voxelize(*snowman_mesh())
+    stair = top_region_cells(base, fraction=HEAD_FRACTION, per_slice=True)
+    cut = int(stair[:, 2].min())
+
+    head_occ = base[base[:, 2] >= cut]
+    assert set(metrics._codes(head_occ).tolist()) <= set(metrics._codes(stair).tolist())
+
+
+# ══════════════════════════════════ 9. D13 — strict_containment 는 전제
+def test_splice_defaults_to_strict_containment():
+    """D13 — 기본값이 True 다. 켜는 것을 잊을 수 있으면 전제가 아니다."""
+    import inspect
+
+    sig = inspect.signature(splice)
+    assert sig.parameters["strict_containment"].default is True
+
+
+def test_gate_refuses_results_obtained_without_containment(run):
+    """★★ D13 — `strict_containment=False` 로 얻은 결과로는 게이트를 잴 수 없다.
+
+    끄면 기증자가 마스크 밖으로 나가 보존이 조용히 무너진다
+    (W3/3090 실측 preservation_iou_out 0.345 · 절감 14.05%, 켜면 1.000000).
+    계측조차 하지 않고 거부한다 — 숫자가 나오면 누군가는 그걸 쓴다.
+    """
+    with pytest.raises(metrics.ContainmentNotEnforced, match="D13"):
+        metrics.evaluate(
+            before=run["base"], after=run["splice"].cells,
+            mask_cells=run["mask"].cells, edited_region_cells=run["mask"].dilated,
+            parent_blobs=run["parent"], child_blobs=run["pkg"].blobs,
+            book=run["bk"].book, full_bytes=run["pkg"].full_bytes,
+            delta_bytes=run["pkg"].delta_bytes,
+            containment_enforced=False, noise_floor=SYNTHETIC_NOISE_FLOOR,
+        )
+
+
+def test_splice_result_records_containment(run):
+    """게이트가 물어볼 수 있도록 결과가 그 사실을 들고 다닌다."""
+    assert run["splice"].strict_containment is True
+
+
+# ══════════════════════════════════ 10. D11 — 크롭 없이 들어간다
+def test_donor_fits_the_mask_without_cropping(run):
+    """★ D11 의 목표. 기증자가 **크롭 없이** 마스크에 들어간다.
+
+    예전에는 crop ≤ 0.30 에서만 들어가서 화면에 뜨는 것이 호박 위쪽 30%(뚜껑+꼭지)
+    뿐이었다. 재복셀화 후에는 crop_fraction=1.0 으로 전체가 들어간다.
+    """
+    sp, mask = run["splice"], run["mask"]
+
+    assert sp.crop_fraction == 1.0, "크롭으로 크기를 맞추고 있다"
+    assert sp.n_donor_outside_mask == 0
+    assert run["used_fill"] >= 0.9, f"자동 축소가 크게 걸렸다: {run['used_fill']}"
+
+    donor_span = run["donor"].max(axis=0) - run["donor"].min(axis=0) + 1
+    mask_span = mask.cells.max(axis=0) - mask.cells.min(axis=0) + 1
+    assert np.all(donor_span <= mask_span + 2), (
+        f"기증자 span {donor_span.tolist()} 이 마스크 span {mask_span.tolist()} 를 넘는다"
+    )
+    # 그리고 마스크를 실제로 채운다 — 한 축이라도 닿아야 "맞춘" 것이다.
+    assert np.any(donor_span >= mask_span - 2)

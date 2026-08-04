@@ -43,8 +43,71 @@ from deltacontract.coords import (  # type: ignore[import-not-found]
 )
 
 from .mask import MaskResult
+from .voxelize import revoxelize_to_extent
 
-__all__ = ["SpliceResult", "splice"]
+__all__ = ["SpliceResult", "fit_donor_to_mask", "splice"]
+
+
+def fit_donor_to_mask(
+    donor_vertices: np.ndarray,
+    donor_faces: np.ndarray,
+    mask: MaskResult,
+    *,
+    fill: float = 1.0,
+    min_fill: float = 0.30,
+    oversample: float = 2.0,
+) -> tuple:
+    """D11 — 기증자 **메시**를 마스크 복셀 범위에 맞춰 다시 복셀화한다.
+
+    ────────────────────────────────────────────────────────────────────
+    🔴 왜 크롭이 아니라 재복셀화인가
+    ────────────────────────────────────────────────────────────────────
+    base 와 donor 는 **각자 독립적으로** NORMALIZED 격자를 꽉 채우게 정규화된다.
+    W3/3090 실측: base span 49×50×64 · donor span 60×60×64 · 머리 마스크 span 49×50×23.
+    즉 기증자를 그대로 두면 `crop ≤ 0.30` 에서만 마스크에 들어가고, 화면에 뜨는 것은
+    **호박의 위쪽 30%(뚜껑+꼭지)** 뿐이다. 삼각눈도 톱니입도 잘려 나간다.
+    게이트는 통과하는데 "할로윈 호박 머리" 로는 안 보인다.
+
+    크기를 맞추는 올바른 자리는 크롭이 아니라 **복셀화 해상도**다.
+    `revoxelize_to_extent` 가 연속 메시를 새 cell_size 로 래스터화한다 —
+    희소 좌표를 곱하는 것이 아니므로 계약이 금지한 스케일이 아니다.
+
+    ────────────────────────────────────────────────────────────────────
+    자동 축소 (`min_fill`)
+    ────────────────────────────────────────────────────────────────────
+    마스크는 `per_slice=True` 이후 **계단 모양**이다. 기증자를 마스크의 bbox 에
+    맞추면 모서리가 계단 밖으로 삐져나올 수 있고, 그러면 D13 이 거부한다.
+    여기서는 담길 때까지 `fill` 을 0.02 씩 줄인다 — 문턱을 넘기려는 조정이 아니라
+    **기하학적 적합**이다. 결정적이고, 실제로 쓴 값을 함께 돌려준다.
+
+    Returns:
+        (donor_cells, used_fill). `donor_cells` 는 격자 중앙 부근에 있다 —
+        배치는 `splice()` 가 `place_cells` 로 한다.
+    """
+    if not (0.0 < min_fill <= fill <= 1.0):
+        raise ValueError(f"0 < min_fill({min_fill}) ≤ fill({fill}) ≤ 1 이어야 한다")
+
+    mask_span = mask.cells.max(axis=0) - mask.cells.min(axis=0) + 1
+    allowed = _codes(mask.dilated)
+
+    f = float(fill)
+    while f >= min_fill - 1e-9:
+        cells = revoxelize_to_extent(
+            donor_vertices, donor_faces, mask_span, oversample=oversample, fill=f
+        )
+        # 마스크 중심에 놓았을 때 담기는지만 본다. 실제 배치는 splice() 가 한다.
+        off = np.rint(
+            (mask.cells.min(axis=0) + mask.cells.max(axis=0)) / 2.0
+            - (cells.min(axis=0) + cells.max(axis=0)) / 2.0
+        ).astype(np.int64)
+        if not np.any(~np.isin(_codes(cells + off), allowed)):
+            return cells, f
+        f -= 0.02
+
+    raise AssemblyError(
+        f"기증자를 마스크 안에 담을 수 없다 (fill 을 {fill} → {min_fill} 까지 줄여도 "
+        "계단 마스크 밖으로 나간다). 마스크를 넓히거나 min_fill 을 낮춰라."
+    )
 
 
 @dataclass(frozen=True)
@@ -62,6 +125,7 @@ class SpliceResult:
     n_cleared_occupied: int      # 🔴 비우기가 실제로 지운 점유 셀 수 (§5 S2-7)
     n_donor_outside_mask: int    # 기증자가 마스크 밖으로 삐져나간 셀 수
     n_donor_overlap_kept: int    # 기증자가 보존 영역과 겹친 셀 수
+    strict_containment: bool = True  # D13 — 게이트 판정에 이 값이 필요하다
 
     @property
     def n_result(self) -> int:
@@ -85,7 +149,7 @@ def splice(
     crop_keep: str = "top",
     offset: Optional[Sequence[int]] = None,
     seat_axis: int = 2,
-    strict_containment: bool = False,
+    strict_containment: bool = True,
 ) -> SpliceResult:
     """마스크 자리를 비우고 기증자를 끼워 넣는다.
 
@@ -95,9 +159,11 @@ def splice(
         mask:        `build_mask()` 결과. `mask.dilated` 가 비울 영역이다.
         crop_fraction: 기증자에서 가져올 비율. **크기 조절은 이것뿐이다.**
         offset:      정수 평행이동. None 이면 `fit_offset` 이 관례 배치를 계산한다.
-        strict_containment: True 면 기증자가 마스크 밖으로 나갈 때 예외를 던진다.
-                     마스크 밖으로 나간 기증자 셀은 **보존(B)을 직접 깨므로**,
-                     보존을 게이트로 재는 실험에서는 켜라.
+        strict_containment: 🔴 **D13 — 옵션이 아니라 전제다. 기본값 True.**
+                     끄면 기증자가 마스크 밖으로 나가고 보존이 조용히 무너진다
+                     (W3/3090 실측 preservation_iou_out 0.345 · 절감 14.05%.
+                     켜면 1.000000). False 로 얻은 결과로는 게이트를 잴 수 없다 —
+                     `metrics.evaluate()` 가 `containment_enforced=False` 를 거부한다.
 
     Returns:
         SpliceResult. 결과 점유는 canonical 순이다.
@@ -160,4 +226,5 @@ def splice(
         n_cleared_occupied=n_cleared_occupied,
         n_donor_outside_mask=n_donor_outside_mask,
         n_donor_overlap_kept=n_donor_overlap_kept,
+        strict_containment=bool(strict_containment),
     )

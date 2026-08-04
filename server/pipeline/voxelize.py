@@ -33,7 +33,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -53,6 +53,7 @@ __all__ = [
     "load_mesh",
     "normalize_to_normalized",
     "occupancy_to_mesh",
+    "revoxelize_to_extent",
     "surface_voxelize",
     "voxelize_asset",
 ]
@@ -176,6 +177,62 @@ def surface_voxelize(
     if not out:
         return np.zeros((0, 3), dtype=np.int64)
     return canonical_sort(np.unique(np.concatenate(out, axis=0), axis=0))
+
+
+def revoxelize_to_extent(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    target_extent: Sequence[int],
+    *,
+    oversample: float = 2.0,
+    fill: float = 1.0,
+) -> np.ndarray:
+    """D11 — 메시를 **다른 해상도로 다시 복셀화**한다. 좌표 스케일이 아니다.
+
+    ────────────────────────────────────────────────────────────────────
+    🔴 왜 이것은 계약이 금지한 스케일이 아닌가
+    ────────────────────────────────────────────────────────────────────
+    `assemble.py` 가 금지하는 것은 **이미 만들어진 희소 정수 좌표를 곱하는 것**이다.
+    좌표를 2배 하면 이웃이 이웃이 아니게 되고(6-이웃 유지율 s=2.0 → 0%) 디코더가
+    고립 복셀마다 조각난 표면을 만든다.
+
+    여기서 하는 것은 **연속 메시**를 다른 cell_size 로 새로 래스터화하는 것이다.
+    인접성은 곱해지는 것이 아니라 처음부터 다시 구성된다. 그래서 격자가 촘촘하든
+    성기든 표면은 여전히 표면이다.
+
+        좌표 스케일   cells * s → rint → 구멍이 생긴다 (또는 뭉개진다)
+        재복셀화      mesh * s → 래스터화 → 표면이 표면으로 남는다
+
+    이 주장은 `server/tests/test_revoxelize.py` 가 **숫자로** 검증한다. 검증이
+    깨지면 D11 전체가 무너지므로, 그 테스트를 지우지 마라.
+
+    ⚠️ `place_cells()` 의 소수·중복 거부는 그대로 살아 있다. 이 함수는 그 앞단이다.
+
+    Args:
+        target_extent: (3,) 목표 복셀 범위. 보통 마스크의 복셀 span.
+        fill:          목표 범위를 얼마나 채울지. 1.0 이면 가장 빡빡한 축이 꽉 찬다.
+
+    Returns:
+        (N,3) VOXEL 셀. **격자 중앙 부근**에 놓여 있다 — 배치는 호출부가
+        `place_cells` 로 한다.
+    """
+    v = normalize_to_normalized(vertices)
+    lo, hi = v.min(axis=0), v.max(axis=0)
+    extent = hi - lo
+    target = np.asarray(target_extent, dtype=np.float64)
+    if target.shape != (3,):
+        raise ValueError(f"target_extent 는 길이 3 이어야 한다: {target.shape}")
+    if np.any(target <= 0):
+        raise ValueError(f"target_extent 가 0 이하다: {target.tolist()}")
+    if not (0.0 < fill <= 1.0):
+        raise ValueError(f"fill 은 (0,1] 이어야 한다: {fill}")
+
+    target_normalized = target / VOXEL_RES * NORMALIZED_SPAN
+    # 등비 축소/확대. 축마다 다른 배율을 쓰면 형상이 찌그러지고, 그 왜곡은
+    # "호박처럼 안 보인다" 를 고치려는 이 작업의 목적 자체를 무너뜨린다.
+    scale = float(np.min(target_normalized / np.maximum(extent, 1e-12))) * fill
+    center = (lo + hi) / 2.0
+    return surface_voxelize((v - center) * scale, faces, oversample=oversample)
 
 
 def voxelize_asset(

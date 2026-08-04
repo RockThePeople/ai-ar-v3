@@ -21,7 +21,9 @@ import numpy as np
 __all__ = [
     "asymmetric_asset_glb_frame",
     "asymmetric_asset_voxel_frame",
+    "box_mesh",
     "cube_mesh",
+    "donor_mesh",
     "snowman_mesh",
     "sphere_mesh",
 ]
@@ -174,3 +176,37 @@ def _concat(parts):
         faces.append(f + off)
         off += v.shape[0]
     return np.concatenate(verts, axis=0), np.concatenate(faces, axis=0)
+
+
+def donor_mesh(radius: float = 0.30, n_lat: int = 24, n_lon: int = 48,
+               ribs: int = 8, rib_depth: float = 0.16):
+    """기증자 — **호박** 대역. 세로 골이 파인 납작한 구.
+
+    정육면체가 아니라 이걸 쓰는 이유는 D11 때문이다. D11 이 고치려는 증상은
+    "게이트는 통과하는데 호박으로 안 보인다" 이므로, 픽스처도 **특징이 있는 형상**
+    이어야 재복셀화가 그 특징을 살리는지 볼 수 있다. 정육면체는 해상도를 반으로
+    줄여도 정육면체라서 아무것도 검증하지 못한다.
+
+    골(rib)은 경도 방향 코사인으로 반지름을 흔들어 만든다. 납작한 비율(z 0.78)까지
+    합치면 구·정육면체 어느 것과도 다른 실루엣이 나온다.
+    """
+    c = np.zeros(3)
+    lat = np.linspace(0.0, np.pi, n_lat + 1)
+    lon = np.linspace(0.0, 2.0 * np.pi, n_lon, endpoint=False)
+    la, lo = np.meshgrid(lat, lon, indexing="ij")
+    r = radius * (1.0 - rib_depth * (0.5 + 0.5 * np.cos(ribs * lo)) * np.sin(la))
+    x = r * np.sin(la) * np.cos(lo)
+    y = r * np.sin(la) * np.sin(lo)
+    z = r * np.cos(la) * 0.78          # 납작하게
+    verts = np.stack([x, y, z], axis=-1).reshape(-1, 3) + c
+
+    faces = []
+    for i in range(n_lat):
+        for j in range(n_lon):
+            a = i * n_lon + j
+            b = i * n_lon + (j + 1) % n_lon
+            d = (i + 1) * n_lon + j
+            e = (i + 1) * n_lon + (j + 1) % n_lon
+            faces.append([a, d, e])
+            faces.append([a, e, b])
+    return verts, np.asarray(faces, dtype=np.int64)

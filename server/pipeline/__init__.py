@@ -27,6 +27,7 @@ from .voxelize import (  # noqa: F401
     load_mesh,
     normalize_to_normalized,
     occupancy_to_mesh,
+    revoxelize_to_extent,
     surface_voxelize,
     voxelize_asset,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "load_mesh",
     "normalize_to_normalized",
     "occupancy_to_mesh",
+    "revoxelize_to_extent",
     "surface_voxelize",
     "voxelize_asset",
     "HALO_DEFAULT",
