@@ -44,11 +44,18 @@ from typing import List, Tuple
 
 import numpy as np
 
+# 격자 해상도는 **계약 상수**다. 여기서 복제하지 않는다 — 두 곳에 있으면 갈라진다.
+from deltacontract.coords import VOXEL_RES  # type: ignore[import-not-found]
+
 __all__ = [
     "SURFACE_VOXELIZATION_ROLE",
+    "SURFACE_VOXELIZATION_SOURCE",
     "VOXEL_GRID_SOURCE",
     "GridSourceMismatch",
     "assert_slat_grid",
+    "is_x_symmetric",
+    "mirror_x",
+    "symmetrize_x",
     "DECODER_NATIVE_TO_GLB",
     "DECODER_NATIVE_TO_VOXEL",
     "GLB_TO_VOXEL",
@@ -211,6 +218,11 @@ VOXEL_GRID_SOURCE = "slat_coords"
 #: 우리 표면 복셀화의 지위. 정본이 아니다.
 SURFACE_VOXELIZATION_ROLE = "diagnostic_only"
 
+#: 자체 표면 복셀화로 만든 좌표의 출처 이름. `MaskResult.grid_source` 기본값이다 (D28-a).
+#: 기본값을 정본으로 두지 않는다 — 아무 생각 없이 만든 마스크가 판정을 통과하면
+#: D28-a 가 아무것도 막지 못한다.
+SURFACE_VOXELIZATION_SOURCE = "surface_voxelize"
+
 
 class GridSourceMismatch(ValueError):
     """마스크가 정본이 아닌 격자에서 만들어졌다 (D28).
@@ -237,6 +249,69 @@ def assert_slat_grid(grid_source: str, where: str = "") -> None:
             "근거가 될 수 없다. 실측: 같은 자산에서 3090 z=45 vs A5000 z=44 로 "
             "한 칸 밀렸고, 그 한 칸이 '목 극소점 위' 와 '극소점에서' 를 갈랐다."
         )
+
+
+# ══════════════════════════════ D35 — 다섯 번째 함정: **좌우 대칭은 X 를 못 가린다**
+#
+# 🔴 전수 탐색(D9)이 답을 고를 수 있었던 것은 **소년상이 비대칭**이었기 때문이다.
+#    좌우 대칭 자산에서는 그 방법이 통하지 않는다.
+#
+# W8 실측 (dragon-c, 날개 둘 — 좌우 대칭):
+#     전수 탐색 1위 0.8231 vs 2위 0.8146 — 격차 **1.01배**.
+#     2위는 같은 순열의 **X 반전**이다. 소년상은 4.8배였다 — 그땐 안 보였다.
+#     VoxHammer 자체 복셀화로 교차 확인해도 identity 0.7486 vs mirror-X 0.7463.
+#     Y·Z 는 명확하다 (0.052 / 0.044 로 확실히 오답) — **X 만** 못 가린다.
+#
+# ⇒ IoU 로는 원리적으로 못 가린다. 대칭 자산에서 X 반전은 자기 자신과 거의 같기 때문이다.
+#
+# ★ 해법 (최소): **마스크를 X 대칭으로 만든다.**
+#   그러면 X 반전이 마스크를 바꾸지 않으므로 **모호성이 무해해진다.** 고를 필요가 없다.
+#   D22② 의 "좌우로 머리 폭만큼 넓힌다" 를 그대로 따르면 자연히 대칭이 된다.
+#
+# ⚠️ 비대칭 마스크가 필요해지면 X 를 특정할 **fiducial**(비대칭 표식)을 자산과 함께
+#    보내야 한다. 그때 다시 정한다 — 지금 없는 것을 있는 척하지 않는다.
+
+
+def mirror_x(cells: np.ndarray) -> np.ndarray:
+    """VOXEL 셀을 X 축으로 반전한다: `x → VOXEL_RES-1-x` (D35).
+
+    대칭성 검사와 대조군에 쓴다. 파이프라인이 이걸 부를 일은 없다 —
+    부를 일이 생겼다면 X 방향을 특정해야 하는 상황이고, 그건 fiducial 문제다.
+    """
+    a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if a.size == 0:
+        return a.copy()
+    out = a.copy()
+    out[:, 0] = (VOXEL_RES - 1) - out[:, 0]
+    return out
+
+
+def is_x_symmetric(cells: np.ndarray) -> bool:
+    """이 셀 집합이 X 반전에 대해 불변인가 (D35).
+
+    True 면 X 반전 모호성이 **무해하다** — 어느 쪽을 골라도 같은 마스크다.
+    """
+    a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if a.size == 0:
+        return True
+    lhs = np.unique(a, axis=0)
+    rhs = np.unique(mirror_x(a), axis=0)
+    return lhs.shape == rhs.shape and bool(np.array_equal(lhs, rhs))
+
+
+def symmetrize_x(cells: np.ndarray) -> np.ndarray:
+    """마스크를 X 대칭으로 만든다 — 자기 자신과 X 반전의 **합집합** (D35).
+
+    이것이 대칭 자산에서 X 모호성을 다루는 방법이다. 축을 고르지 않는다 —
+    **고를 필요가 없게 만든다.**
+
+    ⚠️ 마스크가 넓어진다. 그 대가로 "X 를 잘못 골랐다" 는 실패 모드가 사라진다.
+       IoU 로 못 가리는 것을 억지로 고르는 것보다 낫다.
+    """
+    a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if a.size == 0:
+        return a.copy()
+    return np.unique(np.concatenate([a, mirror_x(a)], axis=0), axis=0)
 
 
 def assert_not_identity(transform: AxisTransform, where: str = "") -> None:

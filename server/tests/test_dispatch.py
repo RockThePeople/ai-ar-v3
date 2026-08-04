@@ -244,3 +244,59 @@ def test_d30_dispatch_knows_every_op_in_the_schema():
     """
     known = set().union(*(cap.supported for cap in CONSUMERS.values()))
     assert known == set(OPS), f"소비자가 모르는 op: {set(OPS) - known}"
+
+
+# ══════════════════════════ 7. D28-a — 격자 출처를 **구조로** 강제한다
+def test_mask_carries_its_grid_source():
+    """★ D28-a — 마스크가 자기 격자 출처를 들고 다닌다.
+
+    D28 의 `assert_slat_grid()` 는 호출부가 자발적으로 부를 때만 돈다. 좌표 함정이
+    이미 다섯이라 자발성에 기댈 자리가 아니다.
+    """
+    import numpy as np
+
+    from server.pipeline import VOXEL_GRID_SOURCE, build_mask
+    from server.pipeline.frames import SURFACE_VOXELIZATION_SOURCE
+
+    cells = np.array([[10, 10, 10], [11, 10, 10]], dtype=np.int64)
+
+    # 기본값은 **진단용**이다 — 정본이 아니다.
+    default = build_mask(cells, halo=1)
+    assert default.grid_source == SURFACE_VOXELIZATION_SOURCE
+    assert not default.is_canonical_grid
+
+    slat = build_mask(cells, halo=1, grid_source=VOXEL_GRID_SOURCE)
+    assert slat.is_canonical_grid
+
+
+def test_diagnostic_mask_is_refused_for_judgement():
+    """★★ 자체 복셀화로 만든 마스크로는 판정할 수 없다 (D28-a).
+
+    실측: 같은 dragon-c 를 3090 z=45 / A5000 z=44 로 봤다. 축이 맞아도 한 칸
+    밀리고, 그 한 칸이 "목 극소점 위" 와 "극소점에서" 를 갈랐다.
+    """
+    import numpy as np
+    import pytest as _pytest
+
+    from server.pipeline import VOXEL_GRID_SOURCE, build_mask
+    from server.pipeline.frames import GridSourceMismatch
+
+    cells = np.array([[10, 10, 10]], dtype=np.int64)
+
+    with _pytest.raises(GridSourceMismatch, match="slat_coords"):
+        build_mask(cells, halo=1).require_slat_grid("head3mask")
+
+    build_mask(cells, halo=1, grid_source=VOXEL_GRID_SOURCE).require_slat_grid()
+
+
+def test_empty_grid_source_is_rejected():
+    """출처를 빈 값으로 두면 검사가 무력해진다."""
+    import numpy as np
+    import pytest as _pytest
+
+    from server.pipeline import build_mask
+
+    cells = np.array([[10, 10, 10]], dtype=np.int64)
+    for bad in ("", "   "):
+        with _pytest.raises(ValueError, match="grid_source"):
+            build_mask(cells, halo=1, grid_source=bad)

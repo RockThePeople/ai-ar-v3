@@ -61,7 +61,14 @@ HEAD_BBOX = ((-0.145, -0.145, 0.065), (0.145, 0.145, 0.335))
 # 실자산의 바닥값은 **편집 없이 인코드→디코드만 왕복시킨 대조군**에서 나오고,
 # 그것은 W3-A5000 에 배정돼 있다. 그 전에는 어떤 값도 가정하지 않는다 —
 # `test_preservation_refuses_to_judge_without_noise_floor` 가 그걸 강제한다.
-SYNTHETIC_NOISE_FLOOR = 0.0
+# D33 — 맨 float 이 아니라 `NoiseFloor` 다. 자산 id 가 없으면 타입이 거부한다.
+SYNTHETIC_ASSET_ID = "synthetic-snowman"
+SYNTHETIC_NOISE_FLOOR = metrics.NoiseFloor(
+    value=0.0,
+    asset_id=SYNTHETIC_ASSET_ID,
+    region="outside_mask",
+    n_voxels=0,
+)
 
 
 # ══════════════════════════════════════════════════════════════ 헬퍼
@@ -117,6 +124,8 @@ def _run_pipeline():
         delta_bytes=pkg.delta_bytes,
         containment_enforced=sp.strict_containment,
         noise_floor=SYNTHETIC_NOISE_FLOOR,
+        asset_id=SYNTHETIC_ASSET_ID,
+        region="outside_mask",
     )
     return {
         "base": base_cells, "donor": donor_cells, "mask": mask, "splice": sp,
@@ -467,7 +476,10 @@ def test_gate_g2_visual_confirmation_semantics():
         efficacy_change_component=0.99,
         churn_ratio=5.0,
         inherited_byte_identity=1.0,
-        preservation=metrics.PreservationDistance(distance=0.0, baseline=0.0),
+        preservation=metrics.PreservationDistance(
+            distance=0.0,
+            baseline=metrics.NoiseFloor(0.0, "synthetic", "global", 0),
+        ),
         transfer_saving=0.68,
     )
     assert passing.gate_g2()["efficacy"] is None, "육안 확인 없이 효능이 판정됐다"
@@ -482,7 +494,10 @@ def test_gate_g2_visual_confirmation_semantics():
         efficacy_change_component=0.0,
         churn_ratio=0.0,
         inherited_byte_identity=1.0,
-        preservation=metrics.PreservationDistance(distance=0.0, baseline=0.0),
+        preservation=metrics.PreservationDistance(
+            distance=0.0,
+            baseline=metrics.NoiseFloor(0.0, "synthetic", "global", 0),
+        ),
         transfer_saving=1.0,
     )
     assert failing.gate_g2()["efficacy"] is False
@@ -525,6 +540,7 @@ def test_noop_passes_preservation_and_saving_but_fails_efficacy():
         parent_blobs=parent_blobs, child_blobs=pkg.blobs, book=bk.book,
         full_bytes=pkg.full_bytes, delta_bytes=pkg.delta_bytes,
         containment_enforced=True, noise_floor=SYNTHETIC_NOISE_FLOOR,
+        asset_id=SYNTHETIC_ASSET_ID, region="outside_mask",
     )
 
     # 보존·절감은 만점으로 통과한다.
@@ -644,6 +660,7 @@ def test_gate_refuses_results_obtained_without_containment(run):
             book=run["bk"].book, full_bytes=run["pkg"].full_bytes,
             delta_bytes=run["pkg"].delta_bytes,
             containment_enforced=False, noise_floor=SYNTHETIC_NOISE_FLOOR,
+            asset_id=SYNTHETIC_ASSET_ID,
         )
 
 
@@ -736,7 +753,7 @@ def test_preservation_uses_excess_ratio_not_absolute_threshold():
     0.1469(= 1−0.8531) → **2.10배**. 절대 문턱 0.99 였다면 바닥값 자체도
     (1−0.9299=0.0701 > 0.01) 실패했을 것이다 — 어떤 디코더로도 통과 불가다.
     """
-    floor = 1.0 - 0.9299
+    floor = metrics.NoiseFloor(1.0 - 0.9299, "boy-statue", "global", 0)
     voxhammer = metrics.PreservationDistance(
         distance=1.0 - 0.8531, baseline=floor, max_excess_ratio=1.0
     )
@@ -745,13 +762,13 @@ def test_preservation_uses_excess_ratio_not_absolute_threshold():
 
     # 바닥값 자체는 정의상 1.00배 — 통과해야 한다.
     roundtrip = metrics.PreservationDistance(
-        distance=floor, baseline=floor, max_excess_ratio=1.0
+        distance=floor.value, baseline=floor, max_excess_ratio=1.0
     )
     assert roundtrip.excess_ratio == 1.0
     assert roundtrip.passes is True
 
     # 🔴 옛 절대 문턱(IoU > 0.99)이었다면 바닥값조차 실패한다 — 항진적 실패.
-    assert (1.0 - floor) < 0.99
+    assert (1.0 - floor.value) < 0.99
 
 
 def test_preservation_still_refuses_without_baseline():
@@ -777,7 +794,95 @@ def test_assemble_path_beats_voxhammer_on_preservation():
     assemble(strict_containment=True) 마스크 밖 IoU 1.000000 → 초과배수 0.0
     VoxHammer                          마스크 밖 IoU 0.8531   → 초과배수 2.10
     """
-    floor = 1.0 - 0.9299
+    floor = metrics.NoiseFloor(1.0 - 0.9299, "boy-statue", "global", 0)
     assemble = metrics.PreservationDistance(distance=0.0, baseline=floor)
     voxhammer = metrics.PreservationDistance(distance=1.0 - 0.8531, baseline=floor)
     assert assemble.passes and not voxhammer.passes
+
+
+# ══════════════════════════ 13. D33 — 바닥값은 자산별·영역별이다
+def test_bare_float_baseline_is_rejected():
+    """★★ D33 — 맨 float 바닥값은 타입이 거부한다.
+
+    float 하나로 다니면 **어느 자산에서 잰 것인지가 사라진다.** 사라지면
+    반드시 잘못 재사용된다 — 소년상 0.0701 을 dragon-c(0.2229)에 쓰면 3.2배
+    과대평가되고 "누출 심각" 이라는 오판이 나온다. 예외는 안 난다.
+    """
+    with pytest.raises(metrics.BaselineMisapplied, match="NoiseFloor"):
+        metrics.PreservationDistance(distance=0.2, baseline=0.0701)
+
+
+def test_noise_floor_requires_an_asset_id():
+    for bad in ("", "   "):
+        with pytest.raises(metrics.BaselineMisapplied, match="asset_id"):
+            metrics.NoiseFloor(0.0701, bad)
+
+
+def test_baseline_from_another_asset_is_rejected():
+    """★★ 자산 경계를 넘는 재사용이 **정확히** 막히는지."""
+    boy = metrics.NoiseFloor(0.0701, "boy-statue", "global", 0)
+    p = metrics.PreservationDistance(distance=0.20, baseline=boy, asset_id="dragon-c")
+    with pytest.raises(metrics.BaselineMisapplied, match="3.2배"):
+        _ = p.excess_ratio
+
+
+def test_baseline_from_another_region_is_rejected():
+    """같은 자산 안에서도 목 0.1538 vs 머리 0.2358 로 1.5배 차이다."""
+    neck = metrics.DRAGON_C_NOISE_FLOORS["neck"]
+    p = metrics.PreservationDistance(
+        distance=0.20, baseline=neck, asset_id="dragon-c", region="head"
+    )
+    with pytest.raises(metrics.BaselineMisapplied, match="영역"):
+        _ = p.excess_ratio
+
+
+def test_small_sample_is_surfaced_next_to_the_verdict():
+    """★ 목 대역은 100복셀뿐이다 — 분산이 큰 값과 작은 값을 같은 문턱으로 재지 않는다.
+
+    표본 크기를 숨기면 다음 세션이 0.1538 을 전역 0.2229 와 같은 신뢰도로 쓴다.
+    """
+    neck = metrics.DRAGON_C_NOISE_FLOORS["neck"]
+    assert neck.n_voxels == 100
+    assert neck.is_small_sample
+
+    p = metrics.PreservationDistance(
+        distance=0.20, baseline=neck, asset_id="dragon-c", region="neck"
+    )
+    assert p.is_small_sample, "판정 옆에 표본 경고가 안 붙는다"
+    assert "분산 큼" in neck.describe()
+
+    # 전역은 표본이 크다 — 같은 문턱으로 재도 되는 쪽이다.
+    assert not metrics.DRAGON_C_NOISE_FLOORS["global"].is_small_sample
+
+
+def test_dragon_c_floors_match_the_measured_table():
+    """D33 표 A 를 그대로 못박는다. 값이 바뀌면 여기서 걸린다."""
+    f = metrics.DRAGON_C_NOISE_FLOORS
+    assert f["global"].value == pytest.approx(0.2229)
+    assert f["neck"].value == pytest.approx(0.1538)
+    assert f["head"].value == pytest.approx(0.2358)
+    assert f["body"].value == pytest.approx(0.2225)
+    # 소년상 대비 3.2배 — 그대로 쓰면 안 되는 이유.
+    assert f["global"].value / 0.0701 == pytest.approx(3.18, abs=0.05)
+    # 디코더 분산도 5.7배 (소년상 0.0003).
+    assert f["global"].decoder_variance == pytest.approx(0.0017)
+
+
+def test_same_asset_and_region_passes_through():
+    """거부가 과잉이면 정상 경로까지 막는다."""
+    neck = metrics.DRAGON_C_NOISE_FLOORS["neck"]
+    p = metrics.PreservationDistance(
+        distance=0.10, baseline=neck, asset_id="dragon-c", region="neck"
+    )
+    assert p.excess_ratio == pytest.approx(0.10 / 0.1538, rel=1e-6)
+    assert p.passes is True
+
+
+def test_voxhammer_budget_is_corrected_to_400s():
+    """D31-a — G4 의 "1회 < 300초" 는 캐시 상태를 정상으로 오인한 문턱이었다."""
+    assert metrics.VOXHAMMER_BUDGET_SECONDS == 400.0
+    stages = metrics.VOXHAMMER_STAGE_SECONDS
+    assert sum(stages.values()) == pytest.approx(351.3, abs=0.5)
+    # 문턱이 실비용보다 낮으면 정상 실행이 예산 초과로 기록된다.
+    assert sum(stages.values()) > 300.0
+    assert sum(stages.values()) < metrics.VOXHAMMER_BUDGET_SECONDS

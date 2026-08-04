@@ -41,8 +41,16 @@ from deltacontract.coords import (  # type: ignore[import-not-found]
 )
 from deltacontract.errors import MaskEmpty  # type: ignore[import-not-found]
 
+from .frames import (
+    SURFACE_VOXELIZATION_SOURCE,
+    VOXEL_GRID_SOURCE,
+    assert_slat_grid,
+)
+
 __all__ = [
     "HALO_DEFAULT",
+    "SURFACE_VOXELIZATION_SOURCE",
+    "VOXEL_GRID_SOURCE",
     "MaskResult",
     "build_mask",
     "clamp_cells",
@@ -60,6 +68,17 @@ class MaskResult:
 
     `cells` 는 halo **전**, `dilated` 는 halo **후**다. 계약이 두 지문을 구분해서
     요구하므로(`coords.mask_fingerprint` docstring) 둘 다 들고 다닌다.
+
+    ────────────────────────────────────────────────────────────────────
+    🔴 D28-a — `grid_source` 는 **구조로 강제한다**
+    ────────────────────────────────────────────────────────────────────
+    D28 은 "격자 정본은 slat coords" 라고 정했고 `frames.assert_slat_grid()` 를
+    줬다. 그런데 그건 **호출부가 자발적으로 부를 때만** 돈다 — 안 부르면 검사가
+    아예 안 일어난다. 좌표 함정이 이미 다섯이다 (D9 축순열 · D9-b to_glb ·
+    D28 격자정본 · D35 X대칭 · W6 격자 shift). 자발성에 기댈 자리가 아니다.
+
+    그래서 출처를 **마스크가 들고 다닌다.** 판정하는 쪽은 `require_slat_grid()`
+    를 부르면 되고, 출처를 안 밝힌 마스크는 애초에 만들 수 없다.
     """
 
     cells: np.ndarray
@@ -67,6 +86,8 @@ class MaskResult:
     halo: int
     fingerprint: str
     fingerprint_dilated: str
+    #: 🔴 이 좌표가 어느 격자에서 왔는가 (D28-a). 정본은 `frames.VOXEL_GRID_SOURCE`.
+    grid_source: str = SURFACE_VOXELIZATION_SOURCE
     chunk_keys: List[str] = field(default_factory=list)
 
     @property
@@ -76,6 +97,20 @@ class MaskResult:
     @property
     def n_dilated(self) -> int:
         return int(self.dilated.shape[0])
+
+    @property
+    def is_canonical_grid(self) -> bool:
+        return self.grid_source == VOXEL_GRID_SOURCE
+
+    def require_slat_grid(self, where: str = "") -> None:
+        """정본 격자가 아니면 거부한다 (D28-a).
+
+        게이트를 재는 모든 경로가 이걸 부른다. 자체 표면 복셀화로 만든 마스크는
+        **진단용**이고 판정의 근거가 될 수 없다 — 축이 맞아도 인덱스가 밀린다
+        (실측 3090 z=45 vs A5000 z=44, 그 한 칸이 "목 극소점 위" 와
+        "극소점에서" 를 갈랐다).
+        """
+        assert_slat_grid(self.grid_source, where or "마스크")
 
 
 def clamp_cells(cells: np.ndarray) -> np.ndarray:
@@ -96,6 +131,7 @@ def build_mask(
     *,
     bbox: Optional[Sequence[Sequence[float]]] = None,
     halo: int = HALO_DEFAULT,
+    grid_source: str = SURFACE_VOXELIZATION_SOURCE,
 ) -> MaskResult:
     """마스크를 만든다. 🔴 **클램프 → 팽창** 순서가 여기 한 곳에 고정돼 있다.
 
@@ -104,6 +140,11 @@ def build_mask(
                그게 이 함수가 존재하는 이유다.
         bbox:  (bbox_min, bbox_max) NORMALIZED AABB. `cells` 와 택일.
         halo:  26-이웃 팽창 반경.
+        grid_source: 🔴 D28-a — 이 좌표가 어느 격자에서 왔는가. 기본값은
+               **진단용**(`surface_voxelize`)이다. 게이트를 재려면 slat 격자에서
+               만들고 `frames.VOXEL_GRID_SOURCE` 를 명시해야 한다.
+               기본값을 정본으로 두지 않는 이유: 아무 생각 없이 만든 마스크가
+               판정을 통과하면 D28-a 가 아무것도 막지 못한다.
 
     Raises:
         MaskEmpty: 마스크가 비었다. 조용히 빈 편집을 돌리면 "아무것도 안 했는데
@@ -128,12 +169,19 @@ def build_mask(
     dilated = dilate_cells(clamped, halo)            # 2) 그 다음 팽창
     # ─────────────────────────────────────────────────────────────────
 
+    if not isinstance(grid_source, str) or not grid_source.strip():
+        raise ValueError(
+            "grid_source 를 빈 값으로 둘 수 없다 (D28-a). 이 좌표가 어느 격자에서 "
+            f"왔는지 밝혀라 — 정본은 {VOXEL_GRID_SOURCE!r} 다."
+        )
+
     return MaskResult(
         cells=canonical_sort(clamped),
         dilated=dilated,
         halo=int(halo),
         fingerprint=mask_fingerprint(clamped),
         fingerprint_dilated=mask_fingerprint(dilated),
+        grid_source=grid_source,
         chunk_keys=chunk_keys_sorted(voxel_to_chunk(dilated)) if dilated.size else [],
     )
 

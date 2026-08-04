@@ -340,3 +340,57 @@ def test_three_coordinate_traps_are_all_encoded_here():
     assert frames.VOXEL_GRID_SOURCE == "slat_coords"              # D28
     for fn in ("assert_not_identity", "assert_slat_grid"):
         assert callable(getattr(frames, fn)), fn
+
+
+# ══════════════ 7. D35 — 다섯 번째 함정: 좌우 대칭은 X 를 못 가린다
+def test_mirror_x_is_an_involution():
+    from server.pipeline.frames import mirror_x
+
+    cells = np.array([[10, 5, 5], [11, 5, 5], [0, 0, 0], [63, 63, 63]], dtype=np.int64)
+    assert np.array_equal(mirror_x(mirror_x(cells)), cells)
+
+
+def test_symmetrize_x_makes_the_ambiguity_harmless():
+    """★★ D35 해법 — 마스크를 X 대칭으로 만들면 X 반전이 마스크를 바꾸지 않는다.
+
+    대칭 자산(dragon-c, 날개 둘)에서 전수 탐색 1·2위 격차가 **1.01배**였고
+    2위가 같은 순열의 X 반전이었다. IoU 로는 원리적으로 못 가린다 —
+    그래서 **고르지 않는다. 고를 필요가 없게 만든다.**
+    """
+    from server.pipeline.frames import is_x_symmetric, mirror_x, symmetrize_x
+
+    asym = np.array([[10, 5, 5], [11, 5, 5]], dtype=np.int64)
+    assert not is_x_symmetric(asym)
+
+    sym = symmetrize_x(asym)
+    assert is_x_symmetric(sym)
+    # 핵심: X 반전을 걸어도 **같은 마스크**다. 그래서 모호성이 무해하다.
+    assert np.array_equal(np.unique(mirror_x(sym), axis=0), np.unique(sym, axis=0))
+    assert sym.shape[0] >= asym.shape[0], "대칭화는 마스크를 넓힌다 (그 대가는 감수한다)"
+
+
+def test_a_centred_mask_is_already_symmetric():
+    """D22② 의 "좌우로 머리 폭만큼 넓힌다" 를 따르면 자연히 대칭이 된다."""
+    from server.pipeline.frames import is_x_symmetric
+    from deltacontract.coords import VOXEL_RES, dense_cells
+
+    c = VOXEL_RES // 2
+    centred = dense_cells(np.array([c - 6, 20, 40]), np.array([c + 6, 24, 44]))
+    assert is_x_symmetric(centred)
+
+
+def test_x_mirror_of_a_symmetric_shape_is_indistinguishable():
+    """🔴 함정 자체를 재현한다 — 대칭 형상은 X 반전과 IoU 가 같다.
+
+    이게 전수 탐색이 dragon-c 에서 실패한 이유다. 검사가 무능한 게 아니라
+    **정보가 없다.** 비대칭이 필요하면 fiducial 이 필요하다.
+    """
+    from server.pipeline.frames import mirror_x
+    from deltacontract.coords import VOXEL_RES, dense_cells
+
+    c = VOXEL_RES // 2
+    sym = dense_cells(np.array([c - 8, 20, 40]), np.array([c + 8, 24, 44]))
+    assert _iou_of(sym, mirror_x(sym)) == 1.0, "대칭 형상인데 IoU 가 1 이 아니다"
+
+    asym = dense_cells(np.array([c + 2, 20, 40]), np.array([c + 18, 24, 44]))
+    assert _iou_of(asym, mirror_x(asym)) < 1.0, "비대칭이면 구분이 된다"

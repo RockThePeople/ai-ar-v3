@@ -16,9 +16,13 @@
 
 from .frames import (  # noqa: F401
     SURFACE_VOXELIZATION_ROLE,
+    SURFACE_VOXELIZATION_SOURCE,
     VOXEL_GRID_SOURCE,
     GridSourceMismatch,
     assert_slat_grid,
+    is_x_symmetric,
+    mirror_x,
+    symmetrize_x,
     DECODER_NATIVE_TO_GLB,
     DECODER_NATIVE_TO_VOXEL,
     TO_GLB_ROTATION,
@@ -57,9 +61,13 @@ from .package import DeltaPackage, encode_chunks, package_delta  # noqa: F401
 
 __all__ = [
     "SURFACE_VOXELIZATION_ROLE",
+    "SURFACE_VOXELIZATION_SOURCE",
     "VOXEL_GRID_SOURCE",
     "GridSourceMismatch",
     "assert_slat_grid",
+    "is_x_symmetric",
+    "mirror_x",
+    "symmetrize_x",
     "DECODER_NATIVE_TO_GLB",
     "DECODER_NATIVE_TO_VOXEL",
     "TO_GLB_ROTATION",

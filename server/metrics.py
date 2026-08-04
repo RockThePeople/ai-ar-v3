@@ -80,6 +80,12 @@ __all__ = [
     "efficacy_largest_component_of_result",
     "efficacy_voxel_delta",
     "evaluate",
+    "BaselineMisapplied",
+    "DRAGON_C_NOISE_FLOORS",
+    "NoiseFloor",
+    "SMALL_SAMPLE_VOXELS",
+    "VOXHAMMER_BUDGET_SECONDS",
+    "VOXHAMMER_STAGE_SECONDS",
     "HueStats",
     "hue_shift_degrees",
     "hue_stats",
@@ -434,8 +440,20 @@ class PreservationDistance:
     """
 
     distance: float
-    baseline: Optional[float]
+    baseline: Optional["NoiseFloor"] = None
     max_excess_ratio: float = 1.0
+    #: 이 거리를 어느 자산·영역에서 쟀는가. 바닥값과 대조된다 (D33).
+    asset_id: Optional[str] = None
+    region: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # 🔴 D33 — 맨 float 바닥값은 받지 않는다. 어느 자산에서 잰 것인지가
+        #    사라지고, 사라지면 반드시 잘못 재사용된다 (소년상 → 용, 3.2배).
+        if self.baseline is not None and not isinstance(self.baseline, NoiseFloor):
+            raise BaselineMisapplied(
+                f"바닥값이 {type(self.baseline).__name__} 이다 — `NoiseFloor` 여야 한다 "
+                "(D33). 자산 id 와 영역이 없는 바닥값은 받지 않는다."
+            )
 
     @property
     def excess_ratio(self) -> float:
@@ -446,14 +464,26 @@ class PreservationDistance:
         """
         if self.baseline is None:
             raise NoiseFloorUnknown(_NO_BASELINE_MSG.format(d=self.distance))
-        if self.baseline == 0.0:
+        # D33 — 다른 자산·영역의 바닥값을 쓰려 하면 여기서 걸린다.
+        if self.asset_id is not None:
+            self.baseline.require_same_asset(self.asset_id, self.region)
+        if self.baseline.value == 0.0:
             # 재디코딩 영역이 공집합이면 바닥값도 0 이다. 거리도 0 이어야 성립.
             return 0.0 if self.distance == 0.0 else float("inf")
-        return self.distance / self.baseline
+        return self.distance / self.baseline.value
 
     @property
     def passes(self) -> bool:
         return self.excess_ratio <= self.max_excess_ratio
+
+    @property
+    def is_small_sample(self) -> bool:
+        """바닥값 표본이 작은가. 판정 옆에 반드시 같이 적는다 (D33).
+
+        목 대역은 100복셀뿐이라 분산이 크다 — 분산이 큰 값과 작은 값을 같은
+        문턱으로 재면 안 된다.
+        """
+        return self.baseline is not None and self.baseline.is_small_sample
 
 
 _NO_BASELINE_MSG = (
@@ -469,8 +499,10 @@ def preservation_geometry_distance(
     after: np.ndarray,
     edited_region: np.ndarray,
     *,
-    baseline: Optional[float] = None,
+    baseline: Optional["NoiseFloor"] = None,
     max_excess_ratio: float = 1.0,
+    asset_id: Optional[str] = None,
+    region: Optional[str] = None,
 ) -> PreservationDistance:
     """★ 보존-B. 재디코딩 영역(= 편집 영역 **밖**)의 기하 거리 = 1 - IoU.
 
@@ -495,6 +527,8 @@ def preservation_geometry_distance(
         distance=1.0 - _iou(b, a),
         baseline=baseline,
         max_excess_ratio=max_excess_ratio,
+        asset_id=asset_id,
+        region=region,
     )
 
 
@@ -598,7 +632,10 @@ class MetricReport:
             "churn_ratio": self.churn_ratio,
             "inherited_byte_identity": self.inherited_byte_identity,
             "preservation_geometry_distance": self.preservation.distance,
-            "preservation_baseline": self.preservation.baseline,
+            "preservation_baseline": (
+                None if self.preservation.baseline is None
+                else self.preservation.baseline.describe()
+            ),
             "preservation_excess_ratio": (
                 None if self.preservation.baseline is None
                 else self.preservation.excess_ratio
@@ -668,8 +705,10 @@ def evaluate(
     full_bytes: int,
     delta_bytes: int,
     containment_enforced: bool,
-    noise_floor: Optional[float] = None,
+    noise_floor: Optional["NoiseFloor"] = None,
     max_excess_ratio: float = 1.0,
+    asset_id: Optional[str] = None,
+    region: Optional[str] = None,
 ) -> MetricReport:
     """전 지표를 한 번에 계산한다.
 
@@ -681,7 +720,10 @@ def evaluate(
                              False 면 계측조차 하지 않고 거부한다. 마스크 밖으로 나간
                              기증자는 보존을 **정의상** 깨므로, 그 상태의 숫자는
                              게이트로서 아무 뜻이 없다.
-        noise_floor:         잡음 바닥값. None 이면 보존 **판정**이 거부된다 (계측은 됨).
+        noise_floor:         잡음 바닥값 `NoiseFloor`. **맨 float 은 받지 않는다** (D33) —
+                             자산 id 가 없으면 소년상 값이 용에 쓰이고 3.2배 과대평가된다.
+                             None 이면 보존 **판정**이 거부된다 (계측은 됨).
+        asset_id/region:     이 계측이 어느 자산·영역인가. 주면 바닥값과 대조한다.
 
     Raises:
         ContainmentNotEnforced: `containment_enforced=False` 일 때.
@@ -705,6 +747,7 @@ def evaluate(
         preservation=preservation_geometry_distance(
             before, after, edited_region_cells,
             baseline=noise_floor, max_excess_ratio=max_excess_ratio,
+            asset_id=asset_id, region=region,
         ),
         transfer_saving=transfer_saving(full_bytes, delta_bytes),
         reference={
@@ -807,3 +850,124 @@ def hue_shift_degrees(before_rgb: np.ndarray, after_rgb: np.ndarray) -> float:
         return 0.0
     diff = abs(a.mean_hue_deg - b.mean_hue_deg) % 360.0
     return float(min(diff, 360.0 - diff))
+
+
+# ══════════════════════════ D33 — 잡음 바닥값은 **자산별·영역별**이다
+#
+# ★★ W8/A5000 실측이 이걸 바꿨다. 소년상 하나로 잰 0.0701 을 용에 그대로 쓰면
+#    halo 초과배수가 **3배 이상 과대평가**되고 "누출 심각" 이라는 오판이 나온다.
+#
+#     자산        영역           before복셀   1−IoU
+#     소년상      (전역)              —       0.0701
+#     dragon-c    전역              8,000     0.2229   ← 소년상의 3.2배
+#     dragon-c    몸통 z<44         7,181     0.2225
+#     dragon-c    ★ 목 z44–47         100     0.1538   ← W9 halo 의 분모
+#     dragon-c    머리 z≥48           719     0.2358
+#     dragon-c    디코더 분산           —     0.0017   (소년상 0.0003 의 5.7배)
+#
+# 전역 0.2229 를 목에 쓰면 과소평가, 0.0701 을 쓰면 3배 과대평가다. **영역 분해가 필수다.**
+#
+# ⚠️ 목 대역은 **100복셀뿐**이다. 분산이 큰 값과 작은 값을 같은 문턱으로 재지 않는다 —
+#    그래서 표본 크기를 값과 함께 들고 다니고, 판정할 때 표면에 올린다.
+#
+# ⇒ 그래서 **자산 id 없는 바닥값은 타입이 거부한다.** float 하나로 다니면
+#   어느 자산·어느 영역에서 잰 것인지가 사라지고, 사라지면 반드시 잘못 재사용된다.
+
+
+class BaselineMisapplied(RuntimeError):
+    """다른 자산·다른 영역에서 잰 바닥값을 그대로 쓰려 했다 (D33)."""
+
+
+#: 이 아래면 표본이 작아 분산이 크다고 본다. 목 대역(100복셀)이 기준점이다.
+SMALL_SAMPLE_VOXELS = 200
+
+
+@dataclass(frozen=True)
+class NoiseFloor:
+    """잡음 바닥값 + **어디서 어떻게 쟀는가**. float 하나로 다니지 않는다.
+
+    이름이 아니라 **타입**으로 강제하는 이유: 맨 float 은 자산 경계를 소리 없이
+    넘어간다. 소년상 0.0701 을 용에 쓰면 3배 과대평가인데 예외도 안 난다.
+    """
+
+    value: float                 # 1 − IoU 무차원
+    asset_id: str                # 🔴 필수. 어느 자산에서 쟀는가
+    region: str = "global"       # 어느 영역인가 (global / neck / body / head …)
+    n_voxels: int = 0            # 표본 크기 — 분산 해석에 필요하다
+    decoder_variance: Optional[float] = None   # 같은 자산의 디코더 분산 (유의성 하한)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.asset_id, str) or not self.asset_id.strip():
+            raise BaselineMisapplied(
+                "바닥값에 asset_id 가 없다 (D33). 잡음 바닥값은 자산별이다 — "
+                "소년상 0.0701 을 dragon-c(0.2229)에 쓰면 3.2배 과대평가되고 "
+                "'누출 심각' 이라는 오판이 나온다."
+            )
+        if not (self.value == self.value) or self.value < 0.0:
+            raise BaselineMisapplied(f"바닥값이 음수이거나 NaN 이다: {self.value}")
+        if self.n_voxels < 0:
+            raise BaselineMisapplied(f"표본 크기가 음수다: {self.n_voxels}")
+
+    @property
+    def is_small_sample(self) -> bool:
+        """표본이 작아 분산이 큰가. 목 대역(100복셀)이 여기 걸린다."""
+        return 0 < self.n_voxels < SMALL_SAMPLE_VOXELS
+
+    def require_same_asset(self, asset_id: str, region: Optional[str] = None) -> None:
+        """다른 자산·영역에 쓰려 하면 거부한다. **이 클래스의 존재 이유다.**"""
+        if asset_id != self.asset_id:
+            raise BaselineMisapplied(
+                f"바닥값은 {self.asset_id!r} 에서 잰 것인데 {asset_id!r} 에 쓰려 한다 "
+                f"(D33). 실측 격차 3.2배 — 자산이 바뀌면 **다시 재라**."
+            )
+        if region is not None and region != self.region:
+            raise BaselineMisapplied(
+                f"바닥값은 영역 {self.region!r} 에서 잰 것인데 {region!r} 에 쓰려 한다 "
+                f"(D33). dragon-c 안에서도 목 0.1538 vs 머리 0.2358 로 1.5배 차이다."
+            )
+
+    def describe(self) -> str:
+        parts = [f"{self.asset_id}/{self.region} 1−IoU={self.value:.4f}"]
+        if self.n_voxels:
+            parts.append(f"표본 {self.n_voxels}복셀" + (" ⚠️분산 큼" if self.is_small_sample else ""))
+        if self.decoder_variance is not None:
+            parts.append(f"디코더분산 {self.decoder_variance:.4f}")
+        return " · ".join(parts)
+
+
+# W8/A5000 실측. **참조용 상수이지 기본값이 아니다** — 다른 자산에 쓰면 타입이 거부한다.
+DRAGON_C_NOISE_FLOORS = {
+    "global": NoiseFloor(0.2229, "dragon-c", "global", 8000, decoder_variance=0.0017),
+    "body":   NoiseFloor(0.2225, "dragon-c", "body",   7181, decoder_variance=0.0017),
+    "neck":   NoiseFloor(0.1538, "dragon-c", "neck",    100, decoder_variance=0.0017),
+    "head":   NoiseFloor(0.2358, "dragon-c", "head",    719, decoder_variance=0.0017),
+}
+
+
+# ══════════════════════════ D31-a — VoxHammer 1회 예산 (게이트 문턱)
+#
+# W1 의 200초는 **캐시가 더워진 상태**의 수치였다. 실측(W8/A5000)으로 분해하면:
+#
+#     slat→GLB      46.4s
+#     150뷰 렌더     80.4s
+#     features      24.5s
+#     편집          ~200s
+#     ─────────────────────
+#     렌더·피처 있음  ~305s      slat 에서 시작  ~350s
+#
+# ⇒ G4 의 "1회 < 300초" 는 **캐시 상태를 정상으로 오인한 문턱**이었다. 400초로 정정한다.
+#   문턱이 실제 비용보다 낮으면 정상 실행이 예산 초과로 기록되고, 그건 D5·D11·D12·D16 과
+#   같은 병이다 — **문턱이 측정 대상의 물리를 반영하지 않으면 거짓말한다.**
+#
+# 문서에만 두면 다음 세션이 300 을 인용한다. 상수로 둔다.
+
+#: G4 의 편집 1회 벽시계 문턱(초). D31-a 로 300 → 400 정정.
+VOXHAMMER_BUDGET_SECONDS = 400.0
+
+#: 참고 — 단계별 실측(초). 재사용으로 아낄 수 있는 항목을 눈에 보이게 둔다.
+VOXHAMMER_STAGE_SECONDS = {
+    "slat_to_glb": 46.4,
+    "render_150_views": 80.4,   # w8/render/ 재사용 시 절약 가능
+    "features": 24.5,           # 재사용은 D10 래퍼의 mtime 검증과 충돌한다
+    "edit": 200.0,
+}
