@@ -111,19 +111,26 @@ def test_missing_file_is_reported_not_ignored(tmp_path):
 
 
 def test_manifest_refuses_a_path_absent_from_the_repo():
-    """🔴 `slatmask.py` 가 정확히 이 경우다 — 정본에 없는 파일은 매니페스트에 못 넣는다."""
+    """정본에 없는 파일은 매니페스트에 못 넣는다 — 그게 W11 의 상황이었다."""
     with pytest.raises(HandoffMismatch, match="정본에 없는"):
-        repo_manifest(["server/slatmask.py"])
+        repo_manifest(["server/does_not_exist.py"])
 
 
-def test_slatmask_is_still_absent_from_the_repo():
-    """★ 사실 기록 — `slatmask.py` 는 리포에 없다.
+def test_slatmask_is_now_in_the_repo_and_satisfies_its_api():
+    """★★ **W12 에서 상황이 바뀌었다.** `slatmask.py` 가 리포에 편입됐다.
 
-    A5000 이 받은 것이 어느 버전인지 확인할 근거가 없다는 뜻이다.
-    이 테스트는 그 파일이 리포로 들어오면 **실패해서** 상황이 바뀐 것을 알린다.
+    W11 까지는 리포 밖이라 "어느 버전이 A5000 에 갔는가" 를 확인할 근거가 없었다.
+    이제 정본이 있고, 그 정본이 `REQUIRED_API` 를 실제로 만족하는지 여기서 본다 —
+    A5000 이 받았던 판본은 `require_slat_grid`·`is_x_symmetric`·`grid_source` 가
+    셋 다 없었다.
     """
     from pathlib import Path
 
+    from server import slatmask
+
     root = Path(__file__).resolve().parents[2]
-    hits = list(root.glob("**/slatmask*.py"))
-    assert not hits, f"slatmask 가 리포에 생겼다 — REQUIRED_API 검사를 배선하라: {hits}"
+    assert (root / "server" / "slatmask.py").is_file()
+    assert repo_manifest(["server/slatmask.py"])          # 이제 매니페스트에 들어간다
+
+    report = check_required_api("slatmask", obj=slatmask)
+    assert report.ok, report.describe()

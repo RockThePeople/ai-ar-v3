@@ -56,7 +56,7 @@ receptive field 때문에 그 성질이 **없다** — A5000 의 마스크 밖 I
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Mapping, Optional, Sequence
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -84,6 +84,10 @@ __all__ = [
     "DRAGON_C_NOISE_FLOORS",
     "NoiseFloor",
     "AnchorRetention",
+    "Component",
+    "Headroom",
+    "components",
+    "head_components",
     "DIRECTION_RULES",
     "DirectionMismatch",
     "HALO_BAND_REGIONS",
@@ -1349,3 +1353,141 @@ class AnchorRetention:
         parts.append(f"앵커 잔존율 {r * 100:.1f}%" if r is not None else "앵커 잔존율 —(분모 미상)")
         parts.append("⚠️ 문턱 없음 — 데이터 1점 (D39)")
         return " · ".join(parts)
+
+
+# ══════════════════ D29-a — "머리" 는 **절단면 위로 뻗는 성분**이다
+#
+# 🔴 성분 개수만 세면 날개 조각이 머리로 잡힌다. W11 반례:
+#    z 44–46 에 걸친 조각이 하나 있었는데 **절단면 위로 뻗지 않았다** —
+#    옆으로만 퍼진 날개 파편이었다. 개수로는 "머리 하나" 로 세어진다.
+#
+# ⇒ 성분마다 **z 범위와 x 중심**을 함께 반환하고, "머리" 를 형상 조건으로 정의한다:
+#      절단면(neck_cut_z) 위로 **뻗어 올라가는** 성분만 머리로 센다.
+#
+# ⚠️ "위로 뻗는다" 의 기준은 절단면 위 두께다. 한 칸만 걸친 것은 뻗은 것이 아니다.
+
+
+@dataclass(frozen=True)
+class Component:
+    """연결 성분 하나. **개수가 아니라 형상**을 들고 다닌다 (D29-a)."""
+
+    n_cells: int
+    z_min: int
+    z_max: int
+    x_center: float
+    y_center: float
+
+    @property
+    def z_span(self) -> int:
+        return self.z_max - self.z_min + 1
+
+    def height_above(self, cut_z: int) -> int:
+        """절단면 **위로** 뻗은 높이(칸). 절단면 자체는 세지 않는다."""
+        return max(0, self.z_max - cut_z)
+
+    def rises_above(self, cut_z: int, *, min_thickness: int = 2) -> bool:
+        """절단면 위로 **뻗어 올라가는가** (D29-a).
+
+        `z_max > cut_z` 만으로는 부족하다 — 절단면 바로 위 한 칸만 걸친 조각도
+        그 조건을 만족한다. W11 의 날개 파편(z 44–46, 절단면 45)이 정확히 그
+        경우였고, 개수로 세면 "머리 하나" 가 된다.
+
+        ⚠️ 절단면 **자체**를 두께에 넣으면 안 된다. 넣으면 그 날개가 두께 2 로
+           통과한다 (46 − max(44,45) + 1 = 2). 위로 뻗은 높이만 센다.
+        """
+        return self.height_above(cut_z) >= min_thickness
+
+    def describe(self) -> str:
+        return (
+            f"{self.n_cells}셀 · z {self.z_min}–{self.z_max}(두께 {self.z_span})"
+            f" · x중심 {self.x_center:.1f}"
+        )
+
+
+def components(cells: np.ndarray) -> List[Component]:
+    """26-연결 성분을 **형상 정보와 함께** 나열한다. 큰 것부터."""
+    a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if a.shape[0] == 0:
+        return []
+    codes = voxel_code(a)
+    index = {int(c): i for i, c in enumerate(codes)}
+    seen = np.zeros(a.shape[0], dtype=bool)
+    out: List[Component] = []
+    for start in range(a.shape[0]):
+        if seen[start]:
+            continue
+        seen[start] = True
+        stack, members = [start], []
+        while stack:
+            i = stack.pop()
+            members.append(i)
+            nb = a[i] + _NEIGHBORS_26
+            nb = nb[np.all((nb >= 0) & (nb < VOXEL_RES), axis=1)]
+            for code in voxel_code(nb):
+                j = index.get(int(code))
+                if j is not None and not seen[j]:
+                    seen[j] = True
+                    stack.append(j)
+        m = a[members]
+        out.append(Component(
+            n_cells=len(members),
+            z_min=int(m[:, 2].min()), z_max=int(m[:, 2].max()),
+            x_center=float(m[:, 0].mean()), y_center=float(m[:, 1].mean()),
+        ))
+    return sorted(out, key=lambda c: c.n_cells, reverse=True)
+
+
+def head_components(
+    cells: np.ndarray, cut_z: int, *, min_cells: int = 1, min_thickness: int = 2
+) -> List[Component]:
+    """"머리" 로 셀 성분만 (D29-a). 절단면 위로 뻗는 것만 남는다.
+
+    ⚠️ 개수만 세는 판정은 날개 조각을 머리로 센다 — W11 이 그 반례다.
+    """
+    return [
+        c for c in components(cells)
+        if c.n_cells >= min_cells and c.rises_above(cut_z, min_thickness=min_thickness)
+    ]
+
+
+# ══════════════════ D41 — headroom. **문턱은 정하지 않는다** (D39-a)
+#
+# dragon-c 는 z 0–62 로 세로 여유가 **1칸**뿐이다. 머리를 위로 뻗게 하려면
+# 자랄 자리가 있어야 하는데 격자 경계가 막고 있다 — 그게 실패 가설 중 하나다.
+#
+# ⚠️ 점이 부족하다. 값을 내고 **병기**만 한다 (D39-a).
+
+
+@dataclass(frozen=True)
+class Headroom:
+    """자산 bbox 와 격자 경계 사이 여유. 문턱 없음 (D41 · D39-a)."""
+
+    lo: Tuple[int, int, int]
+    hi: Tuple[int, int, int]
+
+    @classmethod
+    def from_cells(cls, cells: np.ndarray) -> "Headroom":
+        a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+        if a.size == 0:
+            raise ValueError("점유가 비었다 — headroom 을 잴 수 없다")
+        mn, mx = a.min(axis=0), a.max(axis=0)
+        return cls(
+            lo=tuple(int(v) for v in mn),
+            hi=tuple(int(VOXEL_RES - 1 - v) for v in mx),
+        )
+
+    @property
+    def up(self) -> int:
+        """위쪽(+z) 여유. 머리가 자랄 자리다."""
+        return self.hi[2]
+
+    @property
+    def minimum(self) -> int:
+        return min(min(self.lo), min(self.hi))
+
+    def describe(self) -> str:
+        return (
+            f"headroom 위 {self.up} · x {self.lo[0]}/{self.hi[0]}"
+            f" · y {self.lo[1]}/{self.hi[1]} · z {self.lo[2]}/{self.hi[2]}"
+            " · ⚠️ 문턱 없음 (D41 · D39-a)"
+        )

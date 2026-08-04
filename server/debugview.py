@@ -509,3 +509,10 @@ def placeholder_png(text_rows: int = 3, *, scale: int = 8) -> bytes:
     for i in range(0, VOXEL_RES, 8):
         img[i : i + 1, :] = (0x3A, 0x42, 0x52)
     return _png(np.repeat(np.repeat(img, scale, axis=0), scale, axis=1))
+
+
+def silhouette_png_arr(cells, axis: int):
+    """단일 실루엣 RGB 배열. `/w9` 자리가 4분할 조립 없이 한 장만 필요할 때 쓴다."""
+    img = _canvas()
+    _paint(img, _project(cells, axis), GEOM)
+    return _upscale(img)

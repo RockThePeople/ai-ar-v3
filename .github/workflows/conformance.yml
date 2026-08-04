@@ -43,6 +43,13 @@ jobs:
       - name: pytest
         run: python -m pytest server/tests/ -q
 
+      # D27-b — 인계 꾸러미가 실제로 만들어지고 받는 쪽 검사를 통과하는지.
+      # W11 에서 A5000 이 받은 판본은 sha256 은 맞고 API 는 없었다.
+      - name: handoff pack + verify
+        run: |
+          python -m server.handoff.pack --out /tmp/handoff-ci
+          cd /tmp/handoff-ci && PYTHONPATH=$GITHUB_WORKSPACE/contract/python python verify.py
+
   secrets:
     runs-on: ubuntu-latest
     steps:

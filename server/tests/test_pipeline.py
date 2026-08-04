@@ -1187,3 +1187,83 @@ def test_discarded_pseudo_floors_are_not_usable_as_baselines():
     for v in metrics.DISCARDED_PSEUDO_HALO_FLOORS.values():
         assert isinstance(v, float)
         assert not isinstance(v, metrics.NoiseFloor)
+
+
+# ══════════════════ 20. ★★ D29-a — "머리" 는 절단면 위로 뻗는 성분이다
+def _wing_and_head():
+    """W11 반례 픽스처 — 날개 조각(z 44–46)과 진짜 머리(z 46–58)."""
+    wing = [(x, 30, z) for x in range(8, 16) for z in range(44, 47)]
+    head = [(x, 30, z) for x in range(30, 34) for z in range(46, 59)]
+    return np.array(sorted(set(wing + head)), dtype=np.int64)
+
+
+def test_components_carry_shape_not_just_count():
+    """★ 성분마다 z 범위·x 중심을 함께 낸다 — 개수만으로는 못 가른다 (D29-a)."""
+    comps = metrics.components(_wing_and_head())
+    assert len(comps) == 2
+
+    head, wing = comps                      # 큰 것부터
+    assert (head.z_min, head.z_max) == (46, 58)
+    assert (wing.z_min, wing.z_max) == (44, 46)
+    assert head.x_center > wing.x_center
+    assert "z 46–58" in head.describe()
+
+
+def test_wing_fragment_is_not_counted_as_a_head():
+    """★★ **W11 반례.** 날개 조각은 절단면 위로 뻗지 않으므로 머리가 아니다.
+
+    개수로만 세면 이 조각이 "머리 하나" 로 잡힌다. 실제로 z 44–46 짜리 조각이
+    있었고 위로 뻗지 않았다.
+    """
+    a = _wing_and_head()
+    heads = metrics.head_components(a, cut_z=45)
+
+    assert len(heads) == 1, [c.describe() for c in heads]
+    assert heads[0].z_max == 58
+    # 날개는 절단면 위로 **1칸**만 걸쳤다 — 뻗은 것이 아니다.
+    wing = [c for c in metrics.components(a) if c.z_max == 46][0]
+    assert wing.height_above(45) == 1
+    assert not wing.rises_above(45)
+
+
+def test_cut_plane_itself_does_not_count_as_thickness():
+    """🔴 절단면을 두께에 넣으면 날개가 통과한다 — 실제로 그렇게 짰다가 잡혔다.
+
+    46 − max(44,45) + 1 = 2 로 문턱을 만족해 버린다. 위로 뻗은 높이만 센다.
+    """
+    wing = metrics.Component(n_cells=24, z_min=44, z_max=46, x_center=11.5, y_center=30.0)
+    assert wing.height_above(45) == 1
+    assert not wing.rises_above(45, min_thickness=2)
+    assert wing.rises_above(45, min_thickness=1)     # 문턱 1 이면 통과한다
+
+
+def test_three_heads_are_counted_when_they_actually_rise():
+    """머리 셋이 진짜로 위로 뻗으면 셋으로 센다 (D22 레벨2 판정의 형태)."""
+    cells = []
+    for cx in (16, 32, 48):
+        cells += [(cx + dx, 30, z) for dx in (-1, 0, 1) for z in range(46, 58)]
+    heads = metrics.head_components(np.array(cells, dtype=np.int64), cut_z=45)
+    assert len(heads) == 3
+    assert sorted(round(c.x_center) for c in heads) == [16, 32, 48]
+
+
+# ══════════════════ 21. D41 — headroom (문턱 없음)
+def test_headroom_reports_without_a_threshold():
+    """★ dragon-c 는 z 0–62 로 위쪽 여유가 **1칸**뿐이다. 값만 낸다 (D41 · D39-a)."""
+    a = np.array([[1, 2, 0], [60, 61, 62]], dtype=np.int64)
+    hr = metrics.Headroom.from_cells(a)
+    assert hr.up == 1                      # 63 - 62
+    assert hr.lo == (1, 2, 0)
+    assert hr.minimum == 0
+    assert "문턱 없음" in hr.describe()
+
+
+def test_headroom_has_no_pass_fail_method():
+    """문턱이 없다는 것을 **구조로** 남긴다 (D39-a)."""
+    for name in ("verdict", "passes", "ok", "gate"):
+        assert not hasattr(metrics.Headroom, name), name
+
+
+def test_headroom_rejects_empty_occupancy():
+    with pytest.raises(ValueError, match="비었다"):
+        metrics.Headroom.from_cells(np.zeros((0, 3), dtype=np.int64))
