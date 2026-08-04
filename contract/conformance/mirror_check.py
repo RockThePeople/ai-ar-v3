@@ -29,7 +29,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # C# 미러가 존재해야 하는 모델. test_contract.py 의 목록과 같게 유지한다.
 MIRRORED = [
     "ContractInfo", "ChunkEntry", "ChunkManifest", "PatchPackage", "SpatialContext",
-    "GenerateRequest", "EditMask", "EditRequest", "AssembleRequest", "JobStatus", "ErrorBody", "ServerHealth",
+    "GenerateRequest", "SlatCoordsResponse", "EditMask", "EditRequest", "AssembleRequest", "JobStatus", "ErrorBody", "ServerHealth",
 ]
 
 _SKIP = {"model_config"}

@@ -226,6 +226,41 @@ class PatchPackage(BaseModel):
 #    ⚠️ "스키마에 있다" 와 "그 경로가 돈 적 있다" 는 다른 사실이다.
 
 
+class SlatCoordsResponse(BaseModel):
+    """`GET /v2/assets/{id}/slat_coords.v{n}.json` 응답 (3.26.0 · W17).
+
+    🔴 **라쏘가 투영할 대상**이다. 정점이 아니라 **복셀**을 투영해야 결과가 곧바로
+    SLat 마스크가 된다 (D58). 정점을 투영하면 메시 정점 집합이 나오고, 그걸 복셀로
+    되돌리는 역산은 `.cbin` 에 slat coords 가 없어서(D34) **두 번 실패했다.**
+
+    `fingerprint` 는 `coords.mask_fingerprint(coords)` 다. 클라이언트가 받은 좌표가
+    서버가 보낸 것과 같은지 **한 값으로** 확인한다 — 각자 직렬화하면 어긋나도
+    예외가 안 나고 "결과가 이상하다" 로만 보인다 (3.14.0 에서 실제로 갈렸다).
+    """
+
+    asset_id: str
+    version: int
+    #: 🔴 항상 "slat_coords" 다. 다른 값이면 **라쏘 결과를 편집에 쓰면 안 된다** (D28-a).
+    grid_source: Literal["slat_coords"] = "slat_coords"
+    voxel_res: int = 64
+    n_cells: int
+    coords: List[Tuple[int, int, int]]
+    fingerprint: str
+
+    @model_validator(mode="after")
+    def _check(self) -> "SlatCoordsResponse":
+        if self.n_cells != len(self.coords):
+            raise ValueError(
+                f"n_cells({self.n_cells}) 와 coords 길이({len(self.coords)}) 가 다르다. "
+                "둘이 갈리면 클라이언트가 잘린 목록으로 마스크를 만들고, 그 마스크는 "
+                "형태가 멀쩡해서 예외를 안 낸다."
+            )
+        for c in self.coords:
+            if not all(0 <= v < self.voxel_res for v in c):
+                raise ValueError(f"좌표가 격자 [0,{self.voxel_res}) 를 벗어난다: {c}")
+        return self
+
+
 class EditMask(BaseModel):
     mode: Literal["bbox", "voxels"]
     # mode == "bbox": NORMALIZED [-0.5,0.5] 공간의 AABB
@@ -235,6 +270,17 @@ class EditMask(BaseModel):
     voxels: Optional[List[Tuple[int, int, int]]] = None
     # §8.2. 마스크 경계 바깥 halo. 0 이면 확장 없음.
     halo_margin_voxels: int = 1
+
+    # 🔴 3.26.0 (D28-a) — **이 셀들이 어느 격자에서 나왔는가.**
+    #
+    # 두 격자가 있다:  `slat_coords`(정본) 와 `surface_voxelize`(진단용).
+    # 둘은 같은 자산에서도 **다른 셀 집합**이고, 섞으면 마스크도 조립도 지표도
+    # 정상 동작하면서 전부 **다른 물체에 대한 숫자**가 된다. 예외가 안 난다.
+    #
+    # 그래서 `mode="voxels"` 에서는 **생략을 허용하지 않는다.** 기본값을
+    # `slat_coords` 로 두면 잘못된 격자가 침묵으로 정본을 참칭한다 —
+    # 이 리포가 D28 에서 실제로 물린 자리다.
+    grid_source: Optional[Literal["slat_coords", "surface_voxelize"]] = None
 
     @model_validator(mode="after")
     def _check(self) -> "EditMask":
@@ -246,7 +292,22 @@ class EditMask(BaseModel):
         else:
             if not self.voxels:
                 raise ValueError("mode='voxels' 에는 비어있지 않은 voxels 가 필요하다.")
+            if self.grid_source is None:
+                raise ValueError(
+                    "mode='voxels' 에는 grid_source 가 필요하다 (D28-a). "
+                    "라쏘 산출물이면 'slat_coords' 다. 생략을 기본값으로 메우면 "
+                    "다른 격자가 침묵으로 정본을 참칭한다 — 그때는 예외가 안 나고 "
+                    "마스크·조립·지표가 전부 다른 물체에 대해 정상 동작한다."
+                )
+            for v in self.voxels:
+                if not all(0 <= c < 64 for c in v):
+                    raise ValueError(f"복셀 셀이 격자 [0,64) 를 벗어난다: {v}")
         return self
+
+    @property
+    def is_canonical_grid(self) -> bool:
+        """정본 격자인가. 아니면 판정 경로가 거부해야 한다 (D28-a)."""
+        return self.grid_source == "slat_coords"
 
 
 # ════════════════════════════════════════════════════ Unity -> 3090
