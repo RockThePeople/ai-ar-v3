@@ -6,12 +6,16 @@
 데이터 차이로 좁혀진다.
 
 ────────────────────────────────────────────────────────────────────────
-D9 — 여기서 좌표계를 변환하지 않는다
+D9 / D9-b — 이 경로의 변환은 **항등이고, 그것이 정답이다**
 ────────────────────────────────────────────────────────────────────────
-GLB 는 Y-up, 복셀 격자는 Z-up 이라 그 사이를 손으로 오가면 조용히 틀린다.
-**이 모듈은 GLB 를 건드리지 않는다.** `.cbin` 의 `positions` 는 이미 계약의
-NORMALIZED 공간(Z-up)이고, 그대로 `surface_voxelize` 에 넣는다. 회전도 축 교환도
-없다 — 할 필요가 없는 경로를 골랐다.
+같은 파이프라인에 좌표 함정이 둘이고 정답이 서로 반대다:
+
+    GLB 파일 → 복셀      `to_voxel_frame` (perm 0,2,1 / sign 1,-1,1).  항등이면 IoU 0.19
+    디코더 native → 복셀  **항등**.  두 프레임이 같다 (D9-b)
+
+`.cbin` 정점은 `to_glb` 를 거치지 않은 **디코더 native** 라 후자다. 그래서 이
+모듈은 `decoder_native_to_voxel_frame()` 을 부른다 — 항등이지만 명시적으로.
+생략하면 다음 세션이 여기에 GLB 용 변환을 잘못 건다.
 
 (`voxelize.load_mesh`/`voxelize_asset` 은 GLB 용이라 여기서 쓰지 않는다.
  실자산이 GLB 로 들어오는 날에는 그 변환을 `pipeline/frames.py` 의
@@ -20,17 +24,17 @@ NORMALIZED 공간(Z-up)이고, 그대로 `surface_voxelize` 에 넣는다. 회�
  IoU 0.19 대가 나오고, 지표는 전부 다른 물체에 대해 숫자를 낸다.)
 
 ────────────────────────────────────────────────────────────────────────
-⚠️ D11 미해결 — 지금 이 경로를 돌리면 기증자는 "잘린 호박" 이다
+D11 (rev7) — 크기는 크롭이 아니라 **재복셀화**로 맞춘다
 ────────────────────────────────────────────────────────────────────────
 base·donor 가 **각자 독립적으로** NORMALIZED 격자를 꽉 채우게 정규화된다
-(W3 실측: base span 49×50×64, donor 60×60×64, 머리 마스크 span 49×50×23).
-스케일은 계약이 금지하므로(6-이웃 유지율 s=2.0 → 0%) 크롭으로만 맞추는데,
-실측 스윕 결과 crop ≤ 0.30 에서만 마스크에 들어간다. 그 크롭은 호박의 **위쪽
-30%(뚜껑+꼭지)** 만 남기고 삼각눈·톱니입을 잘라 버린다.
+(W3 실측: base span 49×50×64, donor 60×60×64). 그래서 기증자를 그대로 두면
+`crop ≤ 0.30` 에서만 마스크에 들어갔고, 화면에는 호박의 위쪽 뚜껑만 떴다 —
+삼각눈도 톱니입도 잘려 나갔다. 지표는 통과하는데 "호박 머리" 로는 안 보였다.
 
-⇒ 지표는 통과해도 화면에는 "호박 머리" 가 아니라 "호박 뚜껑" 이 뜬다.
-   **D11 이 닫히기 전까지 재관통을 돌리지 마라** — 돌려도 같은 그림이다.
-   맥북이 기증자 크기를 고치면 이 파일은 손댈 것이 없다(파라미터만 바뀐다).
+`fit_donor_to_mask` 가 기증자 **메시**를 마스크 범위에 맞춰 새 cell_size 로
+다시 래스터화한다. 희소 좌표를 곱하는 것이 아니므로 계약이 금지한 스케일이
+아니고, 호박 전체가 들어가므로 얼굴이 살아남는다. 그래서 이 모듈은 이제
+`.cbin` 에서 점유뿐 아니라 **메시**(`cbin_dir_to_mesh`)도 꺼낸다.
 
 ────────────────────────────────────────────────────────────────────────
 마스크를 bbox 상수로 주지 않는다
@@ -62,25 +66,29 @@ from .pipeline import (
     surface_voxelize,
     top_region_cells,
 )
+from .pipeline.frames import decoder_native_to_voxel_frame
 from .pipeline.delta import audit_against_bytes
+from .pipeline.splice import fit_donor_to_mask
 
-__all__ = ["cbin_dir_to_occupancy", "run_real_walkthrough"]
+__all__ = ["cbin_dir_to_mesh", "cbin_dir_to_occupancy", "run_real_walkthrough"]
 
 HEAD_FRACTION = 0.35   # 자산 세로 점유의 위 35% = "머리"
 
-# 🔴 실측으로 정한 값이다. 합성 픽스처의 0.85 를 그대로 쓰면 기증자가 마스크에 안
-#    들어가고 strict_containment 가 조립을 거부한다 (W3 스윕: 1.0/0.8/0.6/0.5/0.4
-#    전부 실패, 0.30 에서 처음 들어감). ⚠️ 이 값은 **D11 이 닫히면 바뀐다** —
-#    기증자를 애초에 작게 만들면 크롭을 이렇게까지 조일 이유가 없다.
-DONOR_CROP_FRACTION = 0.30
+# D11(rev7) 이후 **1.0** 이다. 크기는 `fit_donor_to_mask` 의 재복셀화가 맞추므로
+# 크롭은 더 이상 크기 조절 수단이 아니다. W3 의 0.30 은 호박 위쪽 뚜껑만 남겨
+# 얼굴을 잘라 버렸다 — 그게 D11 이 신설된 이유다.
+DONOR_CROP_FRACTION = 1.0
 HALO = 1
 
 
-def cbin_dir_to_occupancy(chunk_dir: Path, *, oversample: float = 2.0) -> np.ndarray:
-    """`.cbin` 디렉터리 → VOXEL 점유 셀 (N,3).
+def cbin_dir_to_mesh(chunk_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """`.cbin` 디렉터리 → 이어붙인 (vertices, faces).
 
-    청크를 전부 디코딩해 하나의 메시로 잇고 표면 복셀화한다. 정점 좌표는 이미
-    NORMALIZED 라 **정규화도 회전도 하지 않는다** (D9).
+    청크의 `POSITION`/`INDEX` 를 정점 오프셋만 더해 잇는다. 좌표는 이미 계약의
+    NORMALIZED 공간(Z-up)이라 **정규화도 회전도 하지 않는다** (D9).
+
+    ★ D11 이후 기증자는 이 **메시** 가 필요하다. 점유 셀만 들고 있으면 다시
+      복셀화할 원본이 없어서 크롭 말고는 크기를 맞출 방법이 없다.
     """
     files = sorted(Path(chunk_dir).glob("*.cbin"))
     if not files:
@@ -98,7 +106,18 @@ def cbin_dir_to_occupancy(chunk_dir: Path, *, oversample: float = 2.0) -> np.nda
         offset += v.shape[0]
 
     verts = np.concatenate(vert_parts, axis=0)
-    faces = np.concatenate(face_parts, axis=0)
+    # 🔴 D9-b — `.cbin` 정점은 **디코더 native(z-up)** 이고 그것이 곧 복셀 격자
+    #    프레임이라 이 변환은 **항등**이다. 그래도 명시적으로 부른다: 항등이라
+    #    생략하면 다음 세션이 여기에 `to_voxel_frame`(GLB용)을 잘못 건다.
+    #    A5000 은 기하 전용 export 에서 `to_glb` 회전을 빠뜨려 이 함정에 빠졌고,
+    #    놓쳤으면 잡음 바닥값이 통째로 허수가 될 뻔했다.
+    verts = decoder_native_to_voxel_frame(verts)
+    return verts, np.concatenate(face_parts, axis=0)
+
+
+def cbin_dir_to_occupancy(chunk_dir: Path, *, oversample: float = 2.0) -> np.ndarray:
+    """`.cbin` 디렉터리 → VOXEL 점유 셀 (N,3)."""
+    verts, faces = cbin_dir_to_mesh(chunk_dir)
     return surface_voxelize(verts, faces, oversample=oversample)
 
 
@@ -122,14 +141,24 @@ def run_real_walkthrough(
     합성/실자산을 구분하지 않고 같은 렌더러로 그릴 수 있어야 하기 때문이다.
     """
     base_cells = cbin_dir_to_occupancy(base_chunks)
-    donor_cells = cbin_dir_to_occupancy(donor_chunks)
+    donor_verts, donor_faces = cbin_dir_to_mesh(donor_chunks)
 
-    mask = build_mask(cells=top_region_cells(base_cells, head_fraction), halo=halo)
+    # per_slice=True — 마스크를 자산 단면에 맞춘 계단 모양으로 딴다 (D11 부수 결정).
+    # False 면 머리 위 허공까지 마스크가 되고, W3 실측에서 격자의 21% 였다.
+    mask = build_mask(
+        cells=top_region_cells(base_cells, head_fraction, per_slice=True), halo=halo
+    )
+
+    # 🔴 D11 — 크롭이 아니라 **재복셀화**로 크기를 맞춘다. 희소 좌표를 곱하는 것이
+    #    아니라 연속 메시를 새 cell_size 로 래스터화하는 것이라, 계약이 금지한
+    #    스케일이 아니다. 이제 호박 전체가 들어가므로 얼굴이 살아남는다.
+    donor_cells, used_fill = fit_donor_to_mask(donor_verts, donor_faces, mask)
 
     sp = splice(
         base_cells,
         donor_cells,
         mask,
+        # D11 이후 크롭은 크기 조절 수단이 아니다. 1.0 = 기증자 전체를 쓴다.
         crop_fraction=crop_fraction,
         # 🔴 D13 — 끄지 마라. W3 에서 끄고 돌렸다가 보존이 조용히 무너졌다
         #    (preservation_iou_out 0.345 / 절감 14.05%). 마스크 밖으로 나간 기증자
@@ -159,6 +188,9 @@ def run_real_walkthrough(
         book=bk.book,
         full_bytes=pkg.full_bytes,
         delta_bytes=pkg.delta_bytes,
+        # D13 — splice 에서 실제로 강제했다는 사실을 지표에 넘긴다. 여기서
+        # True 를 적어 놓고 splice 에서 끄면 그게 곧 거짓말이 되므로 둘을 같이 본다.
+        containment_enforced=True,
         # ★ 실자산의 잡음 바닥값은 **아직 없다** (D5-b). W3-A5000 이 편집 없이
         #   인코드→디코드만 왕복시켜 측정 중이다. None 을 넘기면 계측은 되고
         #   **판정만 거부된다** — 추정값을 넣어 통과시키면 "잡음인지 누출인지 못
@@ -168,5 +200,5 @@ def run_real_walkthrough(
     return {
         "base": base_cells, "donor": donor_cells, "mask": mask, "splice": sp,
         "parent": parent_blobs, "child": child_blobs, "bk": bk, "pkg": pkg,
-        "report": report,
+        "report": report, "used_fill": used_fill,
     }
