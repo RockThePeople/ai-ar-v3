@@ -323,6 +323,40 @@ def debug_recolor(side: str) -> Response:
     return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
+# ── W8 인계 (D27) ──────────────────────────────────────────────────────
+#
+# A5000 에 **밀어 넣을 수 없다**: tcp/22(ssh)·873(rsync) 이 닫혀 있고, 열려 있는
+# 8082 는 이번 웨이브 금지다(A5000 이 GPU 작업 중). 그래서 **당겨 가게** 낸다 —
+# 이쪽은 공개 URL 이 이미 서 있으므로 이게 실제로 존재하는 유일한 채널이다.
+#
+# 파일 하나만 고정 경로로 낸다. 경로를 파라미터로 받지 않는다 — 공개 URL 에서
+# 임의 경로를 열어 주면 그건 다른 종류의 사고다.
+HANDOFF_DIR = Path(os.environ.get("HANDOFF_DIR", str(ASSET_ROOT / "_handoff-w8")))
+_HANDOFF_FILES = {
+    "w8-dragon-c.tar.gz": "application/gzip",
+    "w8-dragon-c.tar.gz.sha256": "text/plain; charset=utf-8",
+    "RECEIPT.json": "application/json; charset=utf-8",
+}
+
+
+@app.get("/handoff/{name}")
+def handoff(name: str) -> Response:
+    """인계 번들. 수령 확인은 **sha256 대조**다 — 파일 존재 확인이 아니다 (D27②)."""
+    media = _HANDOFF_FILES.get(name)
+    if media is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"모르는 인계 파일: {name!r}. 아는 것: {sorted(_HANDOFF_FILES)}",
+        )
+    path = HANDOFF_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"아직 준비되지 않았다: {name}")
+    return Response(
+        path.read_bytes(), media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
 @app.get("/debug/metrics.json")
 def debug_metrics(kind: str = "synthetic") -> dict:
     """화면에 뜬 것과 **같은** 수치. 그림과 숫자가 다른 소스에서 나오면 안 된다.
