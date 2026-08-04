@@ -1,0 +1,49 @@
+{
+  "threshold": 56,
+  "gap": [
+    24,
+    130,
+    5.42
+  ],
+  "book_chunks": 230,
+  "mask_chunks": 226,
+  "overflow_chunks": 8,
+  "kept_components": [
+    131,
+    130
+  ],
+  "dropped_components": 121,
+  "dropped_voxels": 441,
+  "delta_bytes": 156972,
+  "inherited_bytes": 6393476,
+  "full_bytes": 276204,
+  "saving": 0.43168093148542386,
+  "identity": 1.0,
+  "reencoded_identity": 0.0,
+  "heads": [
+    {
+      "cells": 539,
+      "xc": 31.506493506493506,
+      "z": [
+        45,
+        62
+      ]
+    },
+    {
+      "cells": 363,
+      "xc": 11.264462809917354,
+      "z": [
+        45,
+        57
+      ]
+    },
+    {
+      "cells": 358,
+      "xc": 51.712290502793294,
+      "z": [
+        45,
+        57
+      ]
+    }
+  ]
+}

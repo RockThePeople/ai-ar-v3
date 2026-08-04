@@ -41,6 +41,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Response
 
@@ -451,6 +452,72 @@ def runs_image(run_id: str, name: str) -> Response:
             png = debugview._png(debugview.silhouette_png_arr(cells, axis))
     _RUN_IMG_CACHE[key] = png
     return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+# ── 계약 3.26.0 — SLat 좌표 (D57 · D58) ────────────────────────────────
+#
+# 라쏘는 화면에 투영한 것을 고른다. 정점을 투영하면 결과가 메시 정점 집합이라
+# SLat 마스크가 아니고, 복셀로 되돌리는 역산은 `.cbin` 에 slat 좌표가 없어서(D34)
+# **두 번 실패했다.** 그래서 클라이언트가 처음부터 slat 좌표를 받아 그것을 투영한다.
+#
+# 🔴 이 라우트는 **좌표를 만들지 않는다.** A5000 원본 `slat.safetensors` 에서 뽑아
+#    둔 파일을 그대로 낸다 (`slatexport.py` — 유도가 아니라 이송). 없으면 404 다.
+#    없는 자산에 표면 복셀화를 대신 내주면 그게 정본을 참칭하는 순간이다 (D28).
+_SLAT_CACHE: dict = {}
+
+
+def _slat_asset_dir(asset_id: str) -> Optional[Path]:
+    """`asset_id` → 그 자산 디렉터리. **슬롯 이름을 경로로 받지 않는다** (§7).
+
+    스캔 결과 안에서만 찾는다. 임의 문자열이 경로가 되면 공개 URL 에서 파일시스템을
+    걷게 되고, 그건 다른 종류의 사고다.
+    """
+    from server import runs as runs_mod
+
+    for r in runs_mod.recent_runs(limit=64):
+        if r.asset_id == asset_id and (r.path / "slat_coords.npy").is_file():
+            return r.path
+    return None
+
+
+@app.get("/v2/assets/{asset_id}/slat_coords.v{version}.json")
+def slat_coords(asset_id: str, version: int) -> Response:
+    """계약 3.26.0. 라쏘가 투영할 SLat 점유 좌표.
+
+    본문은 `editreq.build_slat_coords_payload()` 가 만든다 — 응답 모양을 여기서
+    손으로 조립하지 않는다. 손으로 조립하면 계약과 갈라지고, 갈라진 줄 아무도 모른다.
+    """
+    import json as _json
+
+    import numpy as _np
+
+    from server.editreq import build_slat_coords_payload
+
+    key = (asset_id, int(version))
+    if key not in _SLAT_CACHE:
+        d = _slat_asset_dir(asset_id)
+        if d is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(f"{asset_id} 의 slat 좌표가 없다. A5000 원본에서 내보낸 뒤 "
+                        "다시 요청하라 — 표면 복셀화로 대신 채우지 않는다 (D28)"),
+            )
+        # 판본 대조. 옛 좌표를 조용히 재사용하면 편집 후 판본에서 다른 물체를 집는다.
+        man = _json.loads((d / "manifest.json").read_text())
+        if int(man.get("version", 1)) != int(version):
+            raise HTTPException(
+                status_code=404,
+                detail=(f"판본이 다르다: 가진 것 v{man.get('version')}, 요청 v{version}. "
+                        "옛 좌표를 대신 내주지 않는다"),
+            )
+        _SLAT_CACHE[key] = build_slat_coords_payload(
+            asset_id, version, _np.load(d / "slat_coords.npy")
+        )
+    return Response(
+        _json.dumps(_SLAT_CACHE[key], separators=(",", ":")),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ── W8 인계 (D27) ──────────────────────────────────────────────────────
