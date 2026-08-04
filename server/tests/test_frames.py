@@ -394,3 +394,37 @@ def test_x_mirror_of_a_symmetric_shape_is_indistinguishable():
 
     asym = dense_cells(np.array([c + 2, 20, 40]), np.array([c + 18, 24, 44]))
     assert _iou_of(asym, mirror_x(asym)) < 1.0, "비대칭이면 구분이 된다"
+
+
+# ══════════════════ 8. D35-a — X 대칭은 **우연히** 성립했다
+def test_x_symmetry_was_accidental_in_w10():
+    """★★ D35-a — 모듈은 `[xlo-w, xhi+w]` 를 클램프할 뿐 격자 중심 대칭을
+    **강제하지 않는다.** W10 은 머리가 중앙에 있어 합이 63 이 됐을 뿐이다.
+    """
+    from deltacontract.coords import VOXEL_RES, dense_cells
+    from server.pipeline.frames import assert_x_symmetric, is_x_symmetric, x_symmetry_cost
+
+    c = VOXEL_RES // 2
+    centred = dense_cells(np.array([c - 8, 20, 40]), np.array([c + 8, 24, 44]))
+    assert is_x_symmetric(centred)
+    assert x_symmetry_cost(centred) == 1.0        # 이미 대칭 — 넓어지지 않는다
+    assert_x_symmetric(centred, "centred")
+
+    # 자산이 치우치면 그대로 깨진다.
+    offset = dense_cells(np.array([4, 20, 40]), np.array([20, 24, 44]))
+    assert not is_x_symmetric(offset)
+    assert x_symmetry_cost(offset) == pytest.approx(2.0)   # 반대편 허공까지 덮는다
+    with pytest.raises(ValueError, match="D35-a"):
+        assert_x_symmetric(offset, "head3mask")
+
+
+def test_symmetry_cost_warns_before_widening():
+    """대칭화 비용을 **미리** 재고 나서 쓸지 판단한다."""
+    from deltacontract.coords import VOXEL_RES, dense_cells
+    from server.pipeline.frames import symmetrize_x, x_symmetry_cost, is_x_symmetric
+
+    offset = dense_cells(np.array([4, 20, 40]), np.array([20, 24, 44]))
+    cost = x_symmetry_cost(offset)
+    fixed = symmetrize_x(offset)
+    assert is_x_symmetric(fixed)
+    assert fixed.shape[0] == pytest.approx(offset.shape[0] * cost)

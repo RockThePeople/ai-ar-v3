@@ -898,11 +898,10 @@ def test_halo_bands_are_a_different_space_from_z_bands():
     이번엔 반대 방향이다.
     """
     f = metrics.DRAGON_C_NOISE_FLOORS
-    assert f["halo_band_1"].value == pytest.approx(0.0222)
-    assert f["halo_band_2"].value == pytest.approx(0.0889)
-    assert f["halo_band_3"].value == pytest.approx(0.1458)
-    # 목 값을 halo-1 에 쓰면 몇 배 어긋나는가.
-    assert f["neck"].value / f["halo_band_1"].value == pytest.approx(6.9, abs=0.1)
+    # 값 자체는 D36-a 에서 실마스크 값으로 교체됐다 (아래 D36-a 테스트가 잠근다).
+    # 여기서 잠그는 것은 **두 공간이 다르다**는 사실이다.
+    assert f["halo_band_1"].value != f["neck"].value
+    assert f["halo_band_1"].region != f["neck"].region
 
     for name in metrics.HALO_BAND_REGIONS:
         assert f[name].is_halo_band
@@ -930,16 +929,18 @@ def test_halo_band_region_rejects_unmeasured_widths():
             metrics.halo_band_region(bad)
 
 
-def test_halo_baselines_are_marked_provisional():
-    """의사 마스크로 잰 값이라는 사실이 값과 함께 다닌다 (D36).
+def test_provisional_flag_exists_and_is_now_cleared():
+    """잠정값이라는 사실은 값과 함께 다녀야 한다 (D36) — 그리고 실측이 오면 내린다.
 
-    실마스크가 오면 재산출해야 한다 — 그 조건을 숨기면 잠정값이 확정값으로 인용된다.
+    W9 halo 값은 `provisional=True` 였고, W11 에서 실마스크 값으로 교체되면서
+    플래그가 내려갔다 (D36-a). 플래그 자체가 없으면 "잠정" 과 "확정" 이 구분되지
+    않고, 그러면 의사값이 확정값으로 인용된다 — 실제로 10배 틀린 값이었다.
     """
+    probe = metrics.NoiseFloor(0.1, "x", "global", 10, provisional=True)
+    assert "잠정" in probe.describe()
+
     for name in metrics.HALO_BAND_REGIONS:
-        f = metrics.DRAGON_C_NOISE_FLOORS[name]
-        assert f.provisional
-        assert "잠정" in f.describe()
-    assert not metrics.DRAGON_C_NOISE_FLOORS["global"].provisional
+        assert not metrics.DRAGON_C_NOISE_FLOORS[name].provisional, name
 
 
 # ══════════════════ 15. ★★ D37 — 비율 단독 판정 거부
@@ -997,14 +998,15 @@ def test_ratio_only_requires_an_explicit_opt_in_and_is_knife_edge():
       초과배수가 **1.001배** — 문턱 1.0 의 어느 쪽인지가 반올림으로 갈린다.
       "약 1배" 는 맞는 말이고 "1.001 > 1.0 이므로 실패" 는 무의미한 말이다.
     """
+    floor = metrics.NoiseFloor(0.0222, "dragon-c", "halo_band_1", 45)
     r = metrics.HaloBandResult(
-        halo=1, n_new=1, n_removed=0, n_band_cells=2516, n_union=45,
-        baseline=metrics.DRAGON_C_NOISE_FLOORS["halo_band_1"],
+        halo=1, n_new=1, n_removed=0, n_band_cells=2516, n_union=45, baseline=floor
     )
     # 우회 자체는 동작한다 — 예외 없이 bool 이 나온다.
     assert isinstance(r.verdict(allow_ratio_only=True), bool)
 
     # 🔴 그 bool 이 무의미한 이유: 문턱이 반올림 오차 안에 있다.
+    #    실제 비율은 1/45 = 0.022222… 인데 기록된 바닥값은 0.0222 다.
     assert r.excess_ratio == pytest.approx(1.0, abs=0.01)
     assert abs(r.excess_ratio - 1.0) < r.voxel_resolution, (
         "초과배수와 문턱의 차이가 복셀 1개가 만드는 변화보다도 작다 — "
@@ -1012,8 +1014,7 @@ def test_ratio_only_requires_an_explicit_opt_in_and_is_knife_edge():
     )
     # 신규가 하나만 늘어도 비율이 2배가 된다. 그게 '해상도 없음' 의 뜻이다.
     two = metrics.HaloBandResult(
-        halo=1, n_new=2, n_removed=0, n_band_cells=2516, n_union=45,
-        baseline=metrics.DRAGON_C_NOISE_FLOORS["halo_band_1"],
+        halo=1, n_new=2, n_removed=0, n_band_cells=2516, n_union=45, baseline=floor
     )
     assert two.excess_ratio == pytest.approx(2.0, abs=0.02)
 
@@ -1051,3 +1052,138 @@ def test_features_regeneration_check_is_not_disabled():
     assert metrics.VOXHAMMER_BUDGET_SECONDS_REUSED_RENDER == 270.0
     # 렌더만 재사용하는 정상 경로는 400초 문턱 안에 넉넉히 들어온다.
     assert metrics.VOXHAMMER_BUDGET_SECONDS_REUSED_RENDER < metrics.VOXHAMMER_BUDGET_SECONDS
+
+
+# ══════════════════ 17. ★★ D38 — 방향 조건 (W10 이 통과한 틈)
+def test_w10_destruction_would_now_fail_the_add_gate():
+    """★★ **W10 재현.** 게이트가 파괴를 통과시킨 그 데이터를 그대로 넣는다.
+
+    최대 연결성분 1.000 ≥ 0.8 로 통과했는데 제거 730 > 신규 304 였다.
+    전체 복셀 8,000 → 6,744. **머리를 만든 게 아니라 먹었다.**
+    """
+    w10 = metrics.VoxelDelta(new=304, removed=730)
+    assert w10.net == -426
+
+    with pytest.raises(metrics.DirectionMismatch) as exc:
+        metrics.check_direction("add", w10)
+    msg = str(exc.value)
+    assert "신규 > 제거" in msg
+    assert "304" in msg and "730" in msg
+    assert not metrics.direction_holds("add", w10)
+
+
+def test_pure_destruction_fails_add():
+    """★★ 음성 대조 — 순수 파괴(신규 0 / 제거 다수)가 add 에서 **반드시** 떨어진다."""
+    pure = metrics.VoxelDelta(new=0, removed=500)
+    assert not metrics.direction_holds("add", pure)
+    with pytest.raises(metrics.DirectionMismatch):
+        metrics.check_direction("add", pure)
+    # 같은 데이터가 remove 에서는 통과한다 — 방향이 op 에 달렸다는 뜻이다.
+    metrics.check_direction("remove", pure)
+
+
+@pytest.mark.parametrize(
+    "op, delta, ok",
+    [
+        ("add",            metrics.VoxelDelta(500, 100), True),
+        ("add",            metrics.VoxelDelta(100, 500), False),
+        ("add",            metrics.VoxelDelta(300, 300), False),   # 동점도 실패
+        ("remove",         metrics.VoxelDelta(100, 500), True),
+        ("remove",         metrics.VoxelDelta(500, 100), False),
+        ("replace_region", metrics.VoxelDelta(100, 500), True),    # 방향 무관
+        ("replace_region", metrics.VoxelDelta(500, 100), True),
+        ("recolor",        metrics.VoxelDelta(0, 0),     True),    # 기하 불변
+        ("recolor",        metrics.VoxelDelta(1, 0),     False),
+        ("recolor",        metrics.VoxelDelta(0, 1),     False),
+    ],
+)
+def test_direction_rules_per_op(op, delta, ok):
+    """D26 매핑표와 짝을 이루는 방향 조건 전수."""
+    assert metrics.direction_holds(op, delta) is ok
+
+
+def test_unknown_op_is_not_waved_through():
+    """방향 규칙 없는 op 를 통과시키면 W10 이 반복된다."""
+    with pytest.raises(KeyError, match="방향 규칙"):
+        metrics.check_direction("resize", metrics.VoxelDelta(10, 0))
+
+
+def test_every_op_has_a_direction_rule():
+    """`llm.OPS` 에 op 를 추가하면 방향도 정해야 한다."""
+    from server.llm import OPS
+
+    assert set(metrics.DIRECTION_RULES) == set(OPS)
+
+
+def test_gate_g2_checks_direction_when_op_is_given(run):
+    """★ 게이트에 op 를 넘기면 방향이 검사된다."""
+    r = run["report"]
+    # 합성 픽스처는 치환(replace_region)이라 방향 무관이다.
+    assert r.gate_g2(op="replace_region")["direction_ok"] is True
+    # 같은 결과를 add 라고 주장하면 — 신규 528 / 제거 540 이라 떨어진다.
+    assert r.delta_in_mask.removed > r.delta_in_mask.new
+    g = r.gate_g2(op="add")
+    assert g["direction_ok"] is False
+    assert g["efficacy_numeric"] is False
+
+
+def test_gate_g2_records_that_direction_was_not_checked(run):
+    """🔴 op 를 안 주면 방향이 **검사되지 않는다** — 그 사실이 결과에 남는다.
+
+    W10 이 정확히 그 상태로 통과했다. None 을 True 로 읽으면 안 된다.
+    """
+    g = run["report"].gate_g2()
+    assert g["direction_ok"] is None
+
+
+# ══════════════════ 18. D39 — 앵커 잔존율 (문턱 없음)
+def test_anchor_retention_reports_without_a_threshold():
+    """★ D39 — 값을 내고 **병기**만 한다. 문턱은 정하지 않는다.
+
+    데이터가 한 점뿐이다. 한 점으로 문턱을 만드는 것이 이 프로젝트가 반복해
+    물린 모양이다 (D5 · D16 · D33 · D37 전부 같은 병).
+    """
+    w10 = metrics.AnchorRetention(n_asset_in_mask=955, n_mask_cells=11632)
+    assert w10.empty_fraction == pytest.approx(0.9179, abs=0.001)
+    assert w10.retention is None            # 분모를 모르면 None — 추측하지 않는다
+    text = w10.describe()
+    assert "91.79%" in text
+    assert "문턱 없음" in text
+
+
+def test_anchor_retention_with_a_known_region():
+    r = metrics.AnchorRetention(
+        n_asset_in_mask=955, n_mask_cells=11632, n_region_asset=1900
+    )
+    assert r.retention == pytest.approx(955 / 1900)
+    assert "앵커 잔존율" in r.describe()
+
+
+def test_anchor_retention_has_no_pass_fail_method():
+    """문턱이 없다는 것을 **구조로** 남긴다 — verdict/passes 가 없어야 한다."""
+    for name in ("verdict", "passes", "ok", "gate"):
+        assert not hasattr(metrics.AnchorRetention, name), name
+
+
+# ══════════════════ 19. D36-a — 실마스크 바닥값으로 교체
+def test_halo_floors_are_the_real_mask_measurements():
+    """★ W9 의사값은 **폐기**됐다. halo-1 이 10배 틀렸다."""
+    f = metrics.DRAGON_C_NOISE_FLOORS
+    assert f["halo_band_1"].value == pytest.approx(0.2222)
+    assert f["halo_band_2"].value == pytest.approx(0.2100)
+    assert f["halo_band_3"].value == pytest.approx(0.1681)
+
+    # provisional 이 내려갔다 — 더 이상 잠정치가 아니다.
+    for name in metrics.HALO_BAND_REGIONS:
+        assert not f[name].provisional, name
+
+    # 폐기된 의사값과의 격차. halo-1 이 정확히 10배다.
+    old = metrics.DISCARDED_PSEUDO_HALO_FLOORS
+    assert f["halo_band_1"].value / old["halo_band_1"] == pytest.approx(10.0, abs=0.05)
+
+
+def test_discarded_pseudo_floors_are_not_usable_as_baselines():
+    """폐기값은 **NoiseFloor 가 아니라 맨 숫자**로 남긴다 — 실수로 못 쓰게."""
+    for v in metrics.DISCARDED_PSEUDO_HALO_FLOORS.values():
+        assert isinstance(v, float)
+        assert not isinstance(v, metrics.NoiseFloor)

@@ -83,7 +83,12 @@ __all__ = [
     "BaselineMisapplied",
     "DRAGON_C_NOISE_FLOORS",
     "NoiseFloor",
+    "AnchorRetention",
+    "DIRECTION_RULES",
+    "DirectionMismatch",
     "HALO_BAND_REGIONS",
+    "check_direction",
+    "direction_holds",
     "HaloBandResult",
     "RatioWithoutResolution",
     "SMALL_SAMPLE_VOXELS",
@@ -656,6 +661,7 @@ class MetricReport:
     def gate_g2(
         self,
         *,
+        op: Optional[str] = None,
         visual_confirmed: Optional[bool] = None,
         min_new_voxels: int = 1,
         min_change_component: float = 0.8,
@@ -669,6 +675,11 @@ class MetricReport:
                      AND 마스크 내 신규 복셀 > 0
                      AND (신규 ∪ 제거)의 최대 연결성분 ≥ 0.8      ← D12 (rev7)
                      AND churn(안)/churn(밖) ≥ 3.0
+                     AND **op 별 방향 조건**                      ← D38 (rev17)
+
+        🔴 `op` 를 주지 않으면 방향 조건이 **검사되지 않는다.** W10 이 정확히 그
+        상태로 통과했다 (연결성분 1.000 인데 제거 730 > 신규 304 — 머리를 먹었다).
+        게이트를 재는 경로는 반드시 `op` 를 넘긴다.
             ★ 보존   승계 청크 바이트 동일률 100%
                      AND 재디코딩 영역 기하 거리 ≤ 바닥값 × max_excess_ratio  ← D16
             ★ 절감   전송 절감 > 40%
@@ -680,10 +691,16 @@ class MetricReport:
         Raises:
             NoiseFloorUnknown: 잡음 바닥값 없이 보존을 판정하려 할 때 (D5-b).
         """
+        # D38 — 방향 조건. op 를 안 주면 검사되지 않는다는 사실을 결과에 남긴다.
+        direction_ok: Optional[bool] = None
+        if op is not None:
+            direction_ok = direction_holds(op, self.delta_in_mask)
+
         numeric_efficacy = (
             self.delta_in_mask.new >= min_new_voxels
             and self.efficacy_change_component >= min_change_component
             and self.churn_ratio >= min_churn_ratio
+            and direction_ok is not False
         )
         if visual_confirmed is None:
             efficacy: Optional[bool] = None if numeric_efficacy else False
@@ -693,6 +710,7 @@ class MetricReport:
         return {
             "efficacy": efficacy,
             "efficacy_numeric": numeric_efficacy,
+            "direction_ok": direction_ok,          # None = op 미지정 → 미검사 (D38)
             "visual_confirmed": visual_confirmed,
             "preservation": (
                 self.inherited_byte_identity >= min_inherited_identity
@@ -1004,22 +1022,29 @@ DRAGON_C_NOISE_FLOORS = {
     "neck":   NoiseFloor(0.1538, "dragon-c", "neck",    100, decoder_variance=0.0017),
     "head":   NoiseFloor(0.2358, "dragon-c", "head",    719, decoder_variance=0.0017),
     # 🔴 halo 대역 — 위 z 대역과 **다른 공간**이다. 분모로 쓸 것은 이쪽이다 (D36).
+    # 🔴 D36-a — **실마스크** 실측값. W9 의사 마스크 값(0.0222/0.0889/0.1458)은 폐기.
+    #    halo-1 이 **10배** 틀렸다. 그대로 썼으면 초과배수가 10배 과대평가됐다 —
+    #    A5000 이 미리 등록한 맹점 D 가 크게 발동한 사례다.
     "halo_band_1": NoiseFloor(
-        0.0222, "dragon-c", "halo_band_1", 45,
-        decoder_variance=0.0017, provisional=True,
-        note="의사 마스크 기준 · 신규 1 / 제거 0 · 대역 셀 2,516",
+        0.2222, "dragon-c", "halo_band_1", 226,
+        decoder_variance=0.0017,
+        note="실마스크 · 신규 189 / 제거 37 · W9 의사값 0.0222 의 10.0배",
     ),
     "halo_band_2": NoiseFloor(
-        0.0889, "dragon-c", "halo_band_2", 45,
-        decoder_variance=0.0017, provisional=True,
-        note="의사 마스크 기준 · 신규 4 / 제거 0 · 대역 셀 2,694",
+        0.2100, "dragon-c", "halo_band_2", 218,
+        decoder_variance=0.0017,
+        note="실마스크 · 신규 155 / 제거 63 · W9 의사값 0.0889 의 2.4배",
     ),
     "halo_band_3": NoiseFloor(
-        0.1458, "dragon-c", "halo_band_3", 48,
-        decoder_variance=0.0017, provisional=True,
-        note="의사 마스크 기준 · 신규 5 / 제거 2 · 대역 셀 2,876",
+        0.1681, "dragon-c", "halo_band_3", 229,
+        decoder_variance=0.0017,
+        note="실마스크 · 신규 146 / 제거 83 · W9 의사값 0.1458 의 1.2배",
     ),
 }
+
+#: W9 의사 마스크 잠정치. **폐기됐다** — 재사용 금지. 대조 기록으로만 남긴다 (D36-a).
+DISCARDED_PSEUDO_HALO_FLOORS = {"halo_band_1": 0.0222, "halo_band_2": 0.0889,
+                                "halo_band_3": 0.1458}
 
 
 # ══════════════════════════ D31-a — VoxHammer 1회 예산 (게이트 문턱)
@@ -1201,4 +1226,126 @@ class HaloBandResult:
             "육안 미확인" if self.visual_confirmed is None
             else ("육안 통과" if self.visual_confirmed else "육안 실패")
         )
+        return " · ".join(parts)
+
+
+# ══════════════════ D38 — 효능 게이트의 **방향 조건**
+#
+# 🔴 W10 에서 게이트가 **파괴를 통과시켰다.**
+#     최대 연결성분 1.000 ≥ 0.8 → 통과. 그런데 제거 730 > 신규 304 였고
+#     전체 복셀이 8,000 → 6,744 로 줄었다. **머리를 만든 게 아니라 먹었다.**
+#
+# 원인은 지표가 틀린 게 아니라 **묻는 질문이 틀렸다**:
+#     "최대 연결성분" 은 "한 덩어리인가" 이지 **"옳은 방향인가" 가 아니다.**
+#
+# D5-a ① 은 "신규·제거를 **쌍으로 보고**하라" 였다. 보고 요구였을 뿐 **게이트 조건이
+# 아니었다.** 그 틈으로 실패가 통과했다. 여기서 게이트로 승격한다.
+#
+# 게이트를 고치는 **네 번째** 경우다:
+#     D5  전역 실루엣 폐기 · D12 연결성분 정의 · D37 halo 비율 폐기 · D38 방향 조건
+
+
+class DirectionMismatch(RuntimeError):
+    """편집 방향이 op 가 요구하는 것과 반대다 (D38)."""
+
+
+#: op → 방향 조건. `None` 은 "방향 무관" 이다 (D26 매핑표와 짝).
+#: 값은 (설명, 판정함수(VoxelDelta) -> bool).
+def _dir_add(d: "VoxelDelta") -> bool:
+    return d.new > d.removed
+
+
+def _dir_remove(d: "VoxelDelta") -> bool:
+    return d.removed > d.new
+
+
+def _dir_unchanged(d: "VoxelDelta") -> bool:
+    return d.new == 0 and d.removed == 0
+
+
+DIRECTION_RULES = {
+    "add":            ("신규 > 제거", _dir_add),
+    "remove":         ("제거 > 신규", _dir_remove),
+    "replace_region": (None, None),          # 방향 무관 — 부피 비율은 참고값
+    "recolor":        ("기하 불변 (신규 = 제거 = 0)", _dir_unchanged),
+}
+
+
+def check_direction(op: str, delta: "VoxelDelta") -> None:
+    """op 가 요구하는 **방향**을 지켰는지 (D38). 어기면 예외를 던진다.
+
+    ⚠️ bool 을 돌려주지 않는다 — 호출부가 검사하고도 무시할 수 있으면 그게 곧
+       조용한 실패다 (`dispatch.check_supported` 와 같은 이유).
+
+    Raises:
+        DirectionMismatch: 방향이 반대다.
+        KeyError: 모르는 op — 방향 규칙 없이 게이트를 통과시키지 않는다.
+    """
+    if op not in DIRECTION_RULES:
+        raise KeyError(
+            f"op={op!r} 의 방향 규칙이 없다 (D38). op 를 추가했으면 방향도 정해라 — "
+            "규칙 없는 op 를 통과시키면 W10 이 반복된다."
+        )
+    description, predicate = DIRECTION_RULES[op]
+    if predicate is None:
+        return
+    if not predicate(delta):
+        raise DirectionMismatch(
+            f"op={op!r} 는 {description} 를 요구하는데 신규 {delta.new} / "
+            f"제거 {delta.removed} (순증 {delta.net:+d}) 다 (D38). "
+            "최대 연결성분은 '한 덩어리인가' 를 볼 뿐 '옳은 방향인가' 를 보지 않는다 — "
+            "W10 에서 연결성분 1.000 으로 통과한 결과가 실제로는 머리를 **먹은** 것이었다."
+        )
+
+
+def direction_holds(op: str, delta: "VoxelDelta") -> bool:
+    """`check_direction` 의 비예외 판본. **보고용이다** — 게이트에는 예외판을 쓴다."""
+    try:
+        check_direction(op, delta)
+    except DirectionMismatch:
+        return False
+    return True
+
+
+# ══════════════════ D39 — 앵커 잔존율. **문턱은 정하지 않는다**
+#
+# W10 가설: 마스크가 원 부위의 자산 셀을 **전부** 지우면 편집이 아니라 **재생성**이 된다.
+# 실측은 마스크 안 자산 955 / 빈공간 91.79% 였고 결과는 머리가 사라졌다.
+#
+# ⚠️ **데이터가 한 점뿐이다.** 문턱을 정하지 않는다 — 한 점으로 문턱을 만드는 것이
+#    이 프로젝트가 반복해 물린 모양이다 (D5 · D16 · D33 · D37 전부 같은 병).
+#    값을 내고 **병기**만 한다. 문턱은 점이 몇 개 모인 뒤에 정한다.
+
+
+@dataclass(frozen=True)
+class AnchorRetention:
+    """마스크 안에 남은 **원 부위 자산 셀**의 비율. 문턱 없음 (D39)."""
+
+    n_asset_in_mask: int      # 마스크 안 자산(점유) 셀
+    n_mask_cells: int         # 마스크 전체 셀
+    #: 원 부위(예: 머리)의 자산 셀 수. 알 수 없으면 None.
+    n_region_asset: Optional[int] = None
+
+    @property
+    def empty_fraction(self) -> float:
+        """마스크 중 빈 공간 비율. W10 실측 0.9179."""
+        if self.n_mask_cells <= 0:
+            return 0.0
+        return 1.0 - (self.n_asset_in_mask / self.n_mask_cells)
+
+    @property
+    def retention(self) -> Optional[float]:
+        """마스크 안 자산 셀 / 원 부위 자산 셀. 분모를 모르면 None."""
+        if not self.n_region_asset:
+            return None
+        return self.n_asset_in_mask / self.n_region_asset
+
+    def describe(self) -> str:
+        parts = [
+            f"마스크 안 자산 {self.n_asset_in_mask} / 마스크 {self.n_mask_cells}셀"
+            f" (빈공간 {self.empty_fraction * 100:.2f}%)"
+        ]
+        r = self.retention
+        parts.append(f"앵커 잔존율 {r * 100:.1f}%" if r is not None else "앵커 잔존율 —(분모 미상)")
+        parts.append("⚠️ 문턱 없음 — 데이터 1점 (D39)")
         return " · ".join(parts)

@@ -56,6 +56,8 @@ __all__ = [
     "is_x_symmetric",
     "mirror_x",
     "symmetrize_x",
+    "x_symmetry_cost",
+    "assert_x_symmetric",
     "DECODER_NATIVE_TO_GLB",
     "DECODER_NATIVE_TO_VOXEL",
     "GLB_TO_VOXEL",
@@ -287,9 +289,15 @@ def mirror_x(cells: np.ndarray) -> np.ndarray:
 
 
 def is_x_symmetric(cells: np.ndarray) -> bool:
-    """이 셀 집합이 X 반전에 대해 불변인가 (D35).
+    """이 셀 집합이 **격자 중심** X 반전에 대해 불변인가 (D35).
 
     True 면 X 반전 모호성이 **무해하다** — 어느 쪽을 골라도 같은 마스크다.
+
+    🔴 D35-a — "중심" 은 **격자 중심**(x + x' = VOXEL_RES-1)이지 자산 중심이 아니다.
+       W10 에서 이 성질이 **우연히** 성립했다: 머리가 격자 중앙 근처에 있어서
+       `[xlo-w, xhi+w]` 를 클램프한 결과가 마침 합 63 이 됐을 뿐이다.
+       자산이 한쪽으로 치우치면 그대로 깨진다 — 그때는 X 반전이 다른 마스크를
+       만들고 D35 의 "무해" 가 성립하지 않는다.
     """
     a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
     if a.size == 0:
@@ -307,11 +315,48 @@ def symmetrize_x(cells: np.ndarray) -> np.ndarray:
 
     ⚠️ 마스크가 넓어진다. 그 대가로 "X 를 잘못 골랐다" 는 실패 모드가 사라진다.
        IoU 로 못 가리는 것을 억지로 고르는 것보다 낫다.
+    ⚠️ D35-a — 자산이 격자 한쪽으로 치우쳐 있으면 대칭화가 마스크를 **크게** 넓힌다
+       (반대편 허공까지 덮는다). `x_symmetry_cost()` 로 미리 재라.
     """
     a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
     if a.size == 0:
         return a.copy()
     return np.unique(np.concatenate([a, mirror_x(a)], axis=0), axis=0)
+
+
+def x_symmetry_cost(cells: np.ndarray) -> float:
+    """대칭화가 마스크를 몇 배로 넓히는가 (D35-a). 1.0 이면 이미 대칭이다.
+
+    W10 은 1.0 이었지만 그건 **우연이다** — 머리가 격자 중앙 근처에 있어서
+    `[xlo-w, xhi+w]` 클램프 결과가 마침 합 63 이 됐을 뿐이다. 치우친 자산에서는
+    2.0 에 가까워지고, 그만큼 마스크가 허공을 덮는다. 비용이 크면 대칭화 대신
+    fiducial 을 쓸지 다시 판단해야 한다.
+    """
+    a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if a.size == 0:
+        return 1.0
+    return symmetrize_x(a).shape[0] / float(np.unique(a, axis=0).shape[0])
+
+
+def assert_x_symmetric(cells: np.ndarray, where: str = "") -> None:
+    """마스크가 **격자 중심** X 대칭인지 강제한다 (D35-a).
+
+    🔴 D35 는 "마스크를 X 대칭으로 만든다" 로 모호성을 무해화했다. 그런데 그 성질을
+    **아무도 검사하지 않으면 우연히 성립하다가 조용히 깨진다** — W10 이 정확히 그
+    상태였다. 모듈이 `[xlo-w, xhi+w]` 를 클램프할 뿐 격자 중심 대칭을 강제하지
+    않았고, 머리가 중앙에 있어 합이 63 이 됐을 뿐이다.
+    """
+    if not is_x_symmetric(cells):
+        a = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+        lo, hi = int(a[:, 0].min()), int(a[:, 0].max())
+        raise ValueError(
+            f"{where or '마스크'} 가 격자 중심 X 대칭이 아니다 (D35-a): "
+            f"x∈[{lo},{hi}] 이고 lo+hi={lo + hi} 인데 {VOXEL_RES - 1} 이어야 한다. "
+            "좌우 대칭 자산에서는 X 반전을 IoU 로 못 가리므로(dragon-c 1·2위 격차 "
+            "1.01배) 마스크를 대칭으로 만들어 모호성을 무해화한다. "
+            "`symmetrize_x()` 를 쓰거나, 비대칭이 꼭 필요하면 X 를 특정할 "
+            "fiducial 을 함께 보내라."
+        )
 
 
 def assert_not_identity(transform: AxisTransform, where: str = "") -> None:
