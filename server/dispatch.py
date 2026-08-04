@@ -95,7 +95,7 @@ class ConsumerCapability:
 CONSUMERS: Dict[str, ConsumerCapability] = {
     "assemble": ConsumerCapability(
         name="assemble",
-        # 🔴 add 가 없다. 이것이 이 파일의 핵심이다.
+        # 🔴 add 도 recolor 도 없다. 이것이 이 파일의 핵심이다.
         supported=frozenset({"replace_region", "remove"}),
         reasons={
             "add": (
@@ -104,14 +104,43 @@ CONSUMERS: Dict[str, ConsumerCapability] = {
                 "그냥 보내면 예외 없이 신규 복셀이 0 에 가깝게 나오고, "
                 "그 숫자가 '모델이 약하다' 로 오독된다"
             ),
+            "recolor": (
+                "assemble 은 `occupancy_to_mesh` 를 거치는데 그 함수는 정점·면만 낸다 — "
+                "색 채널이 없어서 이 경로를 타는 순간 **색이 통째로 사라진다** (D24 원인 진단). "
+                "색 지시를 여기로 보내면 예외 없이 색이 없어지고, 결과는 '색이 안 바뀌었다' 로 보인다"
+            ),
         },
-        remedy="op=add 는 VoxHammer 경로로 보내라 (consumer='voxhammer')",
+        remedy=(
+            "op=add 는 VoxHammer 로 (consumer='voxhammer'), "
+            "op=recolor 는 recolor 경로로 보내라 (consumer='recolor')"
+        ),
+    ),
+    "recolor": ConsumerCapability(
+        name="recolor",
+        # 색만 한다. 형태를 바꾸는 op 는 이 경로에 없다.
+        supported=frozenset({"recolor"}),
+        reasons={
+            "replace_region": (
+                "recolor 경로는 정점 색만 갈아끼운다 (D24). 기하를 만들 수단이 없다"
+            ),
+            "add": "recolor 경로는 기하를 만들지 않는다. 복셀을 추가할 수단이 없다",
+            "remove": "recolor 경로는 기하를 지우지 않는다. 청크를 비울 수단이 없다",
+        },
+        remedy="형태를 바꾸는 op 는 assemble 또는 VoxHammer 로 보내라",
     ),
     "voxhammer": ConsumerCapability(
         name="voxhammer",
-        supported=frozenset(OPS),
-        reasons={},
-        remedy="",
+        # 🔴 recolor 가 **빠져 있다.** 아래 이유 참고 — W8/맥북 판단.
+        supported=frozenset({"replace_region", "add", "remove"}),
+        reasons={
+            "recolor": (
+                "레벨1 의 정의는 **기하 불변**인데 VoxHammer 는 자산을 재디코딩하므로 "
+                "기하가 흔들린다 (A5000 실측 마스크 밖 IoU 0.853 = 잡음 바닥값 대비 2.10배). "
+                "즉 VoxHammer 로 색만 바꾸면 **레벨1 의 판정 조건 자체가 무너지고** GPU 까지 쓴다. "
+                "recolor 경로는 같은 일을 기하 바이트 100% 보존으로 한다 (D24)"
+            ),
+        },
+        remedy="op=recolor 는 recolor 경로로 보내라 (consumer='recolor'). GPU 가 필요 없다",
     ),
 }
 

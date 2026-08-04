@@ -293,3 +293,50 @@ def test_glb_export_roundtrip_returns_to_the_voxel_frame(tmp_path):
 
     back, _ = load_mesh(str(path), frame="voxel")
     assert np.allclose(back, native, atol=1e-6), "GLB 왕복이 프레임을 바꿨다"
+
+
+# ══════════════════ 6. D28 — 세 번째 좌표 함정: 격자 정본
+def test_slat_coords_is_the_canonical_grid():
+    """★ D28 — 격자 정본은 `slat coords`(manifest)다. 우리 복셀화는 진단용이다."""
+    from server.pipeline.frames import (
+        SURFACE_VOXELIZATION_ROLE,
+        VOXEL_GRID_SOURCE,
+        assert_slat_grid,
+    )
+
+    assert VOXEL_GRID_SOURCE == "slat_coords"
+    assert SURFACE_VOXELIZATION_ROLE == "diagnostic_only"
+    assert_slat_grid(VOXEL_GRID_SOURCE, "마스크")
+
+
+def test_non_canonical_grid_is_rejected():
+    """★★ 자체 표면 복셀화로 만든 마스크를 그대로 쓰면 거부된다.
+
+    축이 맞아도 인덱스가 밀린다 — 실측에서 같은 자산이 3090 z=45 / A5000 z=44 로
+    한 칸 어긋났고, 그 한 칸이 "목 극소점 **위**" 와 "극소점 **에서**" 를 갈랐다.
+    예외는 안 나고 결과만 달라지는 종류의 실패다.
+    """
+    from server.pipeline.frames import GridSourceMismatch, assert_slat_grid
+
+    with pytest.raises(GridSourceMismatch, match="slat_coords"):
+        assert_slat_grid("surface_voxelize", "head3mask")
+    with pytest.raises(GridSourceMismatch):
+        assert_slat_grid("", "마스크")
+
+
+def test_three_coordinate_traps_are_all_encoded_here():
+    """★ 좌표 함정이 셋이고 전부 이 모듈에 상수·함수로 있다.
+
+    D9   축 순열      GLB 파일 → 항등은 오답
+    D9-b to_glb 회전  디코더 native → 항등이 정답
+    D28  격자 정본    slat coords 가 정본, 자체 복셀화는 진단용
+
+    문서로만 적으면 안 지켜진다는 것이 이 프로젝트의 방법론 5조 4번이다.
+    """
+    from server.pipeline import frames
+
+    assert frames.GLB_TO_VOXEL.perm == (0, 2, 1)                  # D9
+    assert frames.DECODER_NATIVE_TO_VOXEL.is_identity             # D9-b
+    assert frames.VOXEL_GRID_SOURCE == "slat_coords"              # D28
+    for fn in ("assert_not_identity", "assert_slat_grid"):
+        assert callable(getattr(frames, fn)), fn

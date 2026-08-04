@@ -45,6 +45,10 @@ from typing import List, Tuple
 import numpy as np
 
 __all__ = [
+    "SURFACE_VOXELIZATION_ROLE",
+    "VOXEL_GRID_SOURCE",
+    "GridSourceMismatch",
+    "assert_slat_grid",
     "DECODER_NATIVE_TO_GLB",
     "DECODER_NATIVE_TO_VOXEL",
     "GLB_TO_VOXEL",
@@ -179,6 +183,60 @@ def decoder_native_to_voxel_frame(pts: np.ndarray) -> np.ndarray:
     항등이라 없어도 되지만, 없으면 다음 세션이 `to_voxel_frame` 을 잘못 건다.
     """
     return DECODER_NATIVE_TO_VOXEL.apply(pts)
+
+
+# ══════════════════════════════════════ D28 — 세 번째 좌표 함정: **격자 정본**
+#
+# 🔴 앞의 둘은 "축을 어떻게 도느냐" 였다. 이건 **"어느 격자를 쓰느냐"** 다.
+#    같은 자산을 두 세션이 각자 복셀화하면 축이 맞아도 인덱스가 한 칸 어긋난다.
+#
+# W7 실측 (같은 dragon-c):
+#     3090    복셀 10,264 · 목 극소 **z=45**:32            (자기 표면 복셀화)
+#     A5000   복셀  9,591 · 목 극소 **z=44**:32, z=45:28   (manifest·slat coords)
+#     청크 수 124 로 일치. 형상도 일치. **인덱스만 한 칸 밀렸다.**
+#
+# 원인은 하나다 — 두 세션이 서로 다른 복셀화를 썼다. 격자가 다르면 z 인덱스가 밀리고,
+# 그 오프바이원이 "마스크가 목 극소점 **위**" 인지 "극소점 **에서**" 인지를 갈랐다.
+# 이번 게이트의 "자연스럽게" = 목 연결부 품질에 직결된다.
+#
+# ⇒ **정본은 slat coords / manifest 다.** VoxHammer 가 그 공간에서 동작하기 때문이다.
+#   우리 `surface_voxelize()` 는 **진단용**이고 **마스크 좌표의 근거가 될 수 없다.**
+#   마스크도 마스크 지문도 slat 격자에서 만든다.
+#
+# 이 사실을 문서에만 두면 안 지켜진다 — D9·D9-b 와 같은 이유로 상수와 함수로 둔다.
+
+#: 복셀 격자의 정본이 무엇인지. 매니페스트/인계물에 그대로 싣는다 (D27 ③).
+VOXEL_GRID_SOURCE = "slat_coords"
+
+#: 우리 표면 복셀화의 지위. 정본이 아니다.
+SURFACE_VOXELIZATION_ROLE = "diagnostic_only"
+
+
+class GridSourceMismatch(ValueError):
+    """마스크가 정본이 아닌 격자에서 만들어졌다 (D28).
+
+    축이 맞아도 인덱스가 밀린다. 실측 오프바이원 하나가 "목 극소점 위" 와
+    "목 극소점에서" 를 갈랐다 — 예외는 안 나고 결과만 달라진다.
+    """
+
+
+def assert_slat_grid(grid_source: str, where: str = "") -> None:
+    """마스크 좌표의 근거가 slat 격자인지 확인한다 (D28).
+
+    호출부가 자기 격자 출처를 **명시적으로 말하게** 만드는 것이 목적이다.
+    `surface_voxelize()` 결과로 만든 마스크를 그대로 넘기면 여기서 걸린다.
+
+    Args:
+        grid_source: 이 좌표가 어느 격자에서 왔는지. 정본은 `VOXEL_GRID_SOURCE`.
+    """
+    if grid_source != VOXEL_GRID_SOURCE:
+        raise GridSourceMismatch(
+            f"{where or '마스크'} 의 격자 출처가 {grid_source!r} 다. 정본은 "
+            f"{VOXEL_GRID_SOURCE!r}(manifest) 이다 — VoxHammer 가 그 공간에서 "
+            "동작하기 때문이다 (D28). 자체 표면 복셀화는 진단용이고 마스크 좌표의 "
+            "근거가 될 수 없다. 실측: 같은 자산에서 3090 z=45 vs A5000 z=44 로 "
+            "한 칸 밀렸고, 그 한 칸이 '목 극소점 위' 와 '극소점에서' 를 갈랐다."
+        )
 
 
 def assert_not_identity(transform: AxisTransform, where: str = "") -> None:

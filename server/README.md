@@ -22,15 +22,32 @@ tests/         합성 픽스처 관통 · 음성 대조 3종 · D9 48순열 전�
 `llm.py` 는 `{op, target_prompt, factor}` 만 낸다. **소비자별 분기는 llm.py 밖에 둔다** —
 안으로 들어오면 게이트가 LLM 출력에 의존하게 된다.
 
-| `op` | 소비자 | GPU | 비고 |
-|---|---|---|---|
-| `replace_region` | assemble **또는** VoxHammer | assemble ✗ / VoxHammer ✓ | 호박 머리는 assemble 로 달성됨 (W5 육안 통과) |
-| `recolor` | **recolor 경로** ([pipeline/recolor.py](pipeline/recolor.py), D24) | ✗ | 복셀 격자 미경유 · **기하 바이트 보존** |
-| `add` | 🔴 **VoxHammer 전용** | ✓ | assemble 로 보내면 **조용히 아무 일도 안 일어난다** (D22 ①) |
-| `remove` | 미정 | — | 아직 0회 |
+능력표 정본은 [dispatch.py](dispatch.py) 의 `CONSUMERS` 이고,
+[tests/test_dispatch.py](tests/test_dispatch.py) 가 그 표를 통째로 잠근다.
 
-🔴 **방어는 소비자 쪽이다.** 소비자는 자기가 처리 못 하는 `op` 를 받으면 **거부**한다.
-`add` 를 assemble 로 보내는 것이 가장 위험하다 — 예외도 안 나고 화면도 안 바뀐다.
+| `op` \ 소비자 | `assemble` | `recolor` | `voxhammer` |
+|---|:---:|:---:|:---:|
+| `replace_region` | ✅ | ✗ | ✅ |
+| `recolor` | 🔴 ✗ | ✅ | 🔴 ✗ |
+| `add` | 🔴 ✗ | ✗ | ✅ |
+| `remove` | ✅ | ✗ | ✅ |
+
+GPU: `assemble` ✗ · `recolor` ✗ · `voxhammer` ✓
+
+**🔴 표시가 조용한 실패를 내는 조합이다** — 예외도 안 나고 화면도 안 바뀐다:
+
+- **`add` → assemble**: 마스크를 비우고 도너를 정수 이동으로 끼우는 연산이라 없던
+  가지를 뻗게 할 수 없다 (D22 ①). 신규 복셀이 0에 가깝게 나오고 "모델이 약하다"로 오독된다.
+- **`recolor` → assemble**: `occupancy_to_mesh` 가 정점·면만 내서 **색이 통째로 사라진다**
+  (D24 원인 진단). 결과는 "색이 안 바뀌었다"로 보인다.
+- **`recolor` → VoxHammer** *(W8 판단)*: 레벨1의 정의는 **기하 불변**인데 VoxHammer는
+  재디코딩하므로 기하가 흔들린다 (마스크 밖 IoU 0.853 = 잡음 바닥값 대비 2.10배).
+  색만 바꾸자고 그 경로를 타면 **레벨1의 판정 조건 자체가 무너지고** GPU까지 쓴다.
+
+🔴 **방어는 소비자 쪽이다.** `dispatch.check_supported()` 가 예외를 던진다 —
+`bool` 을 돌려주지 않는다(검사하고도 무시할 수 있으면 그게 곧 조용한 실패다).
+**자동 강등도 없다**: `add` → `replace_region` 으로 내려 주면 게이트가 "레벨2를 했다"고
+적으면서 실제로는 레벨1 결과를 잰다.
 
 ⚠️ 폴백(키 없음)은 `op` 를 추측하지 않고 항상 `replace_region` 을 낸다. `spec.source`
 가 `"fallback"` 이면 **op 를 신뢰하지 마라** — 자연어 경로가 실제로 돈 것이 아니다.
