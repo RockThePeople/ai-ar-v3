@@ -136,6 +136,22 @@ REAL_CROP_FRACTION = float(os.environ.get("REAL_CROP_FRACTION", "1.0"))
 #      단위가 다른 값을 바닥값에 넣으면 판정이 조용히 무의미해진다. 쓰지 않는다.
 REAL_NOISE_FLOOR = float(os.environ.get("REAL_NOISE_FLOOR", "0.0701"))
 
+# ── recolor(레벨1) 결과 자리 ────────────────────────────────────────────
+#
+# 맥북이 `recolor.py` 를 올리면 그 산출물을 여기에 꽂는다. **import 로 묶지 않는다** —
+# 이 시스템의 산출물 모양은 `.cbin` 청크 세트 하나뿐이므로(D8) 디렉터리 경로만 받는다.
+# 그래야 recolor 가 무엇을 노출하든 DebugView 를 다시 고칠 일이 없다.
+#
+# 기본값은 W6 진단이 실제로 만들어 둔 것을 가리킨다 (눈사람 머리만 주황).
+# 없으면 자리표시를 그리고 화면에 "미도착" 이라고 적는다 — 빈 그림을 결과처럼
+# 보이게 두지 않는다.
+RECOLOR_BEFORE = Path(os.environ.get("RECOLOR_BEFORE_DIR", str(ASSET_ROOT / "base" / "chunks")))
+RECOLOR_AFTER = Path(os.environ.get("RECOLOR_AFTER_DIR", str(ASSET_ROOT / "base" / "chunks_level1")))
+
+
+def _recolor_ready() -> bool:
+    return any(RECOLOR_BEFORE.glob("*.cbin")) and any(RECOLOR_AFTER.glob("*.cbin"))
+
 
 def _scene(kind: str = "synthetic"):
     """관통 1회 + 렌더용 장면. 첫 요청에서 만들고 캐시한다.
@@ -253,7 +269,7 @@ def _page(kind: str) -> Response:
     s = _scene(kind)
     html = s["mod"].render_html(
         s["run"], source_label=_SOURCE_LABEL[kind], gate_rows=_gate_rows(s["run"]),
-        kind=kind,
+        kind=kind, recolor_ready=_recolor_ready(),
     )
     return Response(html, media_type="text/html; charset=utf-8")
 
@@ -285,6 +301,26 @@ def debug_donor_depth(kind: str = "real") -> Response:
         media_type="image/png",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.get("/debug/recolor/{side}.png")
+def debug_recolor(side: str) -> Response:
+    """레벨1(색만) 편집의 before/after 컬러 렌더.
+
+    실루엣·깊이맵은 색 채널을 안 본다 — 레벨1 은 기하가 불변이라 그 둘로는
+    before/after 가 똑같이 나온다. 색 판정에는 이 그림이 정본이다.
+    """
+    from server import debugview
+
+    if side not in ("before", "after"):
+        raise HTTPException(status_code=404, detail=f"side 는 before/after: {side!r}")
+    d = RECOLOR_BEFORE if side == "before" else RECOLOR_AFTER
+    png = (
+        debugview.color_front_png(d)
+        if any(d.glob("*.cbin"))
+        else debugview.placeholder_png()
+    )
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/debug/metrics.json")
