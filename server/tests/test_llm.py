@@ -31,7 +31,7 @@ from server.llm import (
 KOREAN_INSTRUCTIONS = [
     ("머리를 주황색 할로윈 호박으로 바꿔", "replace_region"),  # 레벨2 (W5 육안 통과)
     ("머리를 3개로 만들어", "add"),                             # 레벨2 (D22)
-    ("머리만 빨갛게", "replace_region"),                        # 레벨1 (색)
+    ("머리만 빨갛게", "recolor"),                               # 레벨1 (색 — D24 경로)
     ("머리를 지워", "remove"),
 ]
 
@@ -161,6 +161,20 @@ def test_plan_edit_rejects_empty_instruction(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(MalformedSpec):
         plan_edit("   ")
+
+
+def test_recolor_is_a_distinct_op(monkeypatch):
+    """★ D24/D26 — 색만 바꾸는 지시는 `recolor` 다. `replace_region` 이 아니다.
+
+    둘을 섞으면 색 지시가 assemble 로 가서 **도너를 만들려 든다** — GPU 를 쓰고,
+    기하를 재메싱하고, 그 과정에서 색이 사라진다 (D24 원인 진단 그대로).
+    """
+    assert "recolor" in llm.OPS
+    assert llm.EDIT_SPEC_SCHEMA["properties"]["op"]["enum"] == list(llm.OPS)
+    spec = parse_edit_spec(
+        {"op": "recolor", "target_prompt": "빨간색", "factor": None}
+    )
+    assert spec.op == "recolor"
 
 
 def test_fallback_and_llm_produce_the_same_type():

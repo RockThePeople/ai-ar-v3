@@ -80,6 +80,10 @@ __all__ = [
     "efficacy_largest_component_of_result",
     "efficacy_voxel_delta",
     "evaluate",
+    "HueStats",
+    "hue_shift_degrees",
+    "hue_stats",
+    "rgb_to_hue_saturation",
     "inherited_byte_identity",
     "preservation_geometry_distance",
     "preservation_iou_out",
@@ -91,7 +95,8 @@ __all__ = [
 # 판정에 쓰는 지표. 이 목록 밖의 수치로 게이트를 만들지 않는다 (D5).
 # rev6 §5 S2 의 G2 문구와 1:1 이다.
 GATE_METRICS = (
-    "efficacy_new_voxels",           # > 0
+    "efficacy_new_voxels",           # > 0  (레벨2 — 형태)
+    "hue_shift_degrees",             # > 30 (레벨1 — 색. D5 · D24 recolor 경로)
     "efficacy_change_component",     # ≥ 0.8  (D12: 신규 ∪ 제거)
     "churn_ratio",                   # ≥ 3.0
     "inherited_byte_identity",       # == 1.0
@@ -728,3 +733,77 @@ def _delta_outside(
         new=int(np.setdiff1d(a, b, assume_unique=True).size),
         removed=int(np.setdiff1d(b, a, assume_unique=True).size),
     )
+
+
+# ══════════════════════════════════════════ 색 (D5 레벨1 · D24 recolor 경로)
+@dataclass(frozen=True)
+class HueStats:
+    """색상 통계. **평균 채도를 같이 들고 다닌다** — 이유는 아래.
+
+    🔴 회색의 hue 는 의미가 없다. (148,148,148) 의 색상각은 정의되지 않고,
+    (148,147,147) 처럼 아주 살짝 치우친 값은 **잡음이 각도를 결정한다.**
+    흰 눈사람의 "hue 58.3°" 가 정확히 그 상태다 — 그 숫자 자체는 신뢰할 수 없다.
+
+    그래도 D5 레벨1 판정("마스크 안 평균 hue 이동 > 30°")은 성립한다. 편집 **후**가
+    주황(채도 높음)이라 이동량이 크게 나오기 때문이다. 다만 `before` 가
+    무채색이면 "무엇에서" 30° 움직였는지는 말할 수 없으므로, 그 사실을
+    `is_achromatic` 로 표면에 올린다. 숨기면 다음 세션이 58.3° 를 실측치로 인용한다.
+    """
+
+    mean_hue_deg: float
+    mean_saturation: float
+    n: int
+
+    #: 이 아래면 색상각을 신뢰하지 않는다. HSV 채도 기준.
+    ACHROMATIC_SATURATION = 0.10
+
+    @property
+    def is_achromatic(self) -> bool:
+        return self.mean_saturation < self.ACHROMATIC_SATURATION
+
+
+def rgb_to_hue_saturation(rgb: np.ndarray):
+    """(N,3) uint8 RGB → (hue 도[0,360), HSV 채도[0,1])."""
+    a = np.asarray(rgb, dtype=np.float64).reshape(-1, 3) / 255.0
+    if a.shape[0] == 0:
+        return np.zeros((0,)), np.zeros((0,))
+    mx = a.max(axis=1)
+    mn = a.min(axis=1)
+    d = mx - mn
+    hue = np.zeros_like(mx)
+    nz = d > 1e-12
+    r, g, b = a[:, 0], a[:, 1], a[:, 2]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        is_r = nz & (mx == r)
+        is_g = nz & (mx == g) & ~is_r
+        is_b = nz & ~is_r & ~is_g
+        hue[is_r] = ((g[is_r] - b[is_r]) / d[is_r]) % 6.0
+        hue[is_g] = (b[is_g] - r[is_g]) / d[is_g] + 2.0
+        hue[is_b] = (r[is_b] - g[is_b]) / d[is_b] + 4.0
+    hue = (hue * 60.0) % 360.0
+    sat = np.where(mx > 1e-12, d / np.maximum(mx, 1e-12), 0.0)
+    return hue, sat
+
+
+def hue_stats(rgb: np.ndarray) -> HueStats:
+    """색상의 **원형 평균**. 산술 평균을 쓰면 0°/359° 가 180° 로 나온다."""
+    hue, sat = rgb_to_hue_saturation(rgb)
+    n = int(hue.shape[0])
+    if n == 0:
+        return HueStats(mean_hue_deg=float("nan"), mean_saturation=0.0, n=0)
+    rad = np.deg2rad(hue)
+    mean = float(np.rad2deg(np.arctan2(np.sin(rad).mean(), np.cos(rad).mean())) % 360.0)
+    return HueStats(mean_hue_deg=mean, mean_saturation=float(sat.mean()), n=n)
+
+
+def hue_shift_degrees(before_rgb: np.ndarray, after_rgb: np.ndarray) -> float:
+    """★ D5 레벨1. 마스크 안 평균 hue 이동(도). 문턱 > 30°.
+
+    **원형 거리**다 — 350° 와 10° 의 차이는 340° 가 아니라 20° 다. 최대 180°.
+    W6/3090 실측: 58.3° → 27.0°, 이동 **31.3°** (문턱 통과).
+    """
+    b, a = hue_stats(before_rgb), hue_stats(after_rgb)
+    if b.n == 0 or a.n == 0:
+        return 0.0
+    diff = abs(a.mean_hue_deg - b.mean_hue_deg) % 360.0
+    return float(min(diff, 360.0 - diff))
