@@ -66,6 +66,12 @@ from deltacontract.coords import (  # type: ignore[import-not-found]
 )
 
 __all__ = [
+    "CANONICAL_PRESERVATION",
+    "DISCARDED_PRESERVATION",
+    "DISCARDED_PRESERVATION_WAVES",
+    "DiscardedMeasurement",
+    "PreservationMeasurement",
+    "preservation_measurement",
     "GATE_METRICS",
     "REFERENCE_METRICS",
     "MetricReport",
@@ -76,6 +82,7 @@ __all__ = [
     "churn_ratio",
     "efficacy_change_component",
     "efficacy_iou_in_mask",
+    "efficacy_change_component",      # 🔴 D38(rev28) — 분기 op 게이트에서 강등
     "efficacy_largest_component",
     "efficacy_largest_component_of_result",
     "efficacy_voxel_delta",
@@ -84,8 +91,12 @@ __all__ = [
     "DRAGON_C_NOISE_FLOORS",
     "NoiseFloor",
     "AnchorRetention",
+    "BRANCHING_OPS",
+    "BranchTarget",
+    "uses_cc_frac_gate",
     "Component",
     "Headroom",
+    "change_components",
     "components",
     "head_components",
     "DIRECTION_RULES",
@@ -121,7 +132,7 @@ __all__ = [
 GATE_METRICS = (
     "efficacy_new_voxels",           # > 0  (레벨2 — 형태)
     "hue_shift_degrees",             # > 30 (레벨1 — 색. D5 · D24 recolor 경로)
-    "efficacy_change_component",     # ≥ 0.8  (D12: 신규 ∪ 제거)
+    "branch_component_count",        # ≈ factor (D44) — 분기 op 의 효능 조건
     "churn_ratio",                   # ≥ 3.0
     "inherited_byte_identity",       # == 1.0
     "preservation_geometry_distance",  # ≤ 잡음 바닥값 (baseline 필수)
@@ -133,6 +144,7 @@ REFERENCE_METRICS = (
     "reference_silhouette_global_mean",
     "silhouette_masked_max",
     "efficacy_iou_in_mask",
+    "efficacy_change_component",      # 🔴 D38(rev28) — 분기 op 게이트에서 강등
     "efficacy_largest_component",
     "efficacy_largest_component_of_result",
     "preservation_iou_out",
@@ -637,6 +649,8 @@ class MetricReport:
     inherited_byte_identity: float
     preservation: PreservationDistance
     transfer_saving: float
+    #: 마스크 안 **변화(신규 ∪ 제거)의 연결 성분 수**. 분기 op 게이트의 조건이다 (D44).
+    n_change_components: int = 0
     reference: Dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
@@ -646,7 +660,8 @@ class MetricReport:
             "efficacy_net_voxels": self.delta_in_mask.net,
             "outside_new_voxels": self.delta_outside.new,
             "outside_removed_voxels": self.delta_outside.removed,
-            "efficacy_change_component": self.efficacy_change_component,
+            "n_change_components": self.n_change_components,
+            "efficacy_change_component_ref": self.efficacy_change_component,
             "churn_ratio": self.churn_ratio,
             "inherited_byte_identity": self.inherited_byte_identity,
             "preservation_geometry_distance": self.preservation.distance,
@@ -666,6 +681,7 @@ class MetricReport:
         self,
         *,
         op: Optional[str] = None,
+        target: Optional["BranchTarget"] = None,
         visual_confirmed: Optional[bool] = None,
         min_new_voxels: int = 1,
         min_change_component: float = 0.8,
@@ -695,16 +711,34 @@ class MetricReport:
         Raises:
             NoiseFloorUnknown: 잡음 바닥값 없이 보존을 판정하려 할 때 (D5-b).
         """
+        # `target` 이 오면 그 안의 op 가 정본이다 (LLM 스펙이 곧 목표다).
+        if target is not None and op is None:
+            op = target.op
+
         # D38 — 방향 조건. op 를 안 주면 검사되지 않는다는 사실을 결과에 남긴다.
         direction_ok: Optional[bool] = None
         if op is not None:
             direction_ok = direction_holds(op, self.delta_in_mask)
 
+        # D44 — 분기 op 는 **성분 수 ≈ factor** 로 판정한다.
+        component_count_ok: Optional[bool] = None
+        if target is not None:
+            component_count_ok = target.component_count_ok(self.n_change_components)
+
+        # 🔴 D38(rev28) — 분기 op 에서는 cc_frac 을 쓰지 않는다.
+        #    갈라지는 것이 목적이라 이 지표는 **반대 방향**이다
+        #    (runG 0.537 로 탈락했는데 역대 최고 결과였다).
+        cc_frac_ok = (
+            self.efficacy_change_component >= min_change_component
+            if uses_cc_frac_gate(op) else True
+        )
+
         numeric_efficacy = (
             self.delta_in_mask.new >= min_new_voxels
-            and self.efficacy_change_component >= min_change_component
+            and cc_frac_ok
             and self.churn_ratio >= min_churn_ratio
             and direction_ok is not False
+            and component_count_ok is not False
         )
         if visual_confirmed is None:
             efficacy: Optional[bool] = None if numeric_efficacy else False
@@ -715,6 +749,8 @@ class MetricReport:
             "efficacy": efficacy,
             "efficacy_numeric": numeric_efficacy,
             "direction_ok": direction_ok,          # None = op 미지정 → 미검사 (D38)
+            "component_count_ok": component_count_ok,   # None = 목표 미지정 (D44)
+            "cc_frac_gated": uses_cc_frac_gate(op),     # False = 분기 op (D38 rev28)
             "visual_confirmed": visual_confirmed,
             "preservation": (
                 self.inherited_byte_identity >= min_inherited_identity
@@ -771,6 +807,7 @@ def evaluate(
         efficacy_change_component=efficacy_change_component(
             before, after, mask_cells
         ),
+        n_change_components=len(change_components(before, after, mask_cells)),
         churn_ratio=churn_ratio(before, after, edited_region_cells),
         inherited_byte_identity=inherited_byte_identity(
             parent_blobs, child_blobs, book
@@ -1049,6 +1086,175 @@ DRAGON_C_NOISE_FLOORS = {
 #: W9 의사 마스크 잠정치. **폐기됐다** — 재사용 금지. 대조 기록으로만 남긴다 (D36-a).
 DISCARDED_PSEUDO_HALO_FLOORS = {"halo_band_1": 0.0222, "halo_band_2": 0.0889,
                                 "halo_band_3": 0.1458}
+
+
+# ══════════════ 🔴🔴 D51 — W10~W13 의 보존 수치가 **전부 무효**다
+#
+# `edit_pipeline.py:543` 이 `torch.isin` 을 2D 텐서에 썼다. 그건 **원소 단위**(평탄화
+# 값 집합)지 **행(x,y,z) 멤버십이 아니다.** 어떤 복셀의 x·y·z 값이 삭제집합 **어딘가에**
+# 각각 등장하기만 하면 삭제로 쳤다.
+#
+#     보존 복셀   VoxHammer  13 / 8,511 (**0.15%**)   →   행 단위 정답  7,608 (**89%**)
+#
+#   ★ W12 에서 살아남은 13개는 **값 63 을 포함한 복셀뿐**이다 — 그 마스크에 없던 유일한
+#     값이다. **공간과 아무 상관이 없다.** 되붙일 것이 사실상 없었다.
+#
+# ⇒ **이것이 W10~W13 의 "마스크 밖 3.5배 초과" 를 그대로 설명한다.** 누출이 아니라
+#   보존이 꺼져 있었던 것이다. D33/D36 의 초과배수 비교도 전부 이 위에서 쟀다.
+#
+# 🔴 이것은 **NoiseFloor 타입이 잡은 D33-a 와 같은 종류**의 오염이다. 다만 훨씬 크다.
+#   D33-a 는 "다른 자산의 분모" 였고 이건 "분자가 통째로 거짓" 이었다. 그래서 같은
+#   처방을 쓴다 — **맨 float 으로 돌아다니지 못하게 타입으로 막고, 폐기를 값에 붙인다.**
+#
+# ⚠️ 바닥값(DRAGON_C_NOISE_FLOORS) 자체는 **무편집 재디코딩**으로 잰 것이라 D51 경로를
+#    타지 않는다. 무효인 것은 **그 분모에 대고 잰 W10~W13 의 분자와 초과배수**다.
+#    다만 이 구분은 내가 A5000 의 측정 스크립트를 직접 못 봤다 — 확인이 필요하다.
+
+
+class DiscardedMeasurement(RuntimeError):
+    """D51 로 무효화된 W10~W13 의 보존 수치를 쓰려 했다."""
+
+
+@dataclass(frozen=True)
+class PreservationMeasurement:
+    """마스크 밖 보존 실측 1건. **어느 웨이브 · 유효한가**를 값과 함께 들고 다닌다.
+
+    맨 float 으로 두면 다음 세션이 0.7753 을 인용한다 — 그 숫자는 편집 결과가 아니라
+    **보존이 꺼져 있었다는 사실**을 잰 것이다.
+    """
+
+    wave: str
+    outside_iou_complement: float     # 마스크 밖 1 − IoU
+    floor: NoiseFloor                 # 분모 (같은 자산·같은 영역이어야 한다)
+    preserved_voxels: Optional[int] = None
+    source_voxels: Optional[int] = None
+    #: A5000 이 **보고한** 초과배수. 계산값과 다르면 분모가 다른 것이다 (아래 참조).
+    reported_excess_ratio: Optional[float] = None
+    discarded: bool = False
+    discard_reason: str = ""
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if self.discarded and not self.discard_reason:
+            raise ValueError("폐기 표시에는 이유가 있어야 한다 — 이유 없는 폐기는 잊힌다")
+
+    @property
+    def excess_ratio(self) -> float:
+        """바닥값 대비 초과배수. **폐기된 값에서는 거부한다.**"""
+        self.require_valid()
+        if self.floor.value <= 0.0:
+            raise BaselineMisapplied(f"바닥값이 0 이다: {self.floor.describe()}")
+        return self.outside_iou_complement / self.floor.value
+
+    @property
+    def preservation_rate(self) -> Optional[float]:
+        if self.preserved_voxels is None or not self.source_voxels:
+            return None
+        return self.preserved_voxels / self.source_voxels
+
+    def require_consistent_ratio(self, tolerance: float = 0.02) -> None:
+        """보고된 초과배수와 **분모로 다시 계산한 값**이 맞는지 본다.
+
+        🔴 runG 가 여기 걸린다: 0.2399 / 0.2231 = **1.08** 인데 보고는 **1.16** 이다.
+           1.16 을 얻으려면 분모가 0.2068 이어야 한다. 즉 runG 는 **다른 분모**로
+           쟀다 — 마스크가 W13→W14 로 바뀌었으니 '마스크 밖'이라는 영역 자체가
+           달라졌고, D33 의 규칙대로라면 **바닥값도 그 마스크로 다시 재야 한다.**
+
+        어느 쪽이 맞는지는 내가 정할 수 없다 (A5000 이 잰다). 그래서 **조용히 한쪽을
+        고르지 않고 예외로 올린다.** 분모를 결과에 맞춰 고르는 것이 이 프로젝트가
+        여섯 번 물린 그 병이다.
+        """
+        if self.reported_excess_ratio is None:
+            return
+        computed = self.outside_iou_complement / self.floor.value
+        if abs(computed - self.reported_excess_ratio) > tolerance:
+            implied = self.outside_iou_complement / self.reported_excess_ratio
+            raise BaselineMisapplied(
+                f"{self.wave}: 보고 초과배수 {self.reported_excess_ratio:.2f}× 인데 "
+                f"바닥값 {self.floor.describe()} 으로 계산하면 {computed:.2f}× 다. "
+                f"보고값이 맞으려면 분모가 {implied:.4f} 여야 한다 — 마스크가 바뀌면 "
+                f"'마스크 밖' 영역이 달라지므로 바닥값도 그 마스크로 다시 재야 한다 "
+                f"(D33). 어느 쪽이 맞는지는 A5000 이 잰다."
+            )
+
+    def require_valid(self) -> None:
+        """폐기된 수치를 판정에 쓰면 **예외를 던진다** (D51).
+
+        bool 을 돌려주면 호출부가 검사하고도 무시할 수 있고, 그게 곧 조용한 실패다.
+        """
+        if self.discarded:
+            raise DiscardedMeasurement(
+                f"{self.wave} 의 보존 수치({self.outside_iou_complement:.4f})는 "
+                f"무효다 (D51): {self.discard_reason} "
+                f"유효한 정본은 {sorted(CANONICAL_PRESERVATION)} 이다."
+            )
+
+    def describe(self) -> str:
+        head = f"{self.wave} 마스크밖 1−IoU={self.outside_iou_complement:.4f}"
+        if self.discarded:
+            return f"🔴 폐기 {head} — {self.discard_reason}"
+        rate = self.preservation_rate
+        tail = f" · 보존 {self.preserved_voxels}/{self.source_voxels} ({rate:.0%})" if rate else ""
+        return f"{head} ({self.excess_ratio:.2f}×){tail}{' · ' + self.note if self.note else ''}"
+
+
+#: W15 재측정 기준 전역 바닥값. W8 의 0.2229 와 0.0002 차 — 같은 자산·같은 영역이다.
+DRAGON_C_OUTSIDE_FLOOR_W15 = NoiseFloor(
+    0.2231, "dragon-c", "global", 8000, decoder_variance=0.0017,
+    note="W15 재측정 · D51 수정 후 초과배수의 분모",
+)
+
+#: 🔴 **폐기된** 수치. 지우지 않고 남기는 이유는, 지우면 다음 세션이 다시 잰 것으로
+#  착각하고 인용하기 때문이다. 쓰려고 하면 `require_valid()` 가 막는다.
+DISCARDED_PRESERVATION = {
+    "W13": PreservationMeasurement(
+        wave="W13", outside_iou_complement=0.7753,
+        floor=DRAGON_C_OUTSIDE_FLOOR_W15,
+        preserved_voxels=13, source_voxels=8511,
+        discarded=True,
+        discard_reason=(
+            "torch.isin 이 행이 아니라 원소 단위라 보존이 13/8,511 = 0.15% 였다. "
+            "'마스크 밖 3.48배 초과' 는 누출이 아니라 보존이 꺼져 있었다는 뜻이다. "
+            "생존한 13개는 값 63 을 포함한 복셀뿐 — 공간과 무관하다."
+        ),
+    ),
+}
+#: W10~W12 도 같은 결함 위에서 쟀다. 수치는 A5000 기록에만 있고 여기 옮기지 않는다 —
+#  옮기면 인용되기 때문이다. 이름만 남긴다.
+DISCARDED_PRESERVATION_WAVES = ("W10", "W11", "W12", "W13")
+
+#: ★ **새 정본** (W15, D51 수정 후). runG 가 프로젝트 최고 보존이다.
+CANONICAL_PRESERVATION = {
+    "runF": PreservationMeasurement(
+        wave="runF", outside_iou_complement=0.2737,
+        floor=DRAGON_C_OUTSIDE_FLOOR_W15,
+        preserved_voxels=7608, source_voxels=8511,
+        reported_excess_ratio=1.23,
+        note="D51 수정만 · W13 마스크 그대로 (변수 통제) · overflow 1,025/99청크",
+    ),
+    "runG": PreservationMeasurement(
+        wave="runG", outside_iou_complement=0.2399,
+        floor=DRAGON_C_OUTSIDE_FLOOR_W15,
+        preserved_voxels=7608, source_voxels=8511,
+        reported_excess_ratio=1.16,   # 🔴 0.2399/0.2231 = 1.08 과 불일치 — 분모 확인 필요
+        note="+W14 마스크 · direction_ok TRUE 최초(849/500) · overflow 602/80청크 · 성분 3",
+    ),
+}
+
+
+def preservation_measurement(key: str) -> PreservationMeasurement:
+    """이름으로 실측을 꺼낸다. 폐기된 것을 꺼내면 **꺼낼 때가 아니라 쓸 때** 막힌다 —
+    폐기 사실을 읽히게 하려면 객체가 손에 들어와야 하기 때문이다."""
+    if key in CANONICAL_PRESERVATION:
+        return CANONICAL_PRESERVATION[key]
+    if key in DISCARDED_PRESERVATION:
+        return DISCARDED_PRESERVATION[key]
+    if key in DISCARDED_PRESERVATION_WAVES:
+        raise DiscardedMeasurement(
+            f"{key} 의 보존 수치는 D51 로 무효이고 이 리포에 옮기지 않았다. "
+            f"유효한 정본은 {sorted(CANONICAL_PRESERVATION)} 이다."
+        )
+    raise KeyError(f"모르는 실측: {key!r}")
 
 
 # ══════════════════════════ D31-a — VoxHammer 1회 예산 (게이트 문턱)
@@ -1491,3 +1697,96 @@ class Headroom:
             f" · y {self.lo[1]}/{self.hi[1]} · z {self.lo[2]}/{self.hi[2]}"
             " · ⚠️ 문턱 없음 (D41 · D39-a)"
         )
+
+
+# ══════════ D38(rev28) — `largest_cc_frac` 을 **분기 op 게이트에서 뺀다**
+#
+# 🔴 증거 4건. 이 지표는 분기 생성과 **반대 방향**이고, 통과/탈락이 성공/실패와
+#    아무 상관이 없다:
+#
+#     실행    largest_cc_frac   게이트   실제
+#     W10        1.000          통과     🔴 **파괴** (제거 730 > 신규 304)
+#     W12        0.733          탈락     성공 쪽
+#     W13        0.845          통과     —
+#     runG       0.537          탈락     🔴 **역대 최고 결과**
+#
+# 머리를 셋으로 만들면 변화가 셋으로 갈라지므로 최대 연결성분 비율은 **반드시**
+# 떨어진다. 문턱이 높을수록 잘 갈라진 결과가 더 심하게 탈락한다 — 지표가
+# 측정 대상의 물리와 **정확히 반대**다.
+#
+# ⇒ 분기 op(add + factor)의 게이트는 **변화 성분 수 ≈ factor** (D44) AND
+#   `direction_ok` 다. `cc_frac` 은 `REFERENCE_METRICS` 로 강등한다.
+#
+# ⚠️ 다른 op 에서는 유지한다 (W16 판단):
+#     replace_region / recolor / remove 는 **하나의 응집된 변화**를 기대하므로
+#     "한 덩어리인가" 가 여전히 옳은 질문이다. D12 가 그 자리에서는 맞았다.
+#     분기(add)만 예외다 — 갈라지는 것이 목적인 유일한 op 이기 때문이다.
+#
+# 게이트를 고치는 여섯 번째 경우다 (D5 · D12 · D37 · D38 · D44 · 그리고 이것).
+
+#: 변화가 **갈라지는 것이 목적**인 op. 여기서는 `cc_frac` 을 게이트에 쓰지 않는다.
+BRANCHING_OPS = frozenset({"add"})
+
+
+def uses_cc_frac_gate(op: Optional[str]) -> bool:
+    """이 op 의 게이트에 `largest_cc_frac` 을 쓰는가 (D38 rev28).
+
+    `op` 가 None 이면 **쓰지 않는다** — 무엇을 만들려 했는지 모르는 채로
+    "한 덩어리인가" 를 묻는 것은 W10 이 통과한 그 상태다.
+    """
+    return op is not None and op not in BRANCHING_OPS
+
+
+@dataclass(frozen=True)
+class BranchTarget:
+    """분기 목표 — LLM 이 낸 `{op, factor}` 를 게이트가 받는다 (D44).
+
+    ★ **LLM 출력이 게이트에 쓰이는 첫 자리**다. D23(좌표 금지)은 유지된다 —
+      `factor` 는 좌표가 아니라 **개수**다.
+    """
+
+    op: str
+    factor: Optional[float] = None
+    #: 성분 수가 목표와 몇 개까지 어긋나도 되는지. 1 이면 3±1 을 허용한다.
+    tolerance: int = 1
+
+    @property
+    def expected_components(self) -> Optional[int]:
+        if self.op not in BRANCHING_OPS or self.factor is None:
+            return None
+        return int(round(self.factor))
+
+    def component_count_ok(self, n_components: int) -> Optional[bool]:
+        """변화 성분 수가 목표와 맞는가. 목표가 없으면 None (미검사)."""
+        want = self.expected_components
+        if want is None:
+            return None
+        return abs(n_components - want) <= self.tolerance
+
+    def describe(self, n_components: int) -> str:
+        want = self.expected_components
+        if want is None:
+            return f"성분 {n_components}개 · 목표 없음(op={self.op})"
+        return (
+            f"성분 {n_components}개 vs 목표 {want}개 (±{self.tolerance}) → "
+            f"{'통과' if self.component_count_ok(n_components) else '탈락'}"
+        )
+
+
+def change_components(
+    before: np.ndarray, after: np.ndarray, region: np.ndarray
+) -> List[Component]:
+    """마스크 안 **변화(신규 ∪ 제거)** 의 연결 성분. 분기 판정의 근거다 (D44).
+
+    `efficacy_change_component` 는 이 성분들의 **최대 비율**을 냈다. 분기 op 에서는
+    그 비율이 반대 방향이므로(D38 rev28) **개수**를 쓴다 — 머리를 셋으로 만들면
+    변화도 셋으로 갈라진다.
+    """
+    m = _codes(region)
+    b = np.intersect1d(_codes(before), m, assume_unique=True)
+    a = np.intersect1d(_codes(after), m, assume_unique=True)
+    changed = np.union1d(
+        np.setdiff1d(a, b, assume_unique=True),
+        np.setdiff1d(b, a, assume_unique=True),
+    )
+    return components(_decode(changed))

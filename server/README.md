@@ -96,3 +96,45 @@ python3 -m pytest server/tests/ -q
 - `contract/` 의 `deltacontract` 를 **임포트해서** 쓴다. 복사·재구현하지 않는다.
 - 호스트·포트·경로는 전부 환경변수. `CLAUDE.md` 의 보안 규칙을 따른다.
 - 새 의존성을 추가하기 전에 사용자에게 확인받는다 (`requirements.txt`).
+
+## D54 — overflow 부기의 **연결성분 필터** (`pipeline/delta.py`)
+
+편집이 마스크 밖에 만든 신규 복셀도 부기에 들어가야 한다. 안 넣으면 클라이언트가 옛
+기하를 들고 남는다. 그런데 runG 실측 overflow **602복셀 중 404 가 전역 리메시 잡음**이고,
+전부 넣으면 **80 / 124청크 = 64.5%** 가 델타에 끌려와 절감률이 죽는다.
+
+신호와 잡음을 가르는 것은 **개수가 아니라 연결성**이다 (D29-a 와 같은 논리).
+
+```python
+ov = classify_overflow(before_cells, after_cells, mask,
+                       noise_max_component=<A5000 이 잰 값>)   # 없으면 예외
+bk = derive_bookkeeping_with_overflow(spliced, produced_keys, overflow=ov)
+#   부기 = (마스크 + halo) ∪ 신호 overflow 청크
+```
+
+| 규칙 | 왜 |
+|---|---|
+| 문턱 = 잡음 최대 연결성분 + 1, **인자로 받는다** | 한 점으로 정하지 않는다 (D39-a). 값은 A5000 이 잰다 |
+| 값이 없으면 `OverflowThresholdUnknown` | 기본값을 주면 그게 곧 한 점 문턱이다 |
+| **해시 비교 금지** — 점유(before/after)로 유도 | 재디코딩하면 152/152 청크가 다른 해시를 낸다 |
+| 원시 개수(`n_signal_voxels`/`n_noise_voxels`)를 항상 들고 다닌다 | D37 의 교훈 |
+
+**음성 대조**: 고립 복셀만 있는 입력에서 `signal_chunks == []` 이고 부기가 그대로다
+(`test_pure_noise_does_not_grow_the_bookkeeping`, `test_noise_only_overflow_leaves_bookkeeping_unchanged`).
+
+## D51 — W10~W13 보존 수치는 **무효** (`metrics.py`)
+
+`torch.isin` 이 행이 아니라 원소 단위라 VoxHammer 보존이 **13 / 8,511 = 0.15%** 였다.
+수정 후 **7,608 (89%)**. "마스크 밖 3.48배 초과" 는 누출이 아니라 **보존이 꺼져 있었다**는 뜻이다.
+
+| | 값 | 상태 |
+|---|---|---|
+| W10 ~ W12 | 리포에 옮기지 않았다 | 🔴 폐기 — 꺼내려 하면 `DiscardedMeasurement` |
+| W13 | 0.7753 (13/8,511) | 🔴 폐기 — `excess_ratio` 가 예외를 던진다 |
+| runF | 0.2737 → **1.23×** (7,608/8,511) | ✅ 정본 |
+| runG | 0.2399 → 계산 **1.08×** / 보고 1.16× | ✅ 정본, ⚠️ 분모 불일치 |
+
+⚠️ runG 의 보고 초과배수 1.16× 는 기록된 바닥값 0.2231 과 맞지 않는다 (계산 1.08×).
+1.16 이 나오려면 분모가 **0.2068** 이어야 한다 — 마스크가 W13→W14 로 바뀌면 '마스크 밖'
+영역 자체가 달라지므로 바닥값도 **그 마스크로 다시 재야 한다** (D33).
+`require_consistent_ratio()` 가 이 불일치를 예외로 올린다. 어느 쪽이 맞는지는 A5000 이 잰다.
