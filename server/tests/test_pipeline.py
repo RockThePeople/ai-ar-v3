@@ -886,3 +886,168 @@ def test_voxhammer_budget_is_corrected_to_400s():
     # 문턱이 실비용보다 낮으면 정상 실행이 예산 초과로 기록된다.
     assert sum(stages.values()) > 300.0
     assert sum(stages.values()) < metrics.VOXHAMMER_BUDGET_SECONDS
+
+
+# ══════════════════ 14. D36 — halo 분모는 **대역 전용**이다
+def test_halo_bands_are_a_different_space_from_z_bands():
+    """★★ 목 z대역과 halo 대역은 **서로 다른 공간**이다 (D36).
+
+    rev14 는 "halo 분모 = 목 대역 0.1538" 이라고 적었는데 틀렸다. 대역 전용
+    실측은 halo-1 에서 **0.0222** 다 — 목 값을 쓰면 **약 7배 과소평가**한다.
+    W8 의 "0.0701 → 0.2229 (3.2배 과대평가)" 에 이은 **분모 오류 두 번째**이고,
+    이번엔 반대 방향이다.
+    """
+    f = metrics.DRAGON_C_NOISE_FLOORS
+    assert f["halo_band_1"].value == pytest.approx(0.0222)
+    assert f["halo_band_2"].value == pytest.approx(0.0889)
+    assert f["halo_band_3"].value == pytest.approx(0.1458)
+    # 목 값을 halo-1 에 쓰면 몇 배 어긋나는가.
+    assert f["neck"].value / f["halo_band_1"].value == pytest.approx(6.9, abs=0.1)
+
+    for name in metrics.HALO_BAND_REGIONS:
+        assert f[name].is_halo_band
+    for name in ("global", "body", "neck", "head"):
+        assert not f[name].is_halo_band
+
+
+def test_neck_baseline_cannot_be_used_as_a_halo_denominator():
+    """★★ **D36 의 핵심.** 목 바닥값을 halo 분모로 넘기면 거부된다."""
+    neck = metrics.DRAGON_C_NOISE_FLOORS["neck"]
+    r = metrics.HaloBandResult(
+        halo=1, n_new=1, n_removed=0, n_band_cells=2516, n_union=45, baseline=neck
+    )
+    with pytest.raises(metrics.BaselineMisapplied) as exc:
+        _ = r.excess_ratio
+    assert "다른 공간" in str(exc.value)
+    assert "7배" in str(exc.value)
+
+
+def test_halo_band_region_rejects_unmeasured_widths():
+    """안 잰 폭을 보간하지 않는다 — 없는 값을 있는 척하지 않는다."""
+    assert metrics.halo_band_region(2) == "halo_band_2"
+    for bad in (0, 4, 10):
+        with pytest.raises(metrics.BaselineMisapplied, match="halo"):
+            metrics.halo_band_region(bad)
+
+
+def test_halo_baselines_are_marked_provisional():
+    """의사 마스크로 잰 값이라는 사실이 값과 함께 다닌다 (D36).
+
+    실마스크가 오면 재산출해야 한다 — 그 조건을 숨기면 잠정값이 확정값으로 인용된다.
+    """
+    for name in metrics.HALO_BAND_REGIONS:
+        f = metrics.DRAGON_C_NOISE_FLOORS[name]
+        assert f.provisional
+        assert "잠정" in f.describe()
+    assert not metrics.DRAGON_C_NOISE_FLOORS["global"].provisional
+
+
+# ══════════════════ 15. ★★ D37 — 비율 단독 판정 거부
+def test_ratio_alone_is_refused_when_the_sample_is_tiny():
+    """★★ **D37.** 복셀 하나가 대역의 2% 면 초과배수에 유효숫자가 없다.
+
+    halo-1 대역 합집합이 45복셀이고 바닥값 분자가 신규 1개다. 신규가 2개가 되면
+    비율이 그대로 2배가 된다 — 소수점으로 논할 수 없다.
+    지표를 버리는 **두 번째** 경우다 (첫 번째는 D5 전역 실루엣).
+    """
+    r = metrics.HaloBandResult(
+        halo=1, n_new=1, n_removed=0, n_band_cells=2516, n_union=45,
+        baseline=metrics.DRAGON_C_NOISE_FLOORS["halo_band_1"],
+    )
+    assert not r.has_ratio_resolution
+    assert r.voxel_resolution == pytest.approx(1 / 45)
+
+    with pytest.raises(metrics.RatioWithoutResolution) as exc:
+        r.verdict()
+    msg = str(exc.value)
+    assert "유효숫자" in msg
+    assert "신규 1" in msg          # 원시 개수를 오류 메시지에 실어 보낸다
+    assert "육안" in msg
+
+
+def test_raw_counts_come_first_in_the_report():
+    """★ 원시 개수가 **1급 시민**이다. 비율은 뒤에 참고로만 붙는다 (D37)."""
+    r = metrics.HaloBandResult(
+        halo=1, n_new=1, n_removed=0, n_band_cells=2516, n_union=45,
+        baseline=metrics.DRAGON_C_NOISE_FLOORS["halo_band_1"],
+    )
+    text = r.describe()
+    assert text.index("신규 1") < text.index("참고 비율"), "비율이 개수보다 앞에 있다"
+    assert "유효숫자 없음" in text
+    assert "육안 미확인" in text
+    assert r.n_churn == 1
+
+
+def test_visual_confirmation_decides_and_code_cannot_make_it():
+    """★ 육안은 `visual_confirmed` 와 같은 방식으로 코드가 만들 수 없게 둔다 (D19·D37)."""
+    base = dict(halo=1, n_new=1, n_removed=0, n_band_cells=2516, n_union=45,
+                baseline=metrics.DRAGON_C_NOISE_FLOORS["halo_band_1"])
+
+    assert metrics.HaloBandResult(**base, visual_confirmed=True).verdict() is True
+    assert metrics.HaloBandResult(**base, visual_confirmed=False).verdict() is False
+    # 기본값은 미결이다 — 자동으로 True 가 되지 않는다.
+    assert metrics.HaloBandResult(**base).visual_confirmed is None
+
+
+def test_ratio_only_requires_an_explicit_opt_in_and_is_knife_edge():
+    """우회는 가능하되 **선언해야** 한다 — "해상도가 없는 줄 알면서 쓴다".
+
+    ★ 그리고 이 테스트가 D37 을 그대로 실증한다. 같은 데이터(신규 1 / 합집합 45)에서
+      실제 비율은 1/45 = 0.022222… 인데 기록된 바닥값은 반올림된 0.0222 다.
+      초과배수가 **1.001배** — 문턱 1.0 의 어느 쪽인지가 반올림으로 갈린다.
+      "약 1배" 는 맞는 말이고 "1.001 > 1.0 이므로 실패" 는 무의미한 말이다.
+    """
+    r = metrics.HaloBandResult(
+        halo=1, n_new=1, n_removed=0, n_band_cells=2516, n_union=45,
+        baseline=metrics.DRAGON_C_NOISE_FLOORS["halo_band_1"],
+    )
+    # 우회 자체는 동작한다 — 예외 없이 bool 이 나온다.
+    assert isinstance(r.verdict(allow_ratio_only=True), bool)
+
+    # 🔴 그 bool 이 무의미한 이유: 문턱이 반올림 오차 안에 있다.
+    assert r.excess_ratio == pytest.approx(1.0, abs=0.01)
+    assert abs(r.excess_ratio - 1.0) < r.voxel_resolution, (
+        "초과배수와 문턱의 차이가 복셀 1개가 만드는 변화보다도 작다 — "
+        "이 비율로는 통과/실패를 가를 수 없다 (D37)"
+    )
+    # 신규가 하나만 늘어도 비율이 2배가 된다. 그게 '해상도 없음' 의 뜻이다.
+    two = metrics.HaloBandResult(
+        halo=1, n_new=2, n_removed=0, n_band_cells=2516, n_union=45,
+        baseline=metrics.DRAGON_C_NOISE_FLOORS["halo_band_1"],
+    )
+    assert two.excess_ratio == pytest.approx(2.0, abs=0.02)
+
+
+def test_a_large_band_would_have_ratio_resolution():
+    """거부가 과잉이면 표본이 큰 경우까지 막는다 — 그건 지표를 죽이는 것이다."""
+    big = metrics.HaloBandResult(
+        halo=1, n_new=30, n_removed=10, n_band_cells=20000, n_union=4000,
+        baseline=metrics.DRAGON_C_NOISE_FLOORS["halo_band_1"],
+    )
+    assert big.has_ratio_resolution
+    assert isinstance(big.verdict(), bool)     # 예외 없이 판정된다
+
+
+# ══════════════════ 16. D25-b · D31-b
+def test_neck_minimum_is_read_from_the_table_not_a_summary():
+    """★ D25-b — 진짜 극소는 z=45(28복셀)이고 절단은 z=46 이다.
+
+    Chat 이 rev14 에 "극소 z=44(32)" 로 잘못 요약했고, 한 칸 차이로 목을 문다.
+    요약 오류가 실제 결정을 바꾼 것이 세 번째라 **표에서 직접 고르게** 했다.
+    """
+    assert metrics.DRAGON_C_NECK_PROFILE[44] == 32
+    assert metrics.DRAGON_C_NECK_PROFILE[45] == 28
+    assert metrics.neck_minimum_z() == 45
+    assert metrics.neck_cut_z() == 46
+
+
+def test_features_regeneration_check_is_not_disabled():
+    """★ D31-b — 재사용이 검증과 충돌한다고 검증을 끄지 않는다.
+
+    W1 1회차가 7월자 낡은 features 로 돌면서 "completed successfully" 를 찍었다.
+    끄면 정확히 그 사고가 다시 난다. 재생성 24.5초가 그 위험보다 싸다.
+    """
+    assert metrics.EXPECT_FEATURES_REGEN is True
+    assert metrics.VOXHAMMER_BUDGET_SECONDS_REUSED_RENDER == 270.0
+    # 렌더만 재사용하는 정상 경로는 400초 문턱 안에 넉넉히 들어온다.
+    assert metrics.VOXHAMMER_BUDGET_SECONDS_REUSED_RENDER < metrics.VOXHAMMER_BUDGET_SECONDS

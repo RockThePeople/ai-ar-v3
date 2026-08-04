@@ -83,8 +83,17 @@ __all__ = [
     "BaselineMisapplied",
     "DRAGON_C_NOISE_FLOORS",
     "NoiseFloor",
+    "HALO_BAND_REGIONS",
+    "HaloBandResult",
+    "RatioWithoutResolution",
     "SMALL_SAMPLE_VOXELS",
+    "halo_band_region",
+    "DRAGON_C_NECK_PROFILE",
+    "EXPECT_FEATURES_REGEN",
     "VOXHAMMER_BUDGET_SECONDS",
+    "VOXHAMMER_BUDGET_SECONDS_REUSED_RENDER",
+    "neck_cut_z",
+    "neck_minimum_z",
     "VOXHAMMER_STAGE_SECONDS",
     "HueStats",
     "hue_shift_degrees",
@@ -895,6 +904,9 @@ class NoiseFloor:
     region: str = "global"       # 어느 영역인가 (global / neck / body / head …)
     n_voxels: int = 0            # 표본 크기 — 분산 해석에 필요하다
     decoder_variance: Optional[float] = None   # 같은 자산의 디코더 분산 (유의성 하한)
+    #: 🔴 의사(pseudo) 마스크로 잰 잠정값인가. 실마스크가 오면 재산출해야 한다 (D36).
+    provisional: bool = False
+    note: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.asset_id, str) or not self.asset_id.strip():
@@ -921,10 +933,22 @@ class NoiseFloor:
                 f"(D33). 실측 격차 3.2배 — 자산이 바뀌면 **다시 재라**."
             )
         if region is not None and region != self.region:
+            # D36 — halo 대역과 z 대역은 **서로 다른 공간**이다. 겹치지 않는다.
+            crossing_space = (region in HALO_BAND_REGIONS) != self.is_halo_band
+            extra = (
+                " 🔴 halo 대역과 z 대역은 서로 다른 공간이다 (D36) — "
+                "목 0.1538 을 halo-1(0.0222) 분모로 쓰면 약 7배 과소평가한다."
+                if crossing_space else
+                " dragon-c 안에서도 목 0.1538 vs 머리 0.2358 로 1.5배 차이다."
+            )
             raise BaselineMisapplied(
                 f"바닥값은 영역 {self.region!r} 에서 잰 것인데 {region!r} 에 쓰려 한다 "
-                f"(D33). dragon-c 안에서도 목 0.1538 vs 머리 0.2358 로 1.5배 차이다."
+                f"(D33/D36).{extra}"
             )
+
+    @property
+    def is_halo_band(self) -> bool:
+        return self.region in HALO_BAND_REGIONS
 
     def describe(self) -> str:
         parts = [f"{self.asset_id}/{self.region} 1−IoU={self.value:.4f}"]
@@ -932,15 +956,69 @@ class NoiseFloor:
             parts.append(f"표본 {self.n_voxels}복셀" + (" ⚠️분산 큼" if self.is_small_sample else ""))
         if self.decoder_variance is not None:
             parts.append(f"디코더분산 {self.decoder_variance:.4f}")
+        if self.provisional:
+            parts.append("⚠️잠정(의사 마스크)")
+        if self.note:
+            parts.append(self.note)
         return " · ".join(parts)
 
 
-# W8/A5000 실측. **참조용 상수이지 기본값이 아니다** — 다른 자산에 쓰면 타입이 거부한다.
+# ══════════════════════════ D36 — halo 분모는 **대역 전용**이다
+#
+# 🔴 rev14 의 "halo 분모는 목 대역 0.1538" 이 **틀렸다.** 목 z44–47 과
+#    "halo 바깥 0–2 vox 대역" 은 **서로 다른 공간**이다. 겹치지 않는다.
+#
+#     halo   대역 셀   before   신규/제거   합집합   대역 전용 바닥값
+#      1      2,516      44       1 / 0       45       **0.0222**
+#      2      2,694      41       4 / 0       45       **0.0889**
+#      3      2,876      43       5 / 2       48       **0.1458**
+#     (참고) 목 z44–47   100      17 / 1     100         0.1538
+#
+# ⇒ 0.1538 을 halo-1 분모로 쓰면 **약 7배 과소평가**한다.
+#   W8 의 "0.0701 → 0.2229 (3.2배 과대평가)" 에 이어 **분모 오류 두 번째**이고,
+#   이번엔 **반대 방향**이다. 그래서 region 을 자산과 같은 급으로 강제한다 —
+#   "neck" 과 "halo_band_1" 은 다른 region 이고, 섞으면 타입이 거부한다.
+#
+# ⚠️ 위 값은 **의사(pseudo) 마스크** 기준이다. 실마스크가 오면 재산출해야 한다 —
+#    그 사실도 값과 함께 들고 다닌다 (`provisional`).
+
+#: halo 대역 region 이름. 목·머리·몸통 z대역과 **다른 공간**이다 (D36).
+HALO_BAND_REGIONS = ("halo_band_1", "halo_band_2", "halo_band_3")
+
+
+def halo_band_region(halo: int) -> str:
+    """halo 폭 → region 이름. 오타로 다른 공간을 가리키는 것을 막는다."""
+    if halo not in (1, 2, 3):
+        raise BaselineMisapplied(
+            f"halo 대역 바닥값은 1·2·3 만 잰 상태다: halo={halo} (D36). "
+            "재려면 A5000 이 그 폭으로 다시 재야 한다 — 없는 값을 보간하지 마라."
+        )
+    return f"halo_band_{halo}"
+
+
+# W8/A5000 실측. **참조용 상수이지 기본값이 아니다** — 다른 자산·영역에 쓰면 타입이 거부한다.
 DRAGON_C_NOISE_FLOORS = {
+    # z 대역 (마스크 안/밖 보존용)
     "global": NoiseFloor(0.2229, "dragon-c", "global", 8000, decoder_variance=0.0017),
     "body":   NoiseFloor(0.2225, "dragon-c", "body",   7181, decoder_variance=0.0017),
     "neck":   NoiseFloor(0.1538, "dragon-c", "neck",    100, decoder_variance=0.0017),
     "head":   NoiseFloor(0.2358, "dragon-c", "head",    719, decoder_variance=0.0017),
+    # 🔴 halo 대역 — 위 z 대역과 **다른 공간**이다. 분모로 쓸 것은 이쪽이다 (D36).
+    "halo_band_1": NoiseFloor(
+        0.0222, "dragon-c", "halo_band_1", 45,
+        decoder_variance=0.0017, provisional=True,
+        note="의사 마스크 기준 · 신규 1 / 제거 0 · 대역 셀 2,516",
+    ),
+    "halo_band_2": NoiseFloor(
+        0.0889, "dragon-c", "halo_band_2", 45,
+        decoder_variance=0.0017, provisional=True,
+        note="의사 마스크 기준 · 신규 4 / 제거 0 · 대역 셀 2,694",
+    ),
+    "halo_band_3": NoiseFloor(
+        0.1458, "dragon-c", "halo_band_3", 48,
+        decoder_variance=0.0017, provisional=True,
+        note="의사 마스크 기준 · 신규 5 / 제거 2 · 대역 셀 2,876",
+    ),
 }
 
 
@@ -968,6 +1046,159 @@ VOXHAMMER_BUDGET_SECONDS = 400.0
 VOXHAMMER_STAGE_SECONDS = {
     "slat_to_glb": 46.4,
     "render_150_views": 80.4,   # w8/render/ 재사용 시 절약 가능
-    "features": 24.5,           # 재사용은 D10 래퍼의 mtime 검증과 충돌한다
+    "features": 24.5,           # 🔴 D31-b — 재사용해도 **검사는 끄지 않는다** (아래)
     "edit": 200.0,
 }
+
+# ── D31-b — features 재사용은 검사를 **끄지 않는다** ─────────────────────
+#
+# D10 래퍼가 `features.npz` 의 mtime 을 검증하는 이유는 W1 1회차가 **7월자 낡은
+# features 로 돌면서 "completed successfully" 를 찍었기** 때문이다
+# (`extract_feature.py:125` 의 맨 except 가 OOM 을 삼켰다).
+#
+# 재사용이 그 검증과 충돌한다고 해서 검증을 끄면, 정확히 그 사고가 다시 난다.
+# ⇒ `EXPECT_FEATURES_REGEN=1` 을 **유지**하는 것이 정본이다. 재생성 비용 24.5초는
+#   "낡은 캐시로 돌고도 성공이라고 적는" 위험보다 싸다.
+
+#: D31-b — features 재사용 시에도 재생성 기대 플래그를 유지한다.
+EXPECT_FEATURES_REGEN = True
+
+#: D31-b — features 를 재생성하는 정상 경로의 편집 예산(초). 렌더만 재사용한다.
+VOXHAMMER_BUDGET_SECONDS_REUSED_RENDER = 270.0
+
+# ── D25-b — 목 극소 z 정정 ────────────────────────────────────────────────
+#
+# A5000 W7 원문:  z=42:108 → 43:60 → 44:32 → **45:28** → 46:30 → 47:28 → 48:40 → 49:75
+# 🔴 Chat 이 rev14 에 "극소 z=44(32복셀)" 로 잘못 요약했다. 진짜 극소는 **z=45(28)** 이다.
+#    D25-a(절단 = 극소 위 = neck+1)를 적용하면 절단은 **z=46**. rev14 전제대로면 z=45 —
+#    **한 칸 차이로 목을 문다.**
+#
+# 상수로 두는 이유: 요약 오류가 실제 결정을 바꾼 것이 이번이 세 번째다
+# (인계 경로 · rev 미도달 · 극소 z). 문서 문장은 다시 잘못 요약될 수 있다.
+
+#: dragon-c 의 z별 복셀 수 (A5000 W7 실측). 극소를 코드가 직접 고르게 한다.
+DRAGON_C_NECK_PROFILE = {42: 108, 43: 60, 44: 32, 45: 28, 46: 30, 47: 28, 48: 40, 49: 75}
+
+
+def neck_minimum_z(profile=None) -> int:
+    """목 극소 z. **표에서 직접 고른다** — 요약을 믿지 않는다 (D25-b).
+
+    동점이면 낮은 z 를 고른다 (z=45:28 과 z=47:28 이 동점이지만 극소는 45 다 —
+    47 은 머리로 올라가는 구간이라 목이 아니다).
+    """
+    prof = DRAGON_C_NECK_PROFILE if profile is None else profile
+    return min(sorted(prof), key=lambda z: prof[z])
+
+
+def neck_cut_z(profile=None) -> int:
+    """절단 z = 극소 **위** 한 칸 (D25-a). dragon-c 에서는 46 이다."""
+    return neck_minimum_z(profile) + 1
+
+
+# ══════════════════ D37 — halo 판정: 비율을 버리고 **원시 개수 + 육안**으로
+#
+# 🔴 지표를 버리는 **두 번째** 경우다 (첫 번째는 D5 전역 실루엣). 둘 다 같은 병이다:
+#    **지표가 측정 대상의 물리를 반영하지 못한다.**
+#
+# 사실: halo 대역 합집합이 **45~48복셀**뿐이고 바닥값 분자가 **신규 1개**(halo-1)다.
+#       ⇒ **복셀 하나가 대역의 2%** 다. 초과배수를 소수점으로 논할 수 없다.
+#       0.0222 라는 값은 "1/45" 이고, 신규가 2개가 되면 그대로 2배가 된다.
+#
+# ⇒ 원시 개수를 **반드시 병기**하고, 표본이 작으면 **비율 단독 판정을 거부**한다.
+#   "목이 자연스럽게 이어지는가" 는 근본적으로 육안 질문이다 (D19 의 선례).
+#   육안은 `visual_confirmed` 와 같은 방식으로 **코드가 만들 수 없게** 둔다.
+
+
+class RatioWithoutResolution(RuntimeError):
+    """표본이 작아 비율에 유효숫자가 없다. 비율 단독으로 판정하지 않는다 (D37)."""
+
+
+@dataclass(frozen=True)
+class HaloBandResult:
+    """halo 대역 계측. **원시 개수가 1급 시민이다** — 비율은 참고값이다 (D37)."""
+
+    halo: int
+    n_new: int                    # ★ 원시 개수. 이것이 판정의 근거다
+    n_removed: int
+    n_band_cells: int             # 대역 전체 셀 수 (분모의 분모)
+    n_union: int                  # before ∪ after 합집합 — 비율의 분모
+    baseline: Optional[NoiseFloor] = None
+    #: 육안 확인. 🔴 코드가 만들 수 없다 — 사람이 넣는다 (D19 · D37).
+    visual_confirmed: Optional[bool] = None
+
+    @property
+    def n_churn(self) -> int:
+        return self.n_new + self.n_removed
+
+    @property
+    def ratio(self) -> float:
+        """1 − IoU 상당의 비율. **참고값이다.** 판정에 단독으로 쓰지 마라."""
+        return self.n_churn / self.n_union if self.n_union else 0.0
+
+    @property
+    def voxel_resolution(self) -> float:
+        """복셀 **하나**가 비율에서 차지하는 몫. 0.02 면 유효숫자가 없다는 뜻이다."""
+        return 1.0 / self.n_union if self.n_union else float("inf")
+
+    @property
+    def has_ratio_resolution(self) -> bool:
+        """비율을 소수점으로 논할 만한 해상도가 있는가.
+
+        복셀 하나가 대역의 1% 를 넘으면 없다고 본다 — 실측 2% 가 그 상태다.
+        """
+        return self.n_union > 0 and self.voxel_resolution <= 0.01
+
+    @property
+    def excess_ratio(self) -> float:
+        """바닥값 대비 초과배수. **"약 N배" 수준의 참고값이다** (D37)."""
+        if self.baseline is None:
+            raise NoiseFloorUnknown(_NO_BASELINE_MSG.format(d=self.ratio))
+        self.baseline.require_same_asset(
+            self.baseline.asset_id, halo_band_region(self.halo)
+        )
+        if self.baseline.value == 0.0:
+            return 0.0 if self.ratio == 0.0 else float("inf")
+        return self.ratio / self.baseline.value
+
+    def verdict(self, *, allow_ratio_only: bool = False) -> bool:
+        """halo 판정. **비율 단독으로는 판정하지 않는다** (D37).
+
+        Raises:
+            RatioWithoutResolution: 표본이 작아 비율에 유효숫자가 없는데
+                육안 확인도 없다. `allow_ratio_only=True` 로 우회할 수 있지만,
+                그건 "해상도가 없는 줄 알면서 쓴다" 는 선언이다.
+            NoiseFloorUnknown: 바닥값이 없다.
+        """
+        if self.visual_confirmed is not None:
+            return bool(self.visual_confirmed)
+        if not self.has_ratio_resolution and not allow_ratio_only:
+            raise RatioWithoutResolution(
+                f"halo-{self.halo} 대역 합집합이 {self.n_union}복셀뿐이라 복셀 하나가 "
+                f"{self.voxel_resolution * 100:.1f}% 다 — 초과배수에 유효숫자가 없다 (D37). "
+                f"원시 개수는 신규 {self.n_new} / 제거 {self.n_removed} 다. "
+                "판정은 깊이맵 육안으로 한다 (`visual_confirmed`). "
+                "'목이 자연스럽게 이어지는가' 는 근본적으로 육안 질문이다."
+            )
+        return self.excess_ratio <= 1.0
+
+    def describe(self) -> str:
+        """★ 원시 개수를 **항상** 앞에 둔다. 비율은 뒤에 참고로 붙인다 (D37)."""
+        parts = [
+            f"halo-{self.halo}: 신규 {self.n_new} / 제거 {self.n_removed}"
+            f" (합집합 {self.n_union}복셀 · 대역 {self.n_band_cells}셀)"
+        ]
+        if not self.has_ratio_resolution:
+            parts.append(
+                f"⚠️ 복셀 1개 = {self.voxel_resolution * 100:.1f}% — 비율에 유효숫자 없음"
+            )
+        parts.append(f"참고 비율 {self.ratio:.4f}")
+        if self.baseline is not None:
+            try:
+                parts.append(f"참고 약 {self.excess_ratio:.1f}배")
+            except (NoiseFloorUnknown, BaselineMisapplied):
+                pass
+        parts.append(
+            "육안 미확인" if self.visual_confirmed is None
+            else ("육안 통과" if self.visual_confirmed else "육안 실패")
+        )
+        return " · ".join(parts)
