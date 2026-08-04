@@ -189,6 +189,40 @@ namespace DeltaContract
     /// 편집 마스크. as-built 라쏘(Direction A)는 mode="voxels" 로 보낸다.
     /// bbox 는 단순 박스 선택용 대체 경로.
     /// </summary>
+    /// <summary>`GET /v2/assets/{id}/slat_coords.v{n}.json` 응답 (3.26.0 · W17).
+    ///
+    /// 🔴 <b>라쏘가 투영할 대상.</b> 정점이 아니라 <b>복셀</b>을 투영해야 결과가 곧바로
+    /// SLat 마스크가 된다 (D58). `.cbin` 에는 slat coords 가 없다 (D34).</summary>
+    [Serializable]
+    public class SlatCoordsResponse
+    {
+        [JsonProperty("asset_id")]    public string AssetId;
+        [JsonProperty("version")]     public int Version;
+        [JsonProperty("grid_source")] public string GridSource = "slat_coords";
+        [JsonProperty("voxel_res")]   public int VoxelRes = DeltaConstants.VoxelRes;
+        [JsonProperty("n_cells")]     public int NCells;
+        [JsonProperty("coords")]      public List<int[]> Coords = new List<int[]>();
+        [JsonProperty("fingerprint")] public string Fingerprint;
+
+        /// <summary>받은 목록이 잘리지 않았는지. 잘린 목록도 형태는 멀쩡해서 예외를 안 낸다.</summary>
+        public void Validate()
+        {
+            if (Coords == null || Coords.Count != NCells)
+                throw new InvalidOperationException(
+                    $"n_cells({NCells}) 와 coords 길이({Coords?.Count ?? 0}) 가 다르다.");
+            if (GridSource != "slat_coords")
+                throw new InvalidOperationException(
+                    $"격자 출처가 정본이 아니다: {GridSource} (D28-a). 편집에 쓰지 마라.");
+        }
+
+        public List<UnityEngine.Vector3Int> ToCells()
+        {
+            var outp = new List<UnityEngine.Vector3Int>(Coords.Count);
+            foreach (var c in Coords) outp.Add(new UnityEngine.Vector3Int(c[0], c[1], c[2]));
+            return outp;
+        }
+    }
+
     [Serializable]
     public class EditMask
     {
@@ -198,11 +232,28 @@ namespace DeltaContract
         [JsonProperty("voxels",   NullValueHandling = NullValueHandling.Ignore)] public List<int[]> Voxels;
         [JsonProperty("halo_margin_voxels")]  public int HaloMarginVoxels = 1;
 
-        public static EditMask FromVoxels(IEnumerable<UnityEngine.Vector3Int> cells, int halo = 1)
+        /// <summary>🔴 3.26.0 (D28-a) — 이 셀들이 어느 격자에서 나왔는가.
+        /// "slat_coords"(정본) 또는 "surface_voxelize"(진단용). <b>mode="voxels" 에서는
+        /// 생략할 수 없다</b> — 기본값으로 메우면 잘못된 격자가 침묵으로 정본을 참칭하고,
+        /// 그때는 예외가 안 나면서 마스크·조립·지표가 전부 다른 물체에 대해 동작한다.</summary>
+        [JsonProperty("grid_source", NullValueHandling = NullValueHandling.Ignore)]
+        public string GridSource;
+
+        /// <param name="gridSource">라쏘(SlatLassoPicker) 산출물이면 "slat_coords".
+        /// 기본값을 두지 않는 것이 요점이다 — 부르는 쪽이 매번 답하게 한다.</param>
+        public static EditMask FromVoxels(
+            IEnumerable<UnityEngine.Vector3Int> cells, string gridSource, int halo = 1)
         {
+            if (string.IsNullOrEmpty(gridSource))
+                throw new ArgumentException(
+                    "grid_source 가 필요하다 (D28-a). 라쏘 산출물이면 \"slat_coords\" 다.",
+                    nameof(gridSource));
             var list = new List<int[]>();
             foreach (var c in cells) list.Add(new[] { c.x, c.y, c.z });
-            return new EditMask { Mode = "voxels", Voxels = list, HaloMarginVoxels = halo };
+            return new EditMask
+            {
+                Mode = "voxels", Voxels = list, HaloMarginVoxels = halo, GridSource = gridSource,
+            };
         }
     }
 

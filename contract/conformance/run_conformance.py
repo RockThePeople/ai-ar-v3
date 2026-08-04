@@ -30,8 +30,11 @@ def _install_pytest_stub() -> None:
     stub = types.ModuleType("pytest")
 
     class _Raises:
-        def __init__(self, exc):
+        # `match=` 를 받는다 (3.26.0). 없을 때는 pytest 로 쓴 테스트가 여기서만
+        # TypeError 로 죽어서, **자기 검사가 자기 환경에서 안 도는** 상태가 됐다.
+        def __init__(self, exc, match=None):
             self.exc = exc
+            self.match = match
 
         def __enter__(self):
             return self
@@ -39,7 +42,16 @@ def _install_pytest_stub() -> None:
         def __exit__(self, et, ev, tb):
             if et is None:
                 raise AssertionError(f"{self.exc.__name__} 이 발생하지 않았다")
-            return issubclass(et, self.exc)
+            if not issubclass(et, self.exc):
+                return False
+            if self.match is not None:
+                import re as _re
+
+                if not _re.search(self.match, str(ev)):
+                    raise AssertionError(
+                        f"예외 메시지가 {self.match!r} 와 안 맞는다: {ev}"
+                    )
+            return True
 
     class _Skip(Exception):
         def __init__(self, reason=""):

@@ -575,7 +575,59 @@ def test_edit_mask_validation():
         EditMask(mode="bbox", bbox_min=(0.1, 0, 0), bbox_max=(0.0, 1, 1))
     with pytest.raises(ValueError):
         EditMask(mode="voxels", voxels=[])
-    EditMask(mode="voxels", voxels=[(1, 2, 3)])  # ok
+
+    # 🔴 3.26.0 (D28-a) — mode="voxels" 는 grid_source 를 **생략할 수 없다.**
+    #    기본값으로 메우면 잘못된 격자가 침묵으로 정본을 참칭한다.
+    with pytest.raises(ValueError, match="grid_source"):
+        EditMask(mode="voxels", voxels=[(1, 2, 3)])
+    with pytest.raises(ValueError):
+        EditMask(mode="voxels", voxels=[(1, 2, 64)], grid_source="slat_coords")
+    with pytest.raises(ValueError):
+        EditMask(mode="voxels", voxels=[(1, 2, 3)], grid_source="lasso")
+
+    m = EditMask(mode="voxels", voxels=[(1, 2, 3)], grid_source="slat_coords")  # ok
+    assert m.is_canonical_grid
+    assert not EditMask(mode="voxels", voxels=[(1, 2, 3)],
+                        grid_source="surface_voxelize").is_canonical_grid
+    # bbox 는 격자가 없다 — 요구하지 않는다.
+    EditMask(mode="bbox", bbox_min=(-0.1, -0.1, -0.1), bbox_max=(0.1, 0.1, 0.1))
+
+
+@needs_schemas
+def test_slat_coords_response():
+    """`GET /v2/assets/{id}/slat_coords.v{n}.json` — 라쏘가 투영할 대상 (3.26.0)."""
+    from deltacontract import mask_fingerprint, parse_slat_coords_uri, slat_coords_uri
+    from deltacontract.schemas import SlatCoordsResponse
+
+    cells = [(1, 2, 3), (10, 20, 30)]
+    r = SlatCoordsResponse(
+        asset_id="dragon-c", version=7, n_cells=len(cells), coords=cells,
+        fingerprint=mask_fingerprint(cells),
+    )
+    assert r.grid_source == "slat_coords" and r.voxel_res == 64
+
+    # 잘린 목록은 형태가 멀쩡해서 예외를 안 낸다 — 그래서 길이를 실어 대조한다.
+    with pytest.raises(ValueError, match="n_cells"):
+        SlatCoordsResponse(asset_id="a", version=1, n_cells=2, coords=[(1, 2, 3)],
+                           fingerprint="x")
+    with pytest.raises(ValueError):
+        SlatCoordsResponse(asset_id="a", version=1, n_cells=1, coords=[(1, 2, 64)],
+                           fingerprint="x")
+
+    uri = slat_coords_uri("dragon-c", 7)
+    assert uri == "/v2/assets/dragon-c/slat_coords.v7.json"
+    assert parse_slat_coords_uri(uri) == ("dragon-c", 7)
+
+
+def test_slat_coords_uri_rejects_malformed():
+    from deltacontract import UriRuleViolation, parse_slat_coords_uri
+
+    for bad in ("/v2/assets/a/slat_coords.json",
+                "/v2/assets/a/slat_coords.v7.cbin",
+                "/v2/trellis/assets/a/slat_coords.v7.json",
+                "/v2/assets/a/b/slat_coords.v7.json"):
+        with pytest.raises(UriRuleViolation):
+            parse_slat_coords_uri(bad)
 
 
 # ══════════════════════════════════════════════════════ .cbin 포맷
@@ -841,13 +893,15 @@ def test_schema_field_names_match_csharp_mirror():
         JobStatus,
         PatchPackage,
         ServerHealth,
+        SlatCoordsResponse,
         SpatialContext,
     )
 
     cs = (HERE.parent / "unity" / "ChunkContracts.cs").read_text(encoding="utf-8")
     models = (
         ContractInfo, ChunkEntry, ChunkManifest, PatchPackage, SpatialContext,
-        GenerateRequest, EditMask, EditRequest, JobStatus, ErrorBody, ServerHealth,
+        GenerateRequest, SlatCoordsResponse, EditMask, EditRequest, JobStatus,
+        ErrorBody, ServerHealth,
     )
     missing = [
         f"{m.__name__}.{name}"

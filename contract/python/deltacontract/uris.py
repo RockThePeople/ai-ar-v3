@@ -67,6 +67,10 @@ _STAGING_URI_RE = re.compile(
 #: 문자 집합에 `/` 가 없어도 `..` 자체는 통과하고, 정규화하면 staging 을 한 단계
 #:벗어나 자산 청크 경로를 가리킨다. 출처가 A5000 이라 실제 위험은 낮았지만,
 #: **출처를 신뢰의 근거로 삼으면 그 가정이 바뀌었을 때 아무도 모른다.**
+_SLAT_URI_RE = re.compile(
+    rf"^{re.escape(API_PREFIX)}/assets/(?P<asset_id>[^/]+)/slat_coords\.v(?P<version>\d+)\.json$"
+)
+
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 #: `job_id` 길이 상한. 3090 지적(2026-07-31): 계약에 상한이 없어 200자가 통과했다
@@ -78,6 +82,33 @@ JOB_ID_MAX_LEN = 128
 def chunk_uri(asset_id: str, chunk_key: str, version: int) -> str:
     """`ChunkEntry.uri` 의 유일한 생성 경로 (Unity 가 받는 것)."""
     return f"{API_PREFIX}/assets/{asset_id}/chunks/{chunk_key}.v{int(version)}.cbin"
+
+
+def slat_coords_uri(asset_id: str, version: int) -> str:
+    """자산의 **SLat 점유 좌표** 경로 (3.26.0 · W17 D57/D58).
+
+    🔴 **왜 이 엔드포인트가 필요한가.** 라쏘는 화면에 투영한 것을 고른다. 정점을
+    투영하면 결과가 **메시 정점 집합**이라 SLat 마스크가 아니고, 그걸 복셀로
+    되돌리려면 격자 역산이 필요하다. `.cbin` 에는 slat coords 가 없어서(D34)
+    그 역산은 **두 번 실패했다.**
+
+    ⇒ 클라이언트가 처음부터 slat coords 를 받아 그것을 투영한다. 역산이 없어진다.
+
+    버전을 경로에 넣는 이유는 청크와 같다 — 캐시 키가 되고, 편집 후 판본이 바뀌면
+    옛 좌표를 조용히 재사용하는 일이 없다.
+    """
+    return f"{API_PREFIX}/assets/{asset_id}/slat_coords.v{int(version)}.json"
+
+
+def parse_slat_coords_uri(uri: str) -> Tuple[str, int]:
+    """`slat_coords_uri()` 의 역함수. (asset_id, version)."""
+    m = _SLAT_URI_RE.match(uri)
+    if not m:
+        raise UriRuleViolation(
+            f"slat_coords uri 규칙 위반: {uri!r}. "
+            f"기대 형식: {API_PREFIX}/assets/{{asset_id}}/slat_coords.v{{n}}.json"
+        )
+    return m.group("asset_id"), int(m.group("version"))
 
 
 def trellis_chunk_uri(asset_id: str, chunk_key: str, version: int) -> str:
