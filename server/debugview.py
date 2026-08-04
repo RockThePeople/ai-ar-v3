@@ -546,11 +546,18 @@ def render_runs_index(runs) -> str:
                 f'<td class="ref">{r.gate}</td></tr>'
             )
             continue
+        # 🔴 철회된 수치는 **철회됐다고 적고 낸다.** 지우면 "왜 안 보이지" 가 되고,
+        #    그냥 두면 현행 수치와 구분이 안 된다. 둘 다 나쁘다.
+        void = (f'<div class="void">철회 — {r.invalidated}</div>'
+                if r.invalidated else "")
         rows.append(
-            f'<tr><td class="mono">{r.when}</td>'
+            f'<tr class="{"voided" if r.invalidated else ""}">'
+            f'<td class="mono">{r.when}</td>'
             f"<td>{_KIND_KO.get(r.kind, r.kind)}</td>"
             f'<td class="mono">{r.asset_id or MISSING_TXT}</td>'
-            f"<td>{r.headline}</td>"
+            # 취소선은 **수치 텍스트에만** 건다. 셀 전체에 걸면 철회 사유까지
+            # 그어져서, 왜 철회됐는지를 읽지 말라는 화면이 된다.
+            f'<td><span class="{"struck" if r.invalidated else ""}">{r.headline}</span>{void}</td>'
             # 사유를 같이 낸다 — "미도착" 두 건이 서로 다른 이유일 수 있다
             # (judgment.json 이 없다 vs gate_g2 블록이 없다). 라벨만으로는 못 가른다.
             f'<td class="{cls}">{"—" if r.gate == NOT_APPLICABLE_TXT else r.gate}'
@@ -564,6 +571,9 @@ def render_runs_index(runs) -> str:
 .mono {{ font-variant-numeric:tabular-nums; }}
 .why {{ color:#6b7688; font-size:11px; }}
 tr.pending td {{ color:#8b96a8; font-style:italic; }}
+tr.voided td {{ color:#6b7688; }}
+.struck {{ text-decoration:line-through; }}
+.void {{ color:#e8b46a; font-size:11px; margin-top:4px; }}
 </style></head><body>
 <h1>최근 산출물 5건</h1>
 <p class="sub"><a href="/">합성 픽스처</a> · <a href="/real">실자산</a> · <a href="/runs">목록</a></p>
@@ -588,14 +598,40 @@ def render_run_detail(r, spec) -> str:
     # A5000 이 렌더해 보낸 그림이 있으면 **그것이 정본**이다 — 깊이 카메라가 그쪽 것이고
     # 우리가 다시 렌더하면 다른 그림이 된다.
     delivered = r.delivered
+    # ── 🔴 두 단계 개선을 **한 화면에서** 본다 (①보존 수정 → ②마스크 개선).
+    #    따로 걸면 어느 단계가 무엇을 좋게 했는지 화면에서 안 갈린다. 둘 다 전폭이다 —
+    #    판정 대상이 측면 머리의 주둥이·뿔 실루엣이라 줄이면 애초에 판정을 못 한다.
+    stage = r.stage_pair
+    stage_pane = ""
+    if stage:
+        stage_pane = (
+            '<div class="pane"><h2>두 단계 — 위 ① / 아래 ②</h2>'
+            + "".join(
+                f'<div class="hero"><img src="/runs/{r.run_id}/img/{n}" alt="{lbl}">'
+                f"<span>{lbl}</span></div>"
+                for n, lbl in stage
+            )
+            + '<div class="legend">같은 자산·같은 절단면이다. ① 은 입력 바이트가 이전 웨이브와 '
+            '동일하고 보존 수정만 다르다 — 그래서 둘의 차이는 <b>마스크</b> 차이다.</div></div>'
+        )
     if delivered:
+        skip = {n for n, _ in stage}
         canon_name = r.delivered_canonical
+        if canon_name in skip:
+            # 정본을 두 단계 창에서 이미 전폭으로 걸었다. 여기서 또 걸면 같은 그림이
+            # 두 번 나오고, 두 번 나오면 어느 쪽이 정본인지가 흐려진다.
+            canon_name = next((n for n in delivered if n not in skip), None)
+        delivered = {k: v for k, v in delivered.items() if k not in skip}
+    if delivered:
         # 정본은 **한 줄을 통째로** 쓴다. 나머지와 같은 크기로 늘어놓으면 정본이
         # 정본 구실을 못 한다 — 사용자가 보려는 그림이 그것이다.
+        # 정본 표시는 **진짜 정본에만** 붙인다. 두 단계 창으로 옮겨 간 뒤 남은 그림에
+        # 그대로 ★ 를 붙이면 화면이 정본을 두 개라고 말하게 된다.
+        star = " ★ 정본" if canon_name == r.delivered_canonical else ""
         head = (
             f'<div class="hero"><img src="/runs/{r.run_id}/img/{canon_name}" '
             f'alt="{delivered[canon_name]}">'
-            f'<span>{delivered[canon_name]} ★ 정본</span></div>' if canon_name else ""
+            f'<span>{delivered[canon_name]}{star}</span></div>' if canon_name else ""
         )
         # 🔴 4방향 짝은 **정본과 같은 급**으로 전폭에 둔다. 옆·뒤 뷰가
         #    "정말 3D 로 바뀌었나" 에 답하는 그림이라 썸네일로 깔면 뜻이 없다.
@@ -649,6 +685,13 @@ def render_run_detail(r, spec) -> str:
             f'<div class="mvs">{cards}</div>{note_m}</div>'
         )
 
+    # 🔴 철회된 수치는 화면 **맨 위에서** 철회라고 말한다. 표 밑에 각주로 달면
+    #    숫자를 먼저 읽고 각주는 안 읽는다 — 그 순서가 이 프로젝트가 물린 자리다.
+    void_banner = (
+        f'<div class="warn"><b>⚠️ 이 산출물의 수치는 철회됐다.</b> {r.invalidated}.'
+        ' 아래 숫자를 현행 수치로 인용하지 마라.</div>'
+        if r.invalidated else ""
+    )
     have = r.chunk_dir is not None or bool(r.delivered)
     note = "" if have else (
         '<div class="warn"><b>산출물 청크가 없다.</b> 자리표시를 그린다 — '
@@ -664,10 +707,10 @@ def render_run_detail(r, spec) -> str:
         )
         return f"<table><tr><th>{title}</th><th>값</th></tr>{rows}</table>"
 
-    # ── 성분 (원시 개수 우선 — D37)
-    comps = (r.records.get("judgment") or {}).get("after_components") or []
+    # ── 성분 (원시 개수 우선 — D37). 런이 여럿이면 **각각** 낸다: 두 단계에서
+    #    성분이 어떻게 커지고 벌어졌는지가 이번 인계의 요지다.
     comp_tbl = ""
-    if comps:
+    for run_name, comps in r.component_sets:
         names = {0: "중앙", 1: "우", 2: "좌"}
         ordered = sorted(comps, key=lambda c: -c.get("size", 0))
         rows_c = "".join(
@@ -679,40 +722,66 @@ def render_run_detail(r, spec) -> str:
             f'<td class="n">{c.get("z", [0, 0])[1] - c.get("z", [0, 0])[0]}칸</td></tr>'
             for i, c in enumerate(ordered)
         )
-        comp_tbl = (
-            "<table><tr><th>성분 (절단면 위로 뻗은 것)</th><th>복셀</th><th>x중심</th>"
+        title = f"성분 · {run_name}" if run_name else "성분 (절단면 위로 뻗은 것)"
+        comp_tbl += (
+            f"<table><tr><th>{title}</th><th>복셀</th><th>x중심</th>"
             f"<th>z 범위</th><th>상승</th></tr>{rows_c}</table>"
         )
 
-    # ── NOTE 의 "주의" 절을 **그대로**. 요약하면 뜻이 바뀐다
-    caution = ""
-    if r.note_caution:
-        body = r.note_caution.replace("## 주의", "").strip()
-        import html as _html
-        import re as _re
+    # ── NOTE 의 판정 절을 **그대로**. 요약하면 뜻이 바뀐다
+    import html as _html
+    import re as _re
 
-        def _md(t: str) -> str:
-            """**굵게** · `코드` 만 렌더한다. **문구는 한 글자도 안 바꾼다.**"""
-            t = _html.escape(t)
-            t = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
-            return _re.sub(r"`(.+?)`", r"<code>\1</code>", t)
+    def _md(t: str) -> str:
+        """**굵게** · `코드` 만 렌더한다. **문구는 한 글자도 안 바꾼다.**"""
+        t = _html.escape(t)
+        t = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+        return _re.sub(r"`(.+?)`", r"<code>\1</code>", t)
 
-        lines = "".join(
-            f"<li>{_md(ln.lstrip('- ').strip())}</li>" for ln in body.splitlines()
-            if ln.strip().startswith("-")
-        )
-        caution = (
-            '<div class="warn"><b>판정 주의 (A5000 원문)</b>'
-            f"<ul>{lines}</ul></div>"
+    caution = "".join(
+        f'<div class="warn"><b>{_md(head)} (A5000 원문)</b><ul>'
+        + "".join(f"<li>{_md(ln)}</li>" for ln in lines)
+        + "</ul></div>"
+        for head, lines in r.note_sections
+    )
+    # 게이트 옆에 A5000 이 적어 둔 단서. 게이트가 "실패" 로 찍히는데 이게 화면에
+    # 없으면 화면이 사실의 절반만 말하게 된다. **판정은 안 바꾸고 단서만 같이 낸다.**
+    if r.gate_notes:
+        caution += (
+            '<div class="warn"><b>게이트 단서 (judgment.json · A5000 원문)</b><ul>'
+            + "".join(f"<li><b>{_md(k)}</b> — {_md(v)}</li>" for k, v in r.gate_notes.items())
+            + "</ul></div>"
         )
 
     met = r.records.get("metrics") or {}
     man = r.records.get("manifest") or {}
-    gate_rows = "".join(
-        f'<tr><td>{k}</td><td class="{_GATE_CLS.get("통과" if v is True else "실패" if v is False else "미결", "ref")}">'
-        f'{"통과" if v is True else "실패" if v is False else "미결"}</td></tr>'
-        for k, v in (r.gate_detail or {}).items() if isinstance(v, bool) or v is None
-    ) or f'<tr><td colspan="2">{MISSING_TXT} — 판정 기록이 없다</td></tr>'
+    def _gate_row(key: str, v) -> str:
+        st = "통과" if v is True else "실패" if v is False else "미결"
+        return (f'<tr><td>{key}</td>'
+                f'<td class="{_GATE_CLS.get(st, "ref")}">{st}</td></tr>')
+
+    def _gate_rows(detail: dict) -> str:
+        """평평한 블록도, **런별로 중첩된 블록도** 받는다.
+
+        W15 인계본은 `judgment["runs"][런]["gate_g2"]` 로 두 런을 한 파일에 담는다.
+        평평한 것만 읽던 판본은 여기서 아무 행도 못 만들고 "판정 기록이 없다" 를
+        내는데, 그건 **기록이 있는데 없다고 말하는 것**이다.
+        """
+        rows = ""
+        for k, v in (detail or {}).items():
+            if isinstance(v, dict):
+                rows += f'<tr><th colspan="2">{k}</th></tr>'
+                # 불리언은 판정, 나머지(new/removed/…)는 근거 수치다. 둘 다 낸다 —
+                # 원시 개수를 판정보다 앞에 두는 규칙(D37)이 여기서도 같다.
+                for kk, vv in v.items():
+                    rows += (_gate_row(kk, vv) if isinstance(vv, bool) or vv is None
+                             else f'<tr><td>{kk}</td><td class="n">{vv}</td></tr>')
+            elif isinstance(v, bool) or v is None:
+                rows += _gate_row(k, v)
+        return rows
+
+    gate_rows = (_gate_rows(r.gate_detail)
+                 or f'<tr><td colspan="2">{MISSING_TXT} — 판정 기록이 없다</td></tr>')
 
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -733,9 +802,11 @@ def render_run_detail(r, spec) -> str:
 .warn ul {{ margin:8px 0 0 18px; }} .warn li {{ margin:4px 0; }}</style></head><body>
 <h1>{_KIND_KO.get(r.kind, r.kind)} · {r.asset_id or r.rel}</h1>
 <p class="sub">{r.when} · <code>{r.rel}</code> · <a href="/runs">← 목록</a></p>
+{void_banner}
 {note}
 {viewer}
-<div class="pane"><h2>정본 그림</h2>{tiles[0] if delivered else ""}
+{stage_pane}
+<div class="pane"><h2>{"그 밖의 인계 그림" if stage else "정본 그림"}</h2>{tiles[0] if delivered else ""}
 <div class="views">{"".join(tiles[1:] if delivered else tiles)}</div>
 <div class="legend">{spec["why"]}</div></div>
 {caution}

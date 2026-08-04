@@ -68,8 +68,11 @@ __all__ = [
     "NOT_APPLICABLE",
     "UNDECIDED",
     "PENDING_A5000",
+    "MODELS",
+    "STAGE_PAIR",
     "Run",
     "detail_kind",
+    "a5000_dirs",
     "scan_dirs",
     "recent_runs",
 ]
@@ -104,32 +107,83 @@ def scan_dirs() -> List[Path]:
         ),
     )
     dirs = [p for p in (Path(x).expanduser() for x in raw.split(":") if x.strip()) if p.is_dir()]
-    a = a5000_dir()
-    if a is not None and a not in dirs:
-        dirs.append(a)      # A5000 인계분도 같은 목록에 든다
+    for a in a5000_dirs():          # A5000 인계분도 같은 목록에 든다
+        if a not in dirs:
+            dirs.append(a)
     return dirs
 
 
 #: A5000 이 육안 인계로 밀어 준 산출물의 **파일명 → 라벨**. 화이트리스트다 —
 #: 임의 파일명을 경로로 받지 않는다 (§7, 공개 URL).
 DELIVERED = {
+    # ── W15 (D51 보존 수정). 판정 대상은 **측면 머리의 주둥이 + 뿔**이라
+    #    heads_zoom_runG 가 정본이다. 깊이맵 정본(D19)은 그 다음이다.
+    "DELIVER_heads_zoom_runG.png": ("★ runG 측면 머리 — 주둥이 + 뒤로 젖힌 뿔", True),
+    "DELIVER_heads_zoom_runF.png": ("runF 측면 머리 — 보존만 고친 단계", False),
+    "DELIVER_depth_runG_pair.png": ("runG 편집 전 / 편집 후 (전신)", False),
+    # ── W12
     "DELIVER_depth_w12_wide.png": ("편집 전 / 편집 후 (넓게)", True),
     "_paired_4dir.png": ("4방향 — 같은 방위끼리 (위 before / 아래 after)", False),
     "DELIVER_depth_w12.png": ("갈라짐 부위 확대", False),
     "DELIVER_depth_w11_runA_FAILED.png": ("★ 대조 — W11 실패본 (목이 하나로 굵어지기만)", False),
 }
 
+#: 🔴 **두 단계 개선을 한 화면에서** 본다. 위가 ①, 아래가 ②.
+#: 따로 걸면 "보존을 고쳐서 좋아진 것" 과 "마스크를 고쳐서 좋아진 것" 이 안 갈린다.
+#: 둘 다 **전폭**이다 — 판정 대상이 주둥이·뿔 실루엣이라 줄이면 판정을 못 한다.
+STAGE_PAIR: Tuple[Tuple[str, str], ...] = (
+    ("DELIVER_heads_zoom_runF.png",
+     "① runF — 보존 버그(D51)만 고침. 입력 바이트는 W13 과 동일하다"),
+    ("DELIVER_heads_zoom_runG.png",
+     "② runG — ① + 깊이 여유 마스크(W14) ★ 판정 대상"),
+)
 
-def a5000_dir() -> Optional[Path]:
-    """A5000 산출물 자리. 다음 웨이브에 `handoff/pack.py` 가 밀어주면 여기 붙는다.
+#: 🔴 A5000 이 **무효를 선언한** 웨이브. 선언문 원문 (`w15-out/judgment.json`
+#: `gate_notes.invalidated`):
+#:
+#:   "All W10-W13 preservation/halo/overflow numbers were measured with preservation
+#:    structurally disabled (13/8511 preserved). They are void."
+#:
+#: 여기 규칙을 새로 만들지 않는다 — **선언된 것을 옮겨 적을 뿐이다.** 이 표가 없으면
+#: 글롭이 주워 온 옛 웨이브의 철회된 숫자가 화면에서 현행 수치와 똑같이 보인다.
+#: 이 프로젝트가 여섯 번 물린 그 모양이다 (너무 깨끗한 숫자를 의심하라).
+INVALIDATED: Dict[str, str] = {
+    w: ("보존이 구조적으로 꺼진 채 측정됐다 (8,511 중 13만 보존) — "
+        "보존·halo·overflow 수치가 <b>무효</b>다. A5000 이 W15(D51)에서 선언했다")
+    for w in ("w10-out", "w11-out", "w12-out", "w13-out")
+}
 
-    지금은 비어 있는 것이 정상이고, 그 사실을 **화면에 적는다**.
+#: 3D 뷰어에 걸 GLB **화이트리스트**. 임의 파일명을 경로로 받지 않는다 (§7).
+MODELS = {
+    "dragon-c_before.glb": "편집 전 (dragon-c)",
+    "runC.glb": "편집 후 (runC)",
+    "runF.glb": "① runF — 보존만 고침 (D51)",
+    "runG.glb": "② runG — + 깊이 여유 마스크 ★",
+}
+
+
+def a5000_dirs() -> List[Path]:
+    """A5000 인계 디렉터리들. **글롭으로 줍는다 — 손으로 등록하지 않는다.**
+
+    웨이브마다 `w{N}-out/` 이 새로 생긴다. 한 개짜리 환경변수로 두면 새 웨이브가
+    올 때마다 사람이 값을 바꿔야 하고, 안 바꾼 웨이브는 화면에서 **없는 것**이 된다.
+    W15 가 실제로 그 자리였다 — `A5000_RUNS_DIR` 이 `w12-out` 을 가리키는 동안
+    `w15-out` 은 도착해 있는데도 목록에 없었다.
     """
-    raw = os.environ.get("A5000_RUNS_DIR", str(Path.home() / "ai-ar-v3" / "w12-out")).strip()
+    raw = os.environ.get("A5000_RUNS_GLOB", str(Path.home() / "ai-ar-v3" / "w*-out")).strip()
     if not raw:
-        return None
-    p = Path(raw).expanduser()
-    return p if p.is_dir() else None
+        return []
+    out: List[Path] = []
+    for pat in raw.split(":"):
+        pat = pat.strip()
+        if not pat:
+            continue
+        p = Path(pat).expanduser()
+        if any(ch in p.name for ch in "*?["):
+            out.extend(sorted(q for q in p.parent.glob(p.name) if q.is_dir()))
+        elif p.is_dir():
+            out.append(p)
+    return out
 
 
 def _load(path: Path) -> Optional[Dict[str, Any]]:
@@ -186,22 +240,68 @@ class Run:
            그대로 나란히 걸면 before 만 90° 누워 보이고 좌우 비교가 뜻을 잃는다.
            export 때 `frames.VOXEL_TO_GLB` 를 건다 (매직 회전을 쓰지 않는다).
         """
-        out = {}
-        for name, label in (("dragon-c_before.glb", "편집 전 (dragon-c)"),
-                            ("runC.glb", "편집 후 (runC)")):
-            if (self.path / name).is_file():
-                out[name] = label
+        return {n: lbl for n, lbl in MODELS.items() if (self.path / n).is_file()}
+
+    @property
+    def invalidated(self) -> Optional[str]:
+        """이 산출물의 수치가 **철회됐는가.** 철회 사유를 그대로 낸다."""
+        return INVALIDATED.get(self.path.name)
+
+    @property
+    def stage_pair(self) -> List[Tuple[str, str]]:
+        """두 단계 개선 그림 (①→②). 둘 다 있을 때만 낸다 — 한쪽만이면 대비가 아니다."""
+        if all((self.path / n).is_file() for n, _ in STAGE_PAIR):
+            return list(STAGE_PAIR)
+        return []
+
+    @property
+    def note_sections(self) -> List[Tuple[str, List[str]]]:
+        """NOTE 에서 **판정에 걸리는 절**을 그대로 낸다. 요약하면 뜻이 바뀐다.
+
+        "주의" 만 찾던 것을 넓혔다 — W15 의 판정 문장은 `## ★ 얼굴은 생겼는가` 에
+        산문으로 있고, 불릿이 아니라서 예전 추출기로는 **한 줄도 안 걸렸다.**
+        화면에 안 뜨는 판정문은 없는 것과 같다.
+        """
+        want = ("주의", "얼굴", "한 줄")
+        out: List[Tuple[str, List[str]]] = []
+        for f in sorted(self.path.glob("NOTE-*.md")):
+            txt = f.read_text(encoding="utf-8", errors="replace")
+            for block in txt.split("\n## ")[1:]:
+                head, _, body = block.partition("\n")
+                if not any(w in head for w in want):
+                    continue
+                lines = [
+                    ln.strip().lstrip("- ").strip()
+                    for ln in body.splitlines()
+                    if ln.strip() and not ln.startswith(("|", "#"))
+                ]
+                if lines:
+                    out.append((head.strip(), lines))
         return out
 
     @property
-    def note_caution(self) -> Optional[str]:
-        """NOTE 의 "주의" 절을 **그대로** 낸다. 요약하면 뜻이 바뀐다."""
-        for f in sorted(self.path.glob("NOTE-*.md")):
-            txt = f.read_text(encoding="utf-8", errors="replace")
-            i = txt.find("## 주의")
-            if i >= 0:
-                return txt[i:].split("\n## ", 1)[0]
-        return None
+    def gate_notes(self) -> Dict[str, str]:
+        """`judgment.json` 의 `gate_notes` — A5000 이 게이트 옆에 적어 둔 단서.
+
+        게이트가 "실패" 로 찍히는데 그 옆의 단서가 화면에 없으면, 화면이 사실의
+        절반만 보여주게 된다. **판정은 안 바꾸고 단서만 같이 낸다.**
+        """
+        n = (self.records.get("judgment") or {}).get("gate_notes") or {}
+        return {k: str(v) for k, v in n.items() if isinstance(v, (str, int, float))}
+
+    @property
+    def component_sets(self) -> List[Tuple[str, List[Dict[str, Any]]]]:
+        """(런 이름, 성분 목록). 한 파일에 런이 여럿이면 **각각** 낸다 (D37 원시 개수)."""
+        j = self.records.get("judgment") or {}
+        top = j.get("after_components")
+        if isinstance(top, list) and top:
+            return [("", top)]
+        out = []
+        for name, blk in _runs_block(j).items():
+            comps = (blk or {}).get("components")
+            if isinstance(comps, list) and comps:
+                out.append((name, comps))
+        return out
 
     @property
     def after_chunk_dir(self) -> Optional[Path]:
@@ -262,6 +362,24 @@ def _fmt_headline(kind: str, rec: Dict[str, Dict[str, Any]]) -> str:
     parts: List[str] = []
     if kind == "edit":
         # A5000 judgment 형식: {"efficacy": {new, removed, ...}, "after_components": [...]}
+        # 런이 여럿이면 **마지막 런**(가장 최근 개선분)을 한눈에 쓰고 나머지 수를 붙인다.
+        # 전부 늘어놓으면 목록 한 줄에 안 들어가고, 하나만 쓰고 말하지 않으면
+        # 다른 런이 없는 것이 된다.
+        nested = _runs_block(rec.get("judgment") or {})
+        if nested:
+            name, blk = list(nested.items())[-1]
+            g = blk.get("gate_g2") or {}
+            bits = [name.split("_")[0]]
+            if blk.get("head_count") is not None:
+                bits.append(f"머리 {blk['head_count']}개")
+            if g.get("new") is not None or g.get("removed") is not None:
+                bits.append(f"신규 {g.get('new', MISSING)} / 제거 {g.get('removed', MISSING)}")
+            if g.get("largest_cc_frac") is not None:
+                bits.append(f"참고 최대성분 {g['largest_cc_frac']:.3f}")
+            if len(nested) > 1:
+                bits.append(f"외 {len(nested) - 1}런")
+            return " · ".join(bits)
+
         eff = (rec.get("judgment") or {}).get("efficacy") or {}
         comps = (rec.get("judgment") or {}).get("after_components") or []
         if eff or comps:
@@ -299,6 +417,44 @@ def _fmt_headline(kind: str, rec: Dict[str, Dict[str, Any]]) -> str:
     return " · ".join(parts) if parts else MISSING
 
 
+def _runs_block(j: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """`judgment["runs"]` — **한 파일에 런이 여럿**일 수 있다 (W15: runF·runG).
+
+    W12 까지는 디렉터리 하나 = 런 하나였다. W15 인계본은 같은 자산에 대한 두 실행을
+    한 파일에 담는다 — 그게 이번 인계의 요지(①보존 수정 → ②마스크 개선)라서다.
+    최상위만 보던 코드는 이 형식에서 게이트를 **못 찾고 "미도착" 으로 낸다.**
+    """
+    runs = j.get("runs")
+    return {k: v for k, v in runs.items() if isinstance(v, dict)} if isinstance(runs, dict) else {}
+
+
+def _gate_blocks(j: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """{런 이름: gate_g2}. 최상위 우선, 없으면 런별로 모은다."""
+    top = j.get("gate_g2") or j.get("gate")
+    if isinstance(top, dict) and top:
+        return {"": top}
+    out = {}
+    for name, blk in _runs_block(j).items():
+        g = blk.get("gate_g2") or blk.get("gate")
+        if isinstance(g, dict) and g:
+            out[name] = g
+    return out
+
+
+def _status_of(gate: Dict[str, Any], notes: Dict[str, Any]) -> Tuple[str, str]:
+    """게이트 블록 하나 → (상태, 사유). **여기서 문턱을 다시 적지 않는다.**"""
+    vals = {k: v for k, v in gate.items() if isinstance(v, bool) or v is None}
+    if any(v is False for v in vals.values()):
+        return "실패", "미달: " + ", ".join(k for k, v in vals.items() if v is False)
+    undecided = [k for k, v in vals.items() if v is None]
+    if undecided:
+        why = "; ".join(f"{k} — {notes[k]}" if k in notes else k for k in undecided)
+        return UNDECIDED, f"판정에 필요한 값이 없다: {why}"
+    if vals and all(v is True for v in vals.values()):
+        return "통과", ""
+    return MISSING, GATE_FORMAT_HINT
+
+
 def _gate_of(rec: Dict[str, Dict[str, Any]], kind: str) -> Tuple[str, Dict[str, Any], str]:
     """게이트 요약 → (상태, 상세, 사유). **여기서 판정하지 않는다** — 읽기만 한다.
 
@@ -313,24 +469,26 @@ def _gate_of(rec: Dict[str, Dict[str, Any]], kind: str) -> Tuple[str, Dict[str, 
     if not j:
         return MISSING, {}, "judgment.json 이 없다"
 
-    gate = j.get("gate_g2") or j.get("gate") or {}
-    if not isinstance(gate, dict) or not gate:
+    blocks = _gate_blocks(j)
+    if not blocks:
         return MISSING, {}, GATE_FORMAT_HINT
 
     notes = j.get("gate_notes") or {}
-    vals = {k: v for k, v in gate.items() if isinstance(v, bool) or v is None}
-    if any(v is False for v in vals.values()):
-        bad = [k for k, v in vals.items() if v is False]
-        return "실패", gate, "미달: " + ", ".join(bad)
-    undecided = [k for k, v in vals.items() if v is None]
-    if undecided:
-        why = "; ".join(
-            f"{k} — {notes[k]}" if k in notes else k for k in undecided
-        )
-        return UNDECIDED, gate, f"판정에 필요한 값이 없다: {why}"
-    if vals and all(v is True for v in vals.values()):
-        return "통과", gate, ""
-    return MISSING, gate, GATE_FORMAT_HINT
+    per = {name: _status_of(g, notes) for name, g in blocks.items()}
+
+    if len(blocks) == 1 and "" in blocks:
+        st, why = per[""]
+        return st, blocks[""], why
+
+    # 런이 여럿이다. 상태가 갈리면 **묶지 않는다** — 묶는 순간 어느 런이 통과했는지
+    # 화면에서 사라진다. 같으면 하나로, 다르면 런별로 그대로 낸다.
+    states = {st for st, _ in per.values()}
+    detail = dict(blocks)
+    joined = " · ".join(f"{n} {st}" for n, (st, _) in per.items())
+    if len(states) == 1:
+        why = " · ".join(f"{n}: {w}" for n, (_, w) in per.items() if w)
+        return states.pop(), detail, why
+    return joined, detail, joined
 
 
 def _iter_candidates(root: Path):
@@ -384,7 +542,7 @@ def recent_runs(limit: int = 5) -> List[Run]:
             )
     runs = sorted(seen.values(), key=lambda r: r.mtime, reverse=True)[:limit]
 
-    if a5000_dir() is None and not any(r.delivered for r in runs):
+    if not a5000_dirs() and not any(r.delivered for r in runs):
         runs.append(
             Run(
                 run_id="a5000-pending",
