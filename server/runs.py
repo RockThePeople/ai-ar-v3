@@ -78,7 +78,22 @@ def scan_dirs() -> List[Path]:
             ]
         ),
     )
-    return [p for p in (Path(x).expanduser() for x in raw.split(":") if x.strip()) if p.is_dir()]
+    dirs = [p for p in (Path(x).expanduser() for x in raw.split(":") if x.strip()) if p.is_dir()]
+    a = a5000_dir()
+    if a is not None and a not in dirs:
+        dirs.append(a)      # A5000 인계분도 같은 목록에 든다
+    return dirs
+
+
+#: A5000 이 육안 인계로 밀어 준 산출물의 **파일명 → 라벨**. 화이트리스트다 —
+#: 임의 파일명을 경로로 받지 않는다 (§7, 공개 URL).
+DELIVERED = {
+    "DELIVER_depth_w12_wide.png": ("편집 전 / 편집 후 (넓게)", True),
+    "DELIVER_depth_w12.png": ("갈라짐 부위 확대", False),
+    "depth_runC.png": ("편집 후 4방향", False),
+    "depth_before.png": ("편집 전 4방향", False),
+    "DELIVER_depth_w11_runA_FAILED.png": ("★ 대조 — W11 실패본 (목이 하나로 굵어지기만)", False),
+}
 
 
 def a5000_dir() -> Optional[Path]:
@@ -86,7 +101,7 @@ def a5000_dir() -> Optional[Path]:
 
     지금은 비어 있는 것이 정상이고, 그 사실을 **화면에 적는다**.
     """
-    raw = os.environ.get("A5000_RUNS_DIR", "").strip()
+    raw = os.environ.get("A5000_RUNS_DIR", str(Path.home() / "ai-ar-v3" / "w12-out")).strip()
     if not raw:
         return None
     p = Path(raw).expanduser()
@@ -123,6 +138,28 @@ class Run:
         )
 
     @property
+    def delivered(self) -> Dict[str, str]:
+        """A5000 이 렌더해 보낸 그림. **다시 렌더하지 않는다** — 깊이 카메라가 그쪽 것이다."""
+        return {n: lbl for n, (lbl, _) in DELIVERED.items() if (self.path / n).is_file()}
+
+    @property
+    def delivered_canonical(self) -> Optional[str]:
+        for n, (_, canon) in DELIVERED.items():
+            if canon and (self.path / n).is_file():
+                return n
+        return None
+
+    @property
+    def note_caution(self) -> Optional[str]:
+        """NOTE 의 "주의" 절을 **그대로** 낸다. 요약하면 뜻이 바뀐다."""
+        for f in sorted(self.path.glob("NOTE-*.md")):
+            txt = f.read_text(encoding="utf-8", errors="replace")
+            i = txt.find("## 주의")
+            if i >= 0:
+                return txt[i:].split("\n## ", 1)[0]
+        return None
+
+    @property
     def after_chunk_dir(self) -> Optional[Path]:
         """recolor 의 **편집 후** 청크. before 만 보여주면 색 변경이 안 보인다."""
         for name in ("chunks_level1", "chunks_after", "recolor"):
@@ -139,6 +176,8 @@ class Run:
 
 def _kind_of(rec: Dict[str, Dict[str, Any]], path: Path) -> str:
     """종류 추론. **모르면 '미상' 이다** — 그럴듯한 기본값을 고르지 않는다."""
+    if any((path / n).is_file() for n in DELIVERED):
+        return "edit"
     j = rec.get("judgment") or {}
     for key in ("kind", "op", "edit_kind"):
         v = j.get(key)
@@ -178,6 +217,17 @@ def _fmt_headline(kind: str, rec: Dict[str, Dict[str, Any]]) -> str:
 
     parts: List[str] = []
     if kind == "edit":
+        # A5000 judgment 형식: {"efficacy": {new, removed, ...}, "after_components": [...]}
+        eff = (rec.get("judgment") or {}).get("efficacy") or {}
+        comps = (rec.get("judgment") or {}).get("after_components") or []
+        if eff or comps:
+            if comps:
+                parts.append(f"머리 {len(comps)}개")
+            if eff:
+                parts.append(f"신규 {eff.get('new', MISSING)} / 제거 {eff.get('removed', MISSING)}")
+                if eff.get("largest_cc_frac") is not None:
+                    parts.append(f"참고 최대성분 {eff['largest_cc_frac']:.3f}")
+            return " · ".join(parts)
         new, rm = g("efficacy_new_voxels", "n_new"), g("efficacy_removed_voxels", "n_removed")
         heads = g("head_count", "n_heads")
         if heads is not None:
@@ -275,7 +325,7 @@ def recent_runs(limit: int = 5) -> List[Run]:
             )
     runs = sorted(seen.values(), key=lambda r: r.mtime, reverse=True)[:limit]
 
-    if a5000_dir() is None:
+    if a5000_dir() is None and not any(r.delivered for r in runs):
         runs.append(
             Run(
                 run_id="a5000-pending",

@@ -575,14 +575,32 @@ def render_run_detail(r, spec) -> str:
     labels = {"front": "정면 실루엣", "side": "옆면 실루엣", "top": "위 실루엣",
               "depth": "앞면 깊이맵", "color": "색 렌더 (편집 전)",
               "color_after": "색 렌더 (편집 후)"}
-    tiles = []
-    for name in spec["images"]:
-        canon = " ★ 정본" if name == spec["canonical"] else ""
-        tiles.append(
-            f'<div class="view"><img src="/runs/{r.run_id}/img/{name}" alt="{labels[name]}">'
-            f"<span>{labels[name]}{canon}</span></div>"
+    # A5000 이 렌더해 보낸 그림이 있으면 **그것이 정본**이다 — 깊이 카메라가 그쪽 것이고
+    # 우리가 다시 렌더하면 다른 그림이 된다.
+    delivered = r.delivered
+    if delivered:
+        canon_name = r.delivered_canonical
+        # 정본은 **한 줄을 통째로** 쓴다. 나머지와 같은 크기로 늘어놓으면 정본이
+        # 정본 구실을 못 한다 — 사용자가 보려는 그림이 그것이다.
+        head = (
+            f'<div class="hero"><img src="/runs/{r.run_id}/img/{canon_name}" '
+            f'alt="{delivered[canon_name]}">'
+            f'<span>{delivered[canon_name]} ★ 정본</span></div>' if canon_name else ""
         )
-    have = r.chunk_dir is not None
+        tiles = [head] + [
+            f'<div class="view"><img src="/runs/{r.run_id}/img/{n}" alt="{lbl}">'
+            f"<span>{lbl}</span></div>"
+            for n, lbl in delivered.items() if n != canon_name
+        ]
+    else:
+        tiles = []
+        for name in spec["images"]:
+            canon = " ★ 정본" if name == spec["canonical"] else ""
+            tiles.append(
+                f'<div class="view"><img src="/runs/{r.run_id}/img/{name}" alt="{labels[name]}">'
+                f"<span>{labels[name]}{canon}</span></div>"
+            )
+    have = r.chunk_dir is not None or bool(r.delivered)
     note = "" if have else (
         '<div class="warn"><b>산출물 청크가 없다.</b> 자리표시를 그린다 — '
         "빈 그림을 결과처럼 보이게 두지 않는다.</div>"
@@ -597,6 +615,48 @@ def render_run_detail(r, spec) -> str:
         )
         return f"<table><tr><th>{title}</th><th>값</th></tr>{rows}</table>"
 
+    # ── 성분 (원시 개수 우선 — D37)
+    comps = (r.records.get("judgment") or {}).get("after_components") or []
+    comp_tbl = ""
+    if comps:
+        names = {0: "중앙", 1: "우", 2: "좌"}
+        ordered = sorted(comps, key=lambda c: -c.get("size", 0))
+        rows_c = "".join(
+            f'<tr><td>{names.get(i, str(i))}</td><td class="n">{c.get("size")}</td>'
+            f'<td class="n">{c.get("xc")}</td>'
+            f'<td class="n">z[{c.get("z", ["", ""])[0]},{c.get("z", ["", ""])[1]}]</td>'
+            # 상승 = 절단면 **위로** 뻗은 칸수 (z_hi − z_lo). 칸 개수(+1)가 아니다 —
+            # D29-a 가 "머리" 를 절단면 위로 뻗는 성분으로 정의했고, 그 기준이 상승폭이다.
+            f'<td class="n">{c.get("z", [0, 0])[1] - c.get("z", [0, 0])[0]}칸</td></tr>'
+            for i, c in enumerate(ordered)
+        )
+        comp_tbl = (
+            "<table><tr><th>성분 (절단면 위로 뻗은 것)</th><th>복셀</th><th>x중심</th>"
+            f"<th>z 범위</th><th>상승</th></tr>{rows_c}</table>"
+        )
+
+    # ── NOTE 의 "주의" 절을 **그대로**. 요약하면 뜻이 바뀐다
+    caution = ""
+    if r.note_caution:
+        body = r.note_caution.replace("## 주의", "").strip()
+        import html as _html
+        import re as _re
+
+        def _md(t: str) -> str:
+            """**굵게** · `코드` 만 렌더한다. **문구는 한 글자도 안 바꾼다.**"""
+            t = _html.escape(t)
+            t = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+            return _re.sub(r"`(.+?)`", r"<code>\1</code>", t)
+
+        lines = "".join(
+            f"<li>{_md(ln.lstrip('- ').strip())}</li>" for ln in body.splitlines()
+            if ln.strip().startswith("-")
+        )
+        caution = (
+            '<div class="warn"><b>판정 주의 (A5000 원문)</b>'
+            f"<ul>{lines}</ul></div>"
+        )
+
     met = r.records.get("metrics") or {}
     man = r.records.get("manifest") or {}
     gate_rows = "".join(
@@ -609,12 +669,20 @@ def render_run_detail(r, spec) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ai-ar-v3 — {r.asset_id or r.rel}</title><style>{_CSS}
 .mono {{ font-variant-numeric:tabular-nums; }}
-.views .view {{ max-width:300px; }}</style></head><body>
-<h1>{_KIND_KO.get(r.kind, r.kind)} · {r.asset_id or MISSING_TXT}</h1>
+.views .view {{ max-width:320px; }}
+.hero {{ margin:0 0 14px; }}
+.hero img {{ width:100%; height:auto; display:block; border:1px solid #232a36;
+             border-radius:6px; image-rendering:auto; background:#fff; }}
+.hero span {{ display:block; color:#e5e9f0; font-size:12px; margin-top:6px; }}
+.warn ul {{ margin:8px 0 0 18px; }} .warn li {{ margin:4px 0; }}</style></head><body>
+<h1>{_KIND_KO.get(r.kind, r.kind)} · {r.asset_id or r.rel}</h1>
 <p class="sub">{r.when} · <code>{r.rel}</code> · <a href="/runs">← 목록</a></p>
 {note}
-<div class="pane"><h2>정본 그림</h2><div class="views">{"".join(tiles)}</div>
+<div class="pane"><h2>정본 그림</h2>{tiles[0] if delivered else ""}
+<div class="views">{"".join(tiles[1:] if delivered else tiles)}</div>
 <div class="legend">{spec["why"]}</div></div>
+{caution}
+{comp_tbl}
 <table><tr><th>게이트 (gate_g2 기록)</th><th>판정</th></tr>{gate_rows}</table>
 {table("지표 (원시 개수 우선)", met)}
 {table("매니페스트", {k: v for k, v in man.items() if k != "chunks"})}

@@ -411,9 +411,14 @@ def runs_image(run_id: str, name: str) -> Response:
     """상세 화면의 그림. 종류별 정본은 `runs.detail_kind()` 가 정한다."""
     from server import debugview
 
+    r = _find_run(run_id)
+    # A5000 이 렌더해 보낸 그림이면 **그대로 낸다** — 다시 렌더하지 않는다.
+    # 파일명은 화이트리스트(runs.DELIVERED)로만 받는다 — 경로를 파라미터로 받지 않는다 (§7).
+    if name in r.delivered:
+        return Response((r.path / name).read_bytes(), media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
     if name not in ("front", "side", "top", "depth", "color", "color_after"):
         raise HTTPException(status_code=404, detail=f"모르는 그림: {name}")
-    r = _find_run(run_id)
     key = (run_id, name)
     if key in _RUN_IMG_CACHE:
         return Response(_RUN_IMG_CACHE[key], media_type="image/png",
