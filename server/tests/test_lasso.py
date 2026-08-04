@@ -240,3 +240,85 @@ def test_probe_reproduces_the_golden(tmp_path, name, polygon):
         + ", ".join(f"{k}: {want.get(k)}→{got.get(k)}"
                     for k in want if k != "cells" and got.get(k) != want.get(k))
     )
+
+
+# ══════════════ ② 라쏘 마스크 → HTTP 본문 (계약 3.26.0)
+def test_slat_coords_payload_round_trips_through_the_schema(car):
+    """서버가 보낼 본문이 계약 스키마를 통과하는가."""
+    pydantic = pytest.importorskip("pydantic")  # noqa: F841
+    from deltacontract.schemas import SlatCoordsResponse
+
+    from server.editreq import build_slat_coords_payload
+
+    coords = np.array(sorted(car["all"]), dtype=np.int64)
+    payload = build_slat_coords_payload("dragon-c", 7, coords)
+    r = SlatCoordsResponse(**{k: v for k, v in payload.items() if k != "uri"})
+
+    assert r.n_cells == len(coords) == len(r.coords)
+    assert r.fingerprint == mask_fingerprint(coords)
+    assert payload["uri"] == "/v2/assets/dragon-c/slat_coords.v7.json"
+
+
+def test_edit_request_carries_the_lasso_mask():
+    """★ 라쏘 산출물 → EditRequest. 계약 스키마가 그대로 받아야 한다."""
+    pytest.importorskip("pydantic")
+    from deltacontract.schemas import EditRequest
+
+    from server.editreq import build_edit_request
+
+    req = build_edit_request(
+        asset_id="dragon-c", session_id="s1", base_version=3,
+        raw_prompt="몸체만 빨갛게", lasso_result=golden("body"),
+    )
+    parsed = EditRequest(**req)
+    assert parsed.mask.mode == "voxels"
+    assert parsed.mask.grid_source == "slat_coords"
+    assert parsed.mask.is_canonical_grid
+    assert len(parsed.mask.voxels) == golden("body")["n_cells"]
+    assert mask_fingerprint(np.array(parsed.mask.voxels)) == golden("body")["mask_fingerprint"]
+
+
+def test_edit_mask_refuses_a_mask_without_a_declared_grid():
+    """🔴 D28-a — 격자 출처가 없으면 **채워 넣지 않고 거부한다.**
+
+    채워 넣으면 "무엇으로 만든 마스크인지" 를 서버가 지어낸 것이 된다.
+    """
+    from server.editreq import GridSourceMissing, build_edit_mask
+
+    g = dict(golden("body"))
+    for bad in (None, "surface_voxelize", "lasso"):
+        g["grid_source"] = bad
+        with pytest.raises(GridSourceMissing, match="D28-a"):
+            build_edit_mask(g)
+
+
+def test_edit_mask_catches_a_truncated_cell_list():
+    """잘린 목록은 형태가 멀쩡해서 예외를 안 낸다 — 지문이 잡는다."""
+    from server.editreq import build_edit_mask
+
+    g = dict(golden("body"))
+    g["cells"] = g["cells"][:-1]           # 한 셀만 잘라낸다
+    with pytest.raises(ValueError, match="지문"):
+        build_edit_mask(g)
+
+
+def test_idempotency_key_is_derived_from_content():
+    """★ 3.15.5 — 고정 키면 다른 마스크를 보내도 서버가 **옛 연산을 재생**한다.
+
+    Unity 하네스가 실제로 그 상태였고, 재실행할 때마다 재생 경로만 타서
+    **정상 경로를 영영 안 밟았다.**
+    """
+    from server.editreq import derive_idempotency_key
+
+    cells = golden("body")["cells"]
+    base = derive_idempotency_key("dragon-c", 3, "빨갛게", cells)
+    assert base == derive_idempotency_key("dragon-c", 3, "빨갛게", cells[::-1]), (
+        "셀 순서가 키를 바꾼다 — 같은 마스크가 다른 편집으로 취급된다"
+    )
+    assert base != derive_idempotency_key("dragon-c", 3, "빨갛게", golden("wide")["cells"])
+    assert base != derive_idempotency_key("dragon-c", 4, "빨갛게", cells)
+    assert base != derive_idempotency_key("dragon-c", 3, "파랗게", cells)
+    assert base != derive_idempotency_key("snowman", 3, "빨갛게", cells), (
+        "자산이 달라도 같은 키다 — 한쪽 결과가 다른 쪽으로 재생된다"
+    )
+    assert base != derive_idempotency_key("dragon-c", 3, "빨갛게", cells, seed=43)

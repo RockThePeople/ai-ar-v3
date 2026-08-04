@@ -138,3 +138,25 @@ bk = derive_bookkeeping_with_overflow(spliced, produced_keys, overflow=ov)
 1.16 이 나오려면 분모가 **0.2068** 이어야 한다 — 마스크가 W13→W14 로 바뀌면 '마스크 밖'
 영역 자체가 달라지므로 바닥값도 **그 마스크로 다시 재야 한다** (D33).
 `require_consistent_ratio()` 가 이 불일치를 예외로 올린다. 어느 쪽이 맞는지는 A5000 이 잰다.
+
+## W17 — 라쏘 마스크가 서버까지 가는 경로 (계약 3.26.0)
+
+```
+Unity                                          3090 (서버)
+──────────────────────────────────────────────────────────────────────
+GET /v2/assets/{id}/slat_coords.v{n}.json  ←  build_slat_coords_payload()
+   ↓ SlatCoordsResponse.ToCells()               (server/editreq.py)
+SlatLassoPicker.Pick(cells, polygon, …)         🔴 정점이 아니라 복셀 (D58)
+   ↓ {grid_source, mask_fingerprint, cells}
+POST /v2/…/edit  ← build_edit_request()      →  EditMask(mode="voxels",
+                                                         grid_source="slat_coords")
+```
+
+| 규칙 | 함수 | 왜 |
+|---|---|---|
+| 격자 출처를 서버가 지어내지 않는다 | `build_edit_mask` 가 없으면 `GridSourceMissing` | D28-a |
+| 잘린 셀 목록을 잡는다 | 지문 재계산 대조 | 잘려도 형태는 멀쩡하다 |
+| 멱등 키는 **내용 파생** | `derive_idempotency_key` | 고정 키면 옛 연산이 재생된다 (3.15.5) |
+
+⚠️ 라우트는 3090 담당이다. 여기 있는 것은 **본문을 만드는 함수**뿐이다 —
+규칙만 적고 함수를 안 주면 그 규칙은 안 지켜진다 (이 리포에서 세 번 반복됐다).
