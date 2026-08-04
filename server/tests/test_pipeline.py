@@ -1267,3 +1267,322 @@ def test_headroom_has_no_pass_fail_method():
 def test_headroom_rejects_empty_occupancy():
     with pytest.raises(ValueError, match="비었다"):
         metrics.Headroom.from_cells(np.zeros((0, 3), dtype=np.int64))
+
+
+# ══════════════ 22. ★★ D38(rev28) — cc_frac 을 분기 op 게이트에서 뺀다
+def test_cc_frac_evidence_shows_it_is_backwards_for_branching():
+    """★★ 증거 4건. 통과/탈락이 성공/실패와 **아무 상관이 없다.**
+
+        W10  1.000  통과 → 🔴 파괴 (제거 730 > 신규 304)
+        W12  0.733  탈락 → 성공 쪽
+        W13  0.845  통과
+        runG 0.537  탈락 → 🔴 역대 최고 결과
+
+    머리를 셋으로 만들면 변화가 셋으로 갈라지므로 최대 연결성분 비율은 **반드시**
+    떨어진다. 지표가 측정 대상의 물리와 정확히 반대다.
+    """
+    assert not metrics.uses_cc_frac_gate("add")
+    assert "efficacy_change_component" in metrics.REFERENCE_METRICS
+    assert "efficacy_change_component" not in metrics.GATE_METRICS
+    assert "branch_component_count" in metrics.GATE_METRICS
+
+
+def test_cc_frac_stays_for_non_branching_ops():
+    """★ 다른 op 에서는 유지한다 (W16 판단).
+
+    replace_region / recolor / remove 는 **하나의 응집된 변화**를 기대하므로
+    "한 덩어리인가" 가 여전히 옳은 질문이다. 갈라지는 것이 목적인 op 는 add 뿐이다.
+    """
+    assert metrics.BRANCHING_OPS == frozenset({"add"})
+    for op in ("replace_region", "recolor", "remove"):
+        assert metrics.uses_cc_frac_gate(op), op
+    # op 를 모르면 쓰지 않는다 — W10 이 통과한 그 상태로 돌아가지 않는다.
+    assert not metrics.uses_cc_frac_gate(None)
+
+
+def test_rung_passes_the_new_branch_gate():
+    """★★ **runG 재현.** 성분 3 ≈ factor 3 · direction TRUE → **통과해야 한다.**
+
+    옛 게이트는 cc_frac 0.537 로 탈락시켰다 — 역대 최고 결과였는데.
+    """
+    target = metrics.BranchTarget(op="add", factor=3.0)
+    assert target.expected_components == 3
+    assert target.component_count_ok(3) is True
+    assert "통과" in target.describe(3)
+
+    report = metrics.MetricReport(
+        delta_in_mask=metrics.VoxelDelta(new=900, removed=400),   # direction TRUE
+        delta_outside=metrics.VoxelDelta(0, 0),
+        efficacy_change_component=0.537,                          # 🔴 옛 문턱 미달
+        churn_ratio=5.0,
+        inherited_byte_identity=1.0,
+        preservation=metrics.PreservationDistance(
+            distance=0.0, baseline=metrics.NoiseFloor(0.0, "dragon-c", "global", 0)
+        ),
+        transfer_saving=0.6,
+        n_change_components=3,
+    )
+    g = report.gate_g2(target=target)
+    assert g["direction_ok"] is True
+    assert g["component_count_ok"] is True
+    assert g["cc_frac_gated"] is False, "분기 op 인데 cc_frac 이 게이트에 남아 있다"
+    assert g["efficacy_numeric"] is True, "runG 가 여전히 탈락한다"
+
+
+def test_w10_destruction_still_fails_the_new_branch_gate():
+    """★★ 문턱을 뺐다고 **파괴까지 통과시키면 안 된다.** 방향 조건이 잡는다."""
+    report = metrics.MetricReport(
+        delta_in_mask=metrics.VoxelDelta(new=304, removed=730),   # W10
+        delta_outside=metrics.VoxelDelta(0, 0),
+        efficacy_change_component=1.000,                          # 옛 게이트는 통과시켰다
+        churn_ratio=5.0,
+        inherited_byte_identity=1.0,
+        preservation=metrics.PreservationDistance(
+            distance=0.0, baseline=metrics.NoiseFloor(0.0, "dragon-c", "global", 0)
+        ),
+        transfer_saving=0.6,
+        n_change_components=3,
+    )
+    g = report.gate_g2(target=metrics.BranchTarget(op="add", factor=3.0))
+    assert g["direction_ok"] is False
+    assert g["efficacy_numeric"] is False
+
+
+def test_component_count_tolerance_and_absence():
+    t = metrics.BranchTarget(op="add", factor=3.0, tolerance=1)
+    assert [t.component_count_ok(n) for n in (1, 2, 3, 4, 5)] == \
+        [False, True, True, True, False]
+    # 분기 op 가 아니거나 factor 가 없으면 목표가 없다 — 미검사(None).
+    assert metrics.BranchTarget(op="replace_region", factor=3.0).component_count_ok(1) is None
+    assert metrics.BranchTarget(op="add", factor=None).component_count_ok(1) is None
+
+
+def test_change_components_counts_branches(run):
+    """`change_components` 가 실제 파이프라인에서 성분을 센다."""
+    n = len(metrics.change_components(
+        run["base"], run["splice"].cells, run["mask"].cells
+    ))
+    assert n >= 1
+    assert run["report"].n_change_components == n
+
+
+# ══════════════ 23. ★★ D54 — overflow 부기 연결성분 필터
+def _mask_at(center, half=4, halo=1):
+    from deltacontract.coords import dense_cells
+
+    c = np.asarray(center, dtype=np.int64)
+    return build_mask(dense_cells(c - half, c + half + 1), halo=halo)
+
+
+def test_overflow_refuses_without_a_measured_noise_size():
+    """★★ 문턱을 **한 점으로 정하지 않는다** (D39-a). 값이 없으면 판정을 거부한다."""
+    from server.pipeline.delta import OverflowThresholdUnknown, classify_overflow
+
+    mask = _mask_at((32, 32, 32))
+    base = np.array([[32, 32, 32]], dtype=np.int64)
+    with pytest.raises(OverflowThresholdUnknown, match="A5000"):
+        classify_overflow(base, base, mask)
+
+
+def test_pure_noise_does_not_grow_the_bookkeeping():
+    """★★ **음성 대조.** 고립 복셀만 있는 입력에서 부기가 늘지 않는가.
+
+    실측 overflow 602복셀 중 404 가 전역 리메시 잡음이었다. 필터 없이 넣으면
+    80/124 청크(64.5%)가 델타에 끌려와 절감률이 죽는다.
+    """
+    from server.pipeline.delta import classify_overflow
+
+    mask = _mask_at((32, 32, 32))
+    base = np.array([[32, 32, 32]], dtype=np.int64)
+
+    # 서로 26-이웃이 안 되게 4칸 간격으로 흩뿌린 고립 복셀 (전형적 리메시 잡음).
+    noise = np.array(
+        [[x, y, z] for x in range(4, 60, 8) for y in range(4, 60, 8) for z in (8, 56)],
+        dtype=np.int64,
+    )
+    after = np.unique(np.concatenate([base, noise], axis=0), axis=0)
+
+    r = classify_overflow(base, after, mask, noise_max_component=1)
+    assert r.n_overflow_voxels == noise.shape[0]
+    assert r.n_signal_voxels == 0, r.describe()
+    assert r.n_noise_voxels == noise.shape[0]
+    assert r.signal_chunks == [], "잡음이 부기를 늘렸다 — 절감률이 죽는다"
+    assert r.noise_chunks_skipped, "걸러낸 청크가 기록되지 않는다"
+    assert max(r.component_sizes) == 1
+
+
+def test_connected_structure_is_kept_as_signal():
+    """★ 연결된 덩어리는 **실제 구조**다 (측면 머리는 각 300+ 복셀, 연결됨)."""
+    from server.pipeline.delta import classify_overflow
+
+    mask = _mask_at((32, 32, 32))
+    base = np.array([[32, 32, 32]], dtype=np.int64)
+
+    blob = np.array(
+        [[x, y, z] for x in range(8, 16) for y in range(8, 16) for z in range(8, 16)],
+        dtype=np.int64,
+    )
+    isolated = np.array([[50, 50, 50], [58, 20, 40]], dtype=np.int64)
+    after = np.unique(np.concatenate([base, blob, isolated], axis=0), axis=0)
+
+    r = classify_overflow(base, after, mask, noise_max_component=1)
+    assert r.n_signal_voxels == blob.shape[0]
+    assert r.n_noise_voxels == isolated.shape[0]
+    assert r.signal_chunks, "연결된 구조가 부기에서 빠졌다 — 옛 기하가 남는다"
+    # 걸러낸 청크와 신호 청크가 겹치지 않는다.
+    assert not (set(r.signal_chunks) & set(r.noise_chunks_skipped))
+
+
+def test_threshold_is_noise_size_plus_one():
+    """문턱은 잡음의 **최대** 연결성분 크기 + 1 이다 — 경계를 명확히 한다."""
+    from server.pipeline.delta import classify_overflow
+
+    mask = _mask_at((32, 32, 32))
+    base = np.array([[32, 32, 32]], dtype=np.int64)
+    pair = np.array([[8, 8, 8], [8, 8, 9]], dtype=np.int64)      # 크기 2 덩어리
+    after = np.unique(np.concatenate([base, pair], axis=0), axis=0)
+
+    assert classify_overflow(base, after, mask, noise_max_component=1).threshold == 2
+    # 잡음 최대가 1이면 크기 2 는 신호다.
+    assert classify_overflow(base, after, mask, noise_max_component=1).n_signal_voxels == 2
+    # 잡음 최대가 2면 같은 덩어리가 잡음이 된다.
+    assert classify_overflow(base, after, mask, noise_max_component=2).n_signal_voxels == 0
+
+
+def test_overflow_ignores_cells_inside_the_mask_and_halo():
+    """마스크 + halo 안은 이미 부기에 있다 — overflow 로 이중 계상하지 않는다."""
+    from server.pipeline.delta import classify_overflow
+
+    mask = _mask_at((32, 32, 32), half=4, halo=1)
+    base = np.array([[0, 0, 0]], dtype=np.int64)
+    inside = mask.dilated[:20]
+    after = np.unique(np.concatenate([base, inside], axis=0), axis=0)
+
+    r = classify_overflow(base, after, mask, noise_max_component=1)
+    assert r.n_overflow_voxels == 0
+    assert r.signal_chunks == []
+
+
+def test_overflow_uses_occupancy_not_hashes():
+    """⚠️ 해시 비교 금지 — 재디코딩하면 152/152 청크가 전부 다른 해시를 낸다."""
+    import inspect
+
+    from server.pipeline import delta as delta_mod
+
+    src = inspect.getsource(delta_mod.classify_overflow)
+    assert "hash" not in src.lower(), "overflow 분류가 해시를 본다"
+
+
+def test_bookkeeping_grows_only_by_signal_chunks(run):
+    """★ 부기 = (마스크 + halo) ∪ **신호 overflow 청크**."""
+    from server.pipeline.delta import (
+        classify_overflow,
+        derive_bookkeeping_with_overflow,
+    )
+
+    sp, mask = run["splice"], run["mask"]
+    child = run["child"]
+
+    blob = np.array(
+        [[x, y, 5] for x in range(2, 10) for y in range(2, 10)], dtype=np.int64
+    )
+    after = np.unique(np.concatenate([sp.cells, blob], axis=0), axis=0)
+    ov = classify_overflow(sp.cells, after, mask, noise_max_component=1)
+    assert ov.signal_chunks
+
+    produced = set(child) | set(ov.signal_chunks)
+    merged = derive_bookkeeping_with_overflow(sp, produced, overflow=ov)
+    assert set(ov.signal_chunks) <= set(merged.book)
+    assert set(run["bk"].book) <= set(merged.book)
+    assert set(merged.changed) | set(merged.removed) == set(merged.book)
+
+
+def test_noise_only_overflow_leaves_bookkeeping_unchanged(run):
+    """★★ **음성 대조 (부기 수준).** 잡음만이면 부기가 그대로다."""
+    from server.pipeline.delta import (
+        classify_overflow,
+        derive_bookkeeping_with_overflow,
+    )
+
+    sp, mask = run["splice"], run["mask"]
+    noise = np.array([[2, 2, 2], [60, 60, 60], [2, 60, 30]], dtype=np.int64)
+    after = np.unique(np.concatenate([sp.cells, noise], axis=0), axis=0)
+
+    ov = classify_overflow(sp.cells, after, mask, noise_max_component=1)
+    assert ov.signal_chunks == []
+
+    merged = derive_bookkeeping_with_overflow(sp, run["child"].keys(), overflow=ov)
+    assert merged.book == run["bk"].book, "잡음이 부기를 늘렸다"
+
+
+# ══════════════ 24. ★★ D51 — W10~W13 보존 수치 폐기
+def test_discarded_preservation_refuses_to_be_used():
+    """★★ 폐기된 수치는 **쓸 때 예외를 던진다.** bool 이면 무시당한다."""
+    m = metrics.DISCARDED_PRESERVATION["W13"]
+    assert m.discarded and m.discard_reason
+    assert m.preservation_rate < 0.002, "13/8,511 = 0.15%"
+    with pytest.raises(metrics.DiscardedMeasurement, match="D51"):
+        _ = m.excess_ratio
+    with pytest.raises(metrics.DiscardedMeasurement):
+        m.require_valid()
+    assert "폐기" in m.describe()
+
+
+def test_discarded_waves_are_named_not_quoted():
+    """W10~W12 는 수치를 옮기지 않는다 — 옮기면 인용된다. 이름만 남기고 거부한다."""
+    assert metrics.DISCARDED_PRESERVATION_WAVES == ("W10", "W11", "W12", "W13")
+    for wave in ("W10", "W11", "W12"):
+        with pytest.raises(metrics.DiscardedMeasurement, match="무효"):
+            metrics.preservation_measurement(wave)
+
+
+def test_canonical_preservation_is_rung_and_runf():
+    """★ 새 정본. runG 가 역대 최고 보존(1.16×)이다."""
+    runf = metrics.preservation_measurement("runF")
+    rung = metrics.preservation_measurement("runG")
+    assert round(runf.excess_ratio, 2) == 1.23
+    runf.require_consistent_ratio()          # 분모와 보고가 일치한다
+    assert rung.excess_ratio < runf.excess_ratio, "runG 가 더 나아야 한다"
+    for m in (runf, rung):
+        m.require_valid()
+        assert round(m.preservation_rate, 2) == 0.89, "13/8,511 → 7,608/8,511"
+
+
+def test_rung_ratio_does_not_match_the_recorded_floor():
+    """★★ **불일치를 덮지 않는다.** runG 보고 1.16× vs 계산 1.08×.
+
+    1.16 을 얻으려면 분모가 0.2068 이어야 한다. 마스크가 W13→W14 로 바뀌면
+    '마스크 밖' 영역 자체가 달라지므로 바닥값도 그 마스크로 다시 재야 한다 (D33).
+    분모를 결과에 맞춰 고르는 것이 이 프로젝트가 여섯 번 물린 병이다 — 그래서
+    한쪽을 조용히 고르지 않고 예외로 올린다.
+    """
+    rung = metrics.CANONICAL_PRESERVATION["runG"]
+    assert round(rung.excess_ratio, 2) == 1.08
+    with pytest.raises(metrics.BaselineMisapplied, match="0.2068"):
+        rung.require_consistent_ratio()
+
+
+def test_discarded_and_canonical_differ_by_a_factor_of_three():
+    """★ 폐기값 3.48× vs 정본 1.16× — 무엇이 오염됐는지 크기로 보인다."""
+    bad = metrics.DISCARDED_PRESERVATION["W13"]
+    good = metrics.CANONICAL_PRESERVATION["runG"]
+    naive = bad.outside_iou_complement / bad.floor.value    # 검사를 우회한 계산
+    assert round(naive, 2) == 3.47 or round(naive, 2) == 3.48
+    assert naive / good.excess_ratio > 2.9
+
+
+def test_preservation_measurement_requires_a_reason_to_discard():
+    with pytest.raises(ValueError, match="이유"):
+        metrics.PreservationMeasurement(
+            wave="X", outside_iou_complement=0.5,
+            floor=metrics.DRAGON_C_OUTSIDE_FLOOR_W15, discarded=True,
+        )
+
+
+def test_w15_floor_is_the_same_asset_and_region():
+    """분모는 재측정해도 같은 자산·같은 영역이어야 한다 (D33)."""
+    f = metrics.DRAGON_C_OUTSIDE_FLOOR_W15
+    f.require_same_asset("dragon-c", "global")
+    assert abs(f.value - metrics.DRAGON_C_NOISE_FLOORS["global"].value) < 0.001
+    with pytest.raises(metrics.BaselineMisapplied):
+        f.require_same_asset("snowman")
