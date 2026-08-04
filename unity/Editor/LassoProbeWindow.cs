@@ -115,6 +115,26 @@ namespace DeltaContract.EditorTools
                 _coords.Add(new Vector3Int(nums[i], nums[i + 1], nums[i + 2]));
         }
 
+        /// <summary>🔴 GUI 좌표 → 화면 좌표. **원점이 다르다.**
+        ///
+        ///   GUI(Event.mousePosition)      : **좌상단** 원점 · 논리 포인트 단위
+        ///   Camera.WorldToScreenPoint     : **좌하단** 원점 · 픽셀 단위
+        ///
+        /// 뒤집지 않으면 폴리곤이 상하 반전돼 **엉뚱한 부분이 잡히고 예외는 안 난다.**
+        /// 창 안에 인라인으로 두면 검사할 수 없어서 순수 함수로 뺐다 —
+        /// 규칙만 적고 함수를 안 주면 그 규칙은 안 지켜진다.</summary>
+        public static Vector2 GuiToScreen(Vector2 guiPos, float pixelsPerPoint, int camPixelHeight)
+        {
+            var p = guiPos * pixelsPerPoint;
+            return new Vector2(p.x, camPixelHeight - p.y);
+        }
+
+        /// <summary>화면 좌표 → GUI 좌표. 그린 궤적을 다시 그릴 때 쓴다 (뒤집기의 역).</summary>
+        public static Vector2 ScreenToGui(Vector2 screen, float pixelsPerPoint, int camPixelHeight)
+        {
+            return new Vector2(screen.x, camPixelHeight - screen.y) / pixelsPerPoint;
+        }
+
         void OnScene(SceneView view)
         {
             if (!_drawing) return;
@@ -124,11 +144,9 @@ namespace DeltaContract.EditorTools
             if (e.type == EventType.MouseDown && e.button == 0) _polygon.Clear();
             if ((e.type == EventType.MouseDrag || e.type == EventType.MouseDown) && e.button == 0)
             {
-                // 🔴 GUI 좌표는 **좌상단 원점**, Camera.WorldToScreenPoint 는 **좌하단** 원점이다.
-                //    뒤집지 않으면 폴리곤이 상하 반전돼 엉뚱한 부분이 잡히고, 예외는 안 난다.
                 var cam = view.camera;
-                var p = e.mousePosition * EditorGUIUtility.pixelsPerPoint;
-                _polygon.Add(new Vector2(p.x, cam.pixelHeight - p.y));
+                _polygon.Add(GuiToScreen(e.mousePosition, EditorGUIUtility.pixelsPerPoint,
+                                         cam.pixelHeight));
                 e.Use();
                 view.Repaint();
             }
@@ -138,8 +156,11 @@ namespace DeltaContract.EditorTools
             {
                 var pts = new Vector3[_polygon.Count + 1];
                 for (int i = 0; i < _polygon.Count; i++)
-                    pts[i] = new Vector3(_polygon[i].x / EditorGUIUtility.pixelsPerPoint,
-                        (view.camera.pixelHeight - _polygon[i].y) / EditorGUIUtility.pixelsPerPoint, 0);
+                {
+                    var g = ScreenToGui(_polygon[i], EditorGUIUtility.pixelsPerPoint,
+                                        view.camera.pixelHeight);
+                    pts[i] = new Vector3(g.x, g.y, 0);
+                }
                 pts[_polygon.Count] = pts[0];
                 Handles.color = Color.yellow;
                 Handles.DrawAAPolyLine(3f, pts);

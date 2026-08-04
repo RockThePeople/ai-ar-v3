@@ -209,7 +209,8 @@ def _dotnet() -> str | None:
 
 @pytest.mark.skipif(_dotnet() is None, reason="C# 컴파일러가 없다 — 골든 검사만 돈다")
 @pytest.mark.parametrize("name,polygon", [("body", F.BODY_POLYGON),
-                                          ("wide", F.WIDE_POLYGON)])
+                                          ("wide", F.WIDE_POLYGON),
+                                          ("onewheel", F.ONE_WHEEL_POLYGON)])
 def test_probe_reproduces_the_golden(tmp_path, name, polygon):
     """★ 계약의 `LassoVolume.cs` 를 그대로 컴파일해 돌리고 골든과 대조한다."""
     dotnet = _dotnet()
@@ -322,3 +323,41 @@ def test_idempotency_key_is_derived_from_content():
         "자산이 달라도 같은 키다 — 한쪽 결과가 다른 쪽으로 재생된다"
     )
     assert base != derive_idempotency_key("dragon-c", 3, "빨갛게", cells, seed=43)
+
+
+# ══════════════ ★★ W18 — 손잡이(handedness). Unity 가 정본이다
+def test_one_wheel_lasso_locks_the_handedness(car):
+    """★★ **좌우 뒤집힘은 개수로도 계수로도 안 잡힌다** — 소속으로 잡는다.
+
+    W18 실측: Unity 실행 결과가 헤드리스 골든과 **단계별 계수는 전부 일치**하고
+    (투영 3,884 · 폴리곤안 3,017 · 압출 +2,592 · 교집합제거 2,592 · 축 1)
+    **지문만** 달랐다. 원인은 Unity 가 **왼손 좌표계**라 `transform.LookAt` 의
+    기저가 `right = up × fwd` 인데 헤드리스가 오른손(`fwd × up`)을 썼던 것이다.
+    Unity 결과가 골든의 **x 미러(63−x)** 와 바이트 단위로 일치해 확정했다.
+
+    자산이 x 대칭이라 몸체 라쏘로는 이게 안 드러난다. 한쪽 바퀴만 잡으면
+    뒤집히는 순간 **다른 바퀴**가 잡히므로 소속으로 드러난다.
+    """
+    g = golden("onewheel")
+    picked = set(map(tuple, g["cells"]))
+    left = {c for c in car["wheels"] if c[0] < 32}
+    right = {c for c in car["wheels"] if c[0] > 32}
+
+    assert picked == right, "🔴 좌우가 뒤집혔다 — 카메라 기저의 손잡이를 확인해라"
+    assert picked & left == set()
+    assert picked & car["body"] == set(), "몸체가 딸려 들어왔다"
+    assert g["n_cells"] == 422
+
+
+def test_headless_camera_basis_matches_unity():
+    """헤드리스 카메라 기저가 Unity(왼손)와 같은 순서인가. 드리프트는 테스트가 막는다."""
+    src = (REPO / "unity/Headless/Program.cs").read_text()
+    assert "Cross(up, fwd)" in src, "오른손 기저로 되돌아갔다 — Unity 와 x 가 반대가 된다"
+    assert "Norm(Cross(fwd, up))" not in src
+
+
+def test_all_goldens_agree_with_the_contract_fingerprint():
+    """세 케이스 전부 계약 함수와 지문이 일치해야 한다."""
+    for name in ("body", "wide", "onewheel"):
+        g = golden(name)
+        assert mask_fingerprint(np.array(g["cells"], dtype=np.int64)) == g["mask_fingerprint"], name
