@@ -71,6 +71,7 @@ HALO = (0x1E, 0x5F, 0x7A)      # halo 만 — 어두운 시안
 BOOK = (0xF5, 0x9E, 0x0B)      # 변경청크 — 호박색
 
 MISSING_TXT = "미도착"
+NOT_APPLICABLE_TXT = "해당 없음"
 
 SCALE = 8  # 64 → 512 픽셀 (최근접. 복셀 경계를 뭉개지 않는다)
 
@@ -527,7 +528,8 @@ def silhouette_png_arr(cells, axis: int):
 #    게이트와 화면이 갈라지고, 갈라진 줄 아무도 모른다.
 #
 # 🔴 원시 개수가 비율보다 앞이다 (D37) — `runs._fmt_headline` 이 그 순서로 만든다.
-_GATE_CLS = {"통과": "pass", "실패": "fail", "미결": "undecided"}
+_GATE_CLS = {"통과": "pass", "실패": "fail", "미결": "undecided",
+             "해당 없음": "ref", "미도착": "ref"}
 _KIND_KO = {"generate": "생성", "edit": "형태 변경", "recolor": "색 변경", "미상": "미상"}
 
 
@@ -548,7 +550,10 @@ def render_runs_index(runs) -> str:
             f"<td>{_KIND_KO.get(r.kind, r.kind)}</td>"
             f'<td class="mono">{r.asset_id or MISSING_TXT}</td>'
             f"<td>{r.headline}</td>"
-            f'<td class="{cls}">{r.gate}</td>'
+            # 사유를 같이 낸다 — "미도착" 두 건이 서로 다른 이유일 수 있다
+            # (judgment.json 이 없다 vs gate_g2 블록이 없다). 라벨만으로는 못 가른다.
+            f'<td class="{cls}">{"—" if r.gate == NOT_APPLICABLE_TXT else r.gate}'
+            f'{f"<br><span class=\"why\">{r.gate_reason}</span>" if r.gate_reason else ""}</td>'
             f'<td><a href="/runs/{r.run_id}">상세 →</a></td></tr>'
         )
     body = "".join(rows) or '<tr><td colspan="6">스캔된 산출물이 없다</td></tr>'
@@ -556,6 +561,7 @@ def render_runs_index(runs) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ai-ar-v3 — 최근 산출물</title><style>{_CSS}
 .mono {{ font-variant-numeric:tabular-nums; }}
+.why {{ color:#6b7688; font-size:11px; }}
 tr.pending td {{ color:#8b96a8; font-style:italic; }}
 </style></head><body>
 <h1>최근 산출물 5건</h1>
@@ -564,7 +570,10 @@ tr.pending td {{ color:#8b96a8; font-style:italic; }}
 {body}</table>
 <p class="foot">
 게이트 열은 <code>gate_g2()</code> 가 기록한 것을 <b>읽기만</b> 한다 — 이 화면은 문턱을
-다시 계산하지 않는다. 판정 기록이 없으면 <b>미도착</b>이다.<br>
+다시 계산하지 않는다. 상태는 셋으로 갈린다:
+<b>—(해당 없음)</b> G2 는 편집 게이트라 생성물에는 적용되지 않는다 ·
+<b>미결</b> 판정에 필요한 값이 없다 ·
+<b>미도착</b> judgment.json 이 없거나 <code>gate_g2</code> 블록이 없다.<br>
 한눈 결과는 <b>원시 개수를 비율보다 앞에</b> 둔다 (D37) — halo 계열은 표본이 45~48복셀이라
 비율에 유효숫자가 없다.
 </p></body></html>"""

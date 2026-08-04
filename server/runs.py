@@ -49,14 +49,39 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+#: A5000 이 낼 판정 형식 (정본). 측정치와 **판정**은 다른 것이고, 지금 인계본에는
+#: 측정치만 있다 — `w12-out/judgment.json` 최상위 키는 counts/head_sweep/
+#: after_components/efficacy/halo 뿐이고 gate 필드가 **하나도 없다**.
+#: 판정은 NOTE 산문에만 있었다. 그래서 화면이 "미도착" 으로 낸다 — 옳은 표시다.
+#:
+#:   {"gate_g2": {"efficacy": true|false|null,
+#:                "preservation": true|false|null,
+#:                "saving": true|false|null},
+#:    "gate_notes": {"preservation": "눈사람 바닥값 부재 (D33-a)"},   # 미결 사유 (선택)
+#:    "op": "add"}
+#:
+#: 🔴 화면은 이 블록을 **읽기만** 한다. `gate_g2()` 가 정본이고 여기서 다시 계산하지 않는다.
+GATE_FORMAT_HINT = "judgment.json 에 gate_g2 블록이 없다 — 측정치만 있다"
+
 __all__ = [
     "MISSING",
+    "NOT_APPLICABLE",
+    "UNDECIDED",
     "PENDING_A5000",
     "Run",
     "detail_kind",
     "scan_dirs",
     "recent_runs",
 ]
+
+#: 🔴 게이트 상태는 **세 가지다.** 하나로 묶으면 "빠뜨린 것" 과 "비었다고 알려준 것" 이
+#: 구분되지 않는다 — 이 프로젝트의 전칭 규칙이 화면에서 깨지는 자리다.
+#:
+#:   해당 없음  G2 는 **편집 게이트**다. 생성물에는 애초에 적용되지 않는다 — 미도착이 아니다
+#:   미결       판정에 필요한 값이 없어서 못 정한다 (예: 그 자산의 잡음 바닥값 부재 → 보존 미결)
+#:   미도착     judgment.json 이 없거나, 있어도 **gate_g2 블록이 없다**
+NOT_APPLICABLE = "해당 없음"
+UNDECIDED = "미결"
 
 #: 값이 없을 때 화면에 내는 것. 빈 문자열이나 0 으로 채우지 않는다.
 MISSING = "미도착"
@@ -126,7 +151,8 @@ class Run:
     kind: str                     # generate | edit | recolor | 미상
     asset_id: Optional[str]
     headline: str                 # 종류별 한눈 결과 (원시 개수 우선)
-    gate: str                     # 통과 / 미결 / 실패 / 미도착 — **읽기만 한다**
+    gate: str                     # 통과/실패/미결/해당 없음/미도착 — **읽기만 한다**
+    gate_reason: str = ""         # 왜 그 상태인가. 미결·미도착은 이유 없이 두지 않는다
     gate_detail: Dict[str, Any] = field(default_factory=dict)
     records: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     pending_reason: Optional[str] = None
@@ -255,24 +281,38 @@ def _fmt_headline(kind: str, rec: Dict[str, Dict[str, Any]]) -> str:
     return " · ".join(parts) if parts else MISSING
 
 
-def _gate_of(rec: Dict[str, Dict[str, Any]]) -> Tuple[str, Dict[str, Any]]:
-    """게이트 요약. **여기서 판정하지 않는다** — 기록된 것을 읽기만 한다.
+def _gate_of(rec: Dict[str, Dict[str, Any]], kind: str) -> Tuple[str, Dict[str, Any], str]:
+    """게이트 요약 → (상태, 상세, 사유). **여기서 판정하지 않는다** — 읽기만 한다.
 
-    `gate_g2()` 가 정본이다. 판정 기록이 없으면 `미도착` 이고, 화면이 문턱을
-    다시 적어서 만들어 내지 않는다 (W5 에 정한 규약).
+    `gate_g2()` 가 정본이다. 화면이 문턱을 다시 적어서 만들어 내지 않는다 (W5 규약).
+    상태는 셋으로 갈린다 (`NOT_APPLICABLE` / `UNDECIDED` / `MISSING`) — 하나로
+    묶으면 "빠뜨렸다" 와 "비었다고 알려줬다" 가 구분되지 않는다.
     """
+    if kind == "generate":
+        return NOT_APPLICABLE, {}, "G2 는 편집 게이트다 — 생성물에는 적용되지 않는다"
+
     j = rec.get("judgment") or {}
+    if not j:
+        return MISSING, {}, "judgment.json 이 없다"
+
     gate = j.get("gate_g2") or j.get("gate") or {}
     if not isinstance(gate, dict) or not gate:
-        return MISSING, {}
-    vals = [v for k, v in gate.items() if isinstance(v, bool) or v is None]
-    if any(v is False for v in vals):
-        return "실패", gate
-    if any(v is None for v in vals):
-        return "미결", gate
-    if vals and all(v is True for v in vals):
-        return "통과", gate
-    return MISSING, gate
+        return MISSING, {}, GATE_FORMAT_HINT
+
+    notes = j.get("gate_notes") or {}
+    vals = {k: v for k, v in gate.items() if isinstance(v, bool) or v is None}
+    if any(v is False for v in vals.values()):
+        bad = [k for k, v in vals.items() if v is False]
+        return "실패", gate, "미달: " + ", ".join(bad)
+    undecided = [k for k, v in vals.items() if v is None]
+    if undecided:
+        why = "; ".join(
+            f"{k} — {notes[k]}" if k in notes else k for k in undecided
+        )
+        return UNDECIDED, gate, f"판정에 필요한 값이 없다: {why}"
+    if vals and all(v is True for v in vals.values()):
+        return "통과", gate, ""
+    return MISSING, gate, GATE_FORMAT_HINT
 
 
 def _iter_candidates(root: Path):
@@ -304,7 +344,7 @@ def recent_runs(limit: int = 5) -> List[Run]:
             if not rec:
                 continue
             kind = _kind_of(rec, d)
-            gate, gate_detail = _gate_of(rec)
+            gate, gate_detail, gate_reason = _gate_of(rec, kind)
             man = rec.get("manifest") or {}
             j = rec.get("judgment") or {}
             try:
@@ -320,6 +360,7 @@ def recent_runs(limit: int = 5) -> List[Run]:
                 asset_id=man.get("asset_id") or j.get("asset_id"),
                 headline=_fmt_headline(kind, rec),
                 gate=gate,
+                gate_reason=gate_reason,
                 gate_detail=gate_detail,
                 records=rec,
             )
@@ -336,6 +377,7 @@ def recent_runs(limit: int = 5) -> List[Run]:
                 asset_id=None,
                 headline=MISSING,
                 gate=MISSING,
+                gate_reason="A5000 산출물이 아직 3090 에 없다",
                 pending_reason=(
                     "A5000 편집 산출물은 아직 3090 에 없다. 다음 웨이브에 "
                     "handoff/pack.py 가 밀어주면 A5000_RUNS_DIR 만 그쪽으로 열면 된다"
