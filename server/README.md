@@ -11,9 +11,25 @@ pipeline/
   splice.py    contract 의 assemble 래퍼. 스케일 없음 · 정수 평행이동만
   delta.py     부기를 **배치에서** 유도 (diff 금지)
   package.py   .cbin 세트 + manifest. 부기 밖은 **부모 바이트 승계**
+llm.py         instruction → 편집 스펙. 단일 호출 · 구조화 출력
+               🔴 LLM 은 좌표를 만들지 않는다. 만들면 CoordinateLeak 로 거부
 metrics.py     D5 / D5-a / D5-b 지표 — 효능 · 보존 · 절감
-tests/         합성 픽스처 관통 · 음성 대조 2종 · D9 48순열 전수 탐색
+tests/         합성 픽스처 관통 · 음성 대조 3종 · D9 48순열 전수 탐색
 ```
+
+## 자연어 경로 — 하나의 스펙, 두 소비자 (D22)
+
+`llm.py` 는 `{op, target_prompt, factor}` 만 낸다. **소비자별 분기는 llm.py 밖에 둔다** —
+여기서 경로를 고르면 게이트가 LLM 출력에 의존하게 된다.
+
+| `op` | assemble 경로 | VoxHammer 경로 |
+|---|---|---|
+| `replace_region` | 도너 생성 → 마스크에 삽입 (레벨1) | 마스크 조건부 편집 |
+| `add` | 🔴 **원리적으로 불가** (D22 ①) | 마스크 조건부 편집 (레벨2) |
+| `remove` | 마스크를 비우기만 한다 | 마스크 조건부 편집 |
+
+⚠️ 소비자가 `add` 를 assemble 로 보내면 **조용히 아무 일도 안 일어난다.** 그 방어는
+소비자 쪽에 둔다.
 
 ## 이 코드를 쓸 때 반드시 알아야 할 것
 

@@ -8,6 +8,9 @@ trimesh>=4.0           # GLB/glTF 적재 전용. pipeline/voxelize.py 가 **지�
 
 # ── 선택 ──────────────────────────────────────────────────
 pydantic>=2.0          # 와이어 스키마. 없으면 conformance 4건이 skip 된다
+anthropic>=0.60        # llm.py 전용. **지연 import** 한다 —
+                       # ANTHROPIC_API_KEY 가 없으면 규칙 기반 폴백으로 돌고
+                       # SDK 자체가 없어도 폴백 경로와 테스트는 전부 돈다
 
 # ── 개발 ──────────────────────────────────────────────────
 pytest>=8.0
