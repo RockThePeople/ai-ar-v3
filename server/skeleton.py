@@ -120,12 +120,21 @@ _SCENE_CACHE: dict = {}
 # 실자산 위치. 리포 밖이다 (§7 — 홈 경로를 코드에 박지 않는다).
 ASSET_ROOT = Path(os.environ.get("ASSET_ROOT", str(Path.home() / "ai-ar-v3-assets")))
 
-# 실자산 관통 파라미터. 합성 픽스처의 상수를 그대로 쓰면 **안 된다** — 실측으로 정했다:
-# base·donor 가 각자 독립적으로 정규화돼 둘 다 격자를 꽉 채우므로(base span 49×50×64,
-# donor 60×60×64), 기증자를 크롭하지 않으면 머리 마스크(span 49×50×23)에 절대 안 들어간다.
-# 스케일은 계약이 금지한다(6-이웃 유지율 s=2.0 → 0%). 그래서 크롭으로만 맞춘다.
+# 실자산 관통 파라미터. D11(rev7) 이후 크기는 `fit_donor_to_mask` 의 재복셀화가
+# 맞추므로 크롭은 1.0 이다 — W3 의 0.30 은 호박 위쪽 뚜껑만 남겨 얼굴을 잘랐다.
 REAL_HEAD_FRACTION = float(os.environ.get("REAL_HEAD_FRACTION", "0.35"))
-REAL_CROP_FRACTION = float(os.environ.get("REAL_CROP_FRACTION", "0.30"))
+REAL_CROP_FRACTION = float(os.environ.get("REAL_CROP_FRACTION", "1.0"))
+
+# ★ 잡음 바닥값 (D14 — W4/A5000 확정, :8082 를 40초 내려서 얻은 대조군).
+#
+#   편집 **없이** 인코드→디코드만 왕복시킨 결과의 마스크 밖 IoU 0.9299.
+#   `preservation_geometry_distance` 는 `1 - IoU` 이므로 바닥값은 1-0.9299 = 0.0701 이다
+#   (A5000 이 보고한 churn 0.0701 과 같은 수다 — 같은 양을 두 이름으로 부른 것).
+#
+#   ⚠️ A5000 은 Chamfer(평균 0.097 · 95% 0.177 · 최대 0.610 vox)도 같이 줬는데
+#      그건 **복셀 단위 거리**라 이 함수가 재는 무차원 1-IoU 와 단위가 다르다.
+#      단위가 다른 값을 바닥값에 넣으면 판정이 조용히 무의미해진다. 쓰지 않는다.
+REAL_NOISE_FLOOR = float(os.environ.get("REAL_NOISE_FLOOR", "0.0701"))
 
 
 def _scene(kind: str = "synthetic"):
@@ -146,6 +155,7 @@ def _scene(kind: str = "synthetic"):
             ASSET_ROOT / "donor" / "chunks",
             head_fraction=REAL_HEAD_FRACTION,
             crop_fraction=REAL_CROP_FRACTION,
+            noise_floor=REAL_NOISE_FLOOR,
         )
     else:
         from server.tests.test_pipeline import _run_pipeline
@@ -186,12 +196,16 @@ def _gate_rows(run):
         ("efficacy_removed_voxels (마스크 안)", d["efficacy_removed_voxels"],
          "쌍으로 본다 (D5-a①)", "참고"),
         ("efficacy_net_voxels", d["efficacy_net_voxels"], "순증", "참고"),
-        ("efficacy_largest_component", f"{d['efficacy_largest_component']:.4f}",
-         "≥ 0.80", mark(d["efficacy_largest_component"] >= 0.8)),
+        ("efficacy_change_component (신규∪제거, D12)", f"{d['efficacy_change_component']:.4f}",
+         "≥ 0.80", mark(d["efficacy_change_component"] >= 0.8)),
         ("churn_ratio (안/밖)", f"{d['churn_ratio']:.3f}", "≥ 3.0",
          mark(d["churn_ratio"] >= 3.0)),
         ("inherited_byte_identity", f"{d['inherited_byte_identity']:.4f}", "== 1.0",
          mark(d["inherited_byte_identity"] >= 1.0)),
+        ("preservation_excess_ratio (D16)",
+         ("—" if d.get("preservation_excess_ratio") is None
+          else f"{d['preservation_excess_ratio']:.4f}×"),
+         "바닥값 대비 초과배수 — 절대값 문턱이 아니다", mark(g.get("preservation"))),
         ("preservation_geometry_distance", f"{d['preservation_geometry_distance']:.6f}",
          ("≤ 잡음 바닥값 "
           + (f"{d['preservation_baseline']:.6f}" if d["preservation_baseline"] is not None
@@ -252,6 +266,22 @@ def debug_pane(pane: str, axis: int, kind: str = "synthetic") -> Response:
         raise HTTPException(status_code=404, detail=f"모르는 분면/축: {pane}.{axis}")
     return Response(
         s["mod"].pane_png(scene, pane, axis),
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/debug/donor-depth.png")
+def debug_donor_depth(kind: str = "real") -> Response:
+    """기증자 앞면 깊이맵 — **4분할이 원리적으로 답할 수 없는 질문**을 위한 진단.
+
+    분면 그림은 실루엣 투영이라 깊이를 뭉갠다. 호박의 삼각눈·톱니입처럼 파낸
+    구멍은 뒷면 표면으로 메워져 실루엣에 안 나온다. 어두운 자리가 파인 곳이다.
+    게이트 지표가 아니다 — 판정은 gate_g2() 가 한다.
+    """
+    s = _scene(kind)
+    return Response(
+        s["mod"].depth_png(s["run"]["donor"]),
         media_type="image/png",
         headers={"Cache-Control": "no-store"},
     )

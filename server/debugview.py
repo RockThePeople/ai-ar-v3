@@ -304,10 +304,11 @@ def _banner(kind: str, source_label: str) -> str:
         return (
             '<div class="ok"><b>실자산이다.</b><br>'
             f"{source_label}<br>"
-            "base·donor 가 <b>각자 독립적으로</b> NORMALIZED 격자를 꽉 채우게 정규화된다. "
-            "그래서 기증자는 크롭 없이는 머리 마스크에 절대 안 들어간다 — "
-            "스케일은 계약이 금지한다(6-이웃 유지율 s=2.0 → 0%). "
-            "지금 화면의 기증자는 호박의 <b>위쪽 30%</b> 다.</div>"
+            "D11(rev7) — 기증자는 크롭이 아니라 <b>마스크 범위에 맞춘 재복셀화</b>로 "
+            "들어간다(<code>fit_donor_to_mask</code>). 희소 좌표를 곱하는 것이 아니라 "
+            "연속 메시를 새 cell_size 로 래스터화하므로 계약이 금지한 스케일이 아니다. "
+            "W3 의 crop 0.30(호박 위쪽 뚜껑만)은 이제 쓰지 않는다 — 호박 <b>전체</b>가 들어간다."
+            "</div>"
         )
     return (
         '<div class="warn"><b>⚠️ 지금 보이는 것은 합성 픽스처다. 실자산이 아니다.</b><br>'
@@ -358,6 +359,12 @@ def render_html(run: dict, *, source_label: str, gate_rows, kind: str = "synthet
 {_banner(kind, source_label)}
 <p class="sub"><a href="/">합성 픽스처</a> · <a href="/real">실자산</a> ·
 <a href="/debug/metrics.json?kind={kind}">metrics.json</a></p>
+<div class="pane" style="margin-bottom:14px"><h2>⑤ 기증자 앞면 깊이맵 (진단 · 게이트 아님)</h2>
+<div class="views"><div class="view" style="max-width:340px">
+<img src="/debug/donor-depth.png?kind={kind}" alt="기증자 앞면 깊이맵">
+<span>밝을수록 앞 · <b>어두운 자리가 파인 곳</b></span></div></div>
+<div class="legend">위 4분할은 <b>실루엣 투영</b>이라 깊이를 뭉갠다 — 파낸 구멍(삼각눈·톱니입)이
+뒷면으로 메워져 <b>원리적으로 안 보인다</b>. 그 질문에만 답하는 진단 그림이다.</div></div>
 
 <div class="grid">{"".join(panes)}</div>
 
@@ -371,7 +378,9 @@ def render_html(run: dict, *, source_label: str, gate_rows, kind: str = "synthet
 <tr><td>base 점유 셀</td><td class="n">{sp.n_base}</td></tr>
 <tr><td>donor 크롭 후 셀</td><td class="n">{sp.n_donor_cropped}</td></tr>
 <tr><td>결과 점유 셀</td><td class="n">{sp.n_result}</td></tr>
-<tr><td>마스크 셀 / halo 팽창 후</td><td class="n">{m.n_cells} / {m.n_dilated}</td></tr>
+<tr><td>마스크 셀 / halo 팽창 후</td><td class="n">{m.n_cells:,} / {m.n_dilated:,}</td></tr>
+<tr><td>마스크가 격자에서 차지하는 비율</td>
+    <td class="n">{100.0 * m.n_cells / (VOXEL_RES ** 3):.2f}%</td></tr>
 <tr><td>🔴 비우기가 실제로 지운 점유 셀</td><td class="n">{sp.n_cleared_occupied}</td></tr>
 <tr><td>부기 청크 (changed / removed)</td>
     <td class="n">{bk.n_book} ({len(bk.changed)} / {len(bk.removed)})</td></tr>
@@ -387,3 +396,43 @@ def render_html(run: dict, *, source_label: str, gate_rows, kind: str = "synthet
 옆면 14.3% 였다. 한 뷰만 보여주는 화면은 편집을 숨긴다.
 </p>
 </body></html>"""
+
+
+# ══════════════════════════════════════════════════════ 앞면 깊이맵 (진단용)
+#
+# 왜 4분할만으로는 부족한가: 분면 그림은 **실루엣 투영**이다. 깊이를 뭉개므로
+# 파낸 구멍(호박의 삼각눈·톱니입)이 뒷면 표면으로 메워져 **원리적으로 안 보인다.**
+# "호박이 얼굴을 갖고 있는가" 는 이 프로젝트의 육안 판정 핵심인데, 그 질문에
+# 실루엣은 답할 수 없다. 그래서 진단용으로 앞면 깊이맵을 따로 낸다.
+#
+# 게이트 지표가 아니다. 판정은 여전히 `gate_g2()` 가 한다.
+def depth_png(cells: np.ndarray, *, scale: int = 10) -> bytes:
+    """앞면 깊이맵 PNG. 각 (x,z) 기둥에서 가장 앞(min y) 복셀의 깊이를 밝기로.
+
+    밝을수록 앞, 어두울수록 뒤 — 즉 **어두운 자리가 파인 곳**이다.
+    """
+    c = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if c.size == 0:
+        return _png(np.zeros((scale, scale, 3), dtype=np.uint8))
+    c = c - c.min(axis=0)
+    span = c.max(axis=0) + 1
+    depth = np.full((span[0], span[2]), -1, dtype=np.int64)
+    for x, y, z in c:
+        if depth[x, z] < 0 or y < depth[x, z]:
+            depth[x, z] = y
+
+    valid = depth >= 0
+    img = np.zeros((span[2], span[0], 3), dtype=np.uint8)
+    if valid.any():
+        d = depth.astype(float)
+        lo, hi = d[valid].min(), d[valid].max()
+        t = np.zeros_like(d)
+        t[valid] = 1.0 - (d[valid] - lo) / max(hi - lo, 1.0)
+        for x in range(span[0]):
+            for z in range(span[2]):
+                if valid[x, z]:
+                    k = t[x, z]
+                    img[span[2] - 1 - z, x] = (
+                        int(40 + 215 * k), int(20 + 140 * k), int(10 + 30 * k)
+                    )
+    return _png(np.repeat(np.repeat(img, scale, axis=0), scale, axis=1))
