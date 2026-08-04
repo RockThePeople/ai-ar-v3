@@ -70,6 +70,8 @@ MASK = (0x38, 0xBD, 0xF8)      # 마스크 — 시안
 HALO = (0x1E, 0x5F, 0x7A)      # halo 만 — 어두운 시안
 BOOK = (0xF5, 0x9E, 0x0B)      # 변경청크 — 호박색
 
+MISSING_TXT = "미도착"
+
 SCALE = 8  # 64 → 512 픽셀 (최근접. 복셀 경계를 뭉개지 않는다)
 
 # (axis, 라벨). metrics._silhouette 의 axis 규약을 그대로 쓴다.
@@ -516,3 +518,107 @@ def silhouette_png_arr(cells, axis: int):
     img = _canvas()
     _paint(img, _project(cells, axis), GEOM)
     return _upscale(img)
+
+
+# ══════════════════════════════════════════════ 최근 산출물 목록 · 상세
+#
+# 🔴 게이트 판정을 여기서 다시 계산하지 않는다. `gate_g2()` 가 정본이고 화면은
+#    `runs.py` 가 **읽어 온 것**을 표시만 한다 (W5 규약). 문턱을 화면에 다시 적으면
+#    게이트와 화면이 갈라지고, 갈라진 줄 아무도 모른다.
+#
+# 🔴 원시 개수가 비율보다 앞이다 (D37) — `runs._fmt_headline` 이 그 순서로 만든다.
+_GATE_CLS = {"통과": "pass", "실패": "fail", "미결": "undecided"}
+_KIND_KO = {"generate": "생성", "edit": "형태 변경", "recolor": "색 변경", "미상": "미상"}
+
+
+def render_runs_index(runs) -> str:
+    """최근 5건 목록. 없는 값은 '미도착' 으로 나간다 (원칙 7)."""
+    rows = []
+    for r in runs:
+        cls = _GATE_CLS.get(r.gate, "ref")
+        if r.pending_reason:
+            rows.append(
+                f'<tr class="pending"><td>—</td><td>{_KIND_KO.get(r.kind, r.kind)}</td>'
+                f'<td colspan="2">{r.rel} — {r.pending_reason}</td>'
+                f'<td class="ref">{r.gate}</td></tr>'
+            )
+            continue
+        rows.append(
+            f'<tr><td class="mono">{r.when}</td>'
+            f"<td>{_KIND_KO.get(r.kind, r.kind)}</td>"
+            f'<td class="mono">{r.asset_id or MISSING_TXT}</td>'
+            f"<td>{r.headline}</td>"
+            f'<td class="{cls}">{r.gate}</td>'
+            f'<td><a href="/runs/{r.run_id}">상세 →</a></td></tr>'
+        )
+    body = "".join(rows) or '<tr><td colspan="6">스캔된 산출물이 없다</td></tr>'
+    return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ai-ar-v3 — 최근 산출물</title><style>{_CSS}
+.mono {{ font-variant-numeric:tabular-nums; }}
+tr.pending td {{ color:#8b96a8; font-style:italic; }}
+</style></head><body>
+<h1>최근 산출물 5건</h1>
+<p class="sub"><a href="/">합성 픽스처</a> · <a href="/real">실자산</a> · <a href="/runs">목록</a></p>
+<table><tr><th>시각</th><th>종류</th><th>자산 id</th><th>한눈 결과</th><th>게이트</th><th></th></tr>
+{body}</table>
+<p class="foot">
+게이트 열은 <code>gate_g2()</code> 가 기록한 것을 <b>읽기만</b> 한다 — 이 화면은 문턱을
+다시 계산하지 않는다. 판정 기록이 없으면 <b>미도착</b>이다.<br>
+한눈 결과는 <b>원시 개수를 비율보다 앞에</b> 둔다 (D37) — halo 계열은 표본이 45~48복셀이라
+비율에 유효숫자가 없다.
+</p></body></html>"""
+
+
+def render_run_detail(r, spec) -> str:
+    """상세. **종류별 정본 그림이 다르다** — `runs.detail_kind()` 가 정한다."""
+    labels = {"front": "정면 실루엣", "side": "옆면 실루엣", "top": "위 실루엣",
+              "depth": "앞면 깊이맵", "color": "색 렌더 (편집 전)",
+              "color_after": "색 렌더 (편집 후)"}
+    tiles = []
+    for name in spec["images"]:
+        canon = " ★ 정본" if name == spec["canonical"] else ""
+        tiles.append(
+            f'<div class="view"><img src="/runs/{r.run_id}/img/{name}" alt="{labels[name]}">'
+            f"<span>{labels[name]}{canon}</span></div>"
+        )
+    have = r.chunk_dir is not None
+    note = "" if have else (
+        '<div class="warn"><b>산출물 청크가 없다.</b> 자리표시를 그린다 — '
+        "빈 그림을 결과처럼 보이게 두지 않는다.</div>"
+    )
+
+    def table(title, d):
+        if not d:
+            return f"<table><tr><th>{title}</th><td>{MISSING_TXT}</td></tr></table>"
+        rows = "".join(
+            f'<tr><td>{k}</td><td class="n">{v}</td></tr>'
+            for k, v in d.items() if not isinstance(v, (dict, list))
+        )
+        return f"<table><tr><th>{title}</th><th>값</th></tr>{rows}</table>"
+
+    met = r.records.get("metrics") or {}
+    man = r.records.get("manifest") or {}
+    gate_rows = "".join(
+        f'<tr><td>{k}</td><td class="{_GATE_CLS.get("통과" if v is True else "실패" if v is False else "미결", "ref")}">'
+        f'{"통과" if v is True else "실패" if v is False else "미결"}</td></tr>'
+        for k, v in (r.gate_detail or {}).items() if isinstance(v, bool) or v is None
+    ) or f'<tr><td colspan="2">{MISSING_TXT} — 판정 기록이 없다</td></tr>'
+
+    return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ai-ar-v3 — {r.asset_id or r.rel}</title><style>{_CSS}
+.mono {{ font-variant-numeric:tabular-nums; }}
+.views .view {{ max-width:300px; }}</style></head><body>
+<h1>{_KIND_KO.get(r.kind, r.kind)} · {r.asset_id or MISSING_TXT}</h1>
+<p class="sub">{r.when} · <code>{r.rel}</code> · <a href="/runs">← 목록</a></p>
+{note}
+<div class="pane"><h2>정본 그림</h2><div class="views">{"".join(tiles)}</div>
+<div class="legend">{spec["why"]}</div></div>
+<table><tr><th>게이트 (gate_g2 기록)</th><th>판정</th></tr>{gate_rows}</table>
+{table("지표 (원시 개수 우선)", met)}
+{table("매니페스트", {k: v for k, v in man.items() if k != "chunks"})}
+<p class="foot">
+게이트는 <code>gate_g2()</code> 가 기록한 것을 그대로 표시한다 — 이 화면은 판정하지 않는다.<br>
+실루엣은 진단용 표면 복셀화로 그린다 (D28: 마스크 좌표의 근거가 아니다).
+</p></body></html>"""

@@ -125,16 +125,17 @@ ASSET_ROOT = Path(os.environ.get("ASSET_ROOT", str(Path.home() / "ai-ar-v3-asset
 REAL_HEAD_FRACTION = float(os.environ.get("REAL_HEAD_FRACTION", "0.35"))
 REAL_CROP_FRACTION = float(os.environ.get("REAL_CROP_FRACTION", "1.0"))
 
-# ★ 잡음 바닥값 (D14 — W4/A5000 확정, :8082 를 40초 내려서 얻은 대조군).
+# ★ 잡음 바닥값 — `/real`(눈사람+호박) 에는 **없다.** None 이다.
 #
-#   편집 **없이** 인코드→디코드만 왕복시킨 결과의 마스크 밖 IoU 0.9299.
-#   `preservation_geometry_distance` 는 `1 - IoU` 이므로 바닥값은 1-0.9299 = 0.0701 이다
-#   (A5000 이 보고한 churn 0.0701 과 같은 수다 — 같은 양을 두 이름으로 부른 것).
+# 🔴 W5~W8 에 여기 0.0701 을 박아 뒀는데 두 번 틀렸다:
+#    ① 그 값은 이제 dragon-c 기준 0.2229 로 정정됐다 (D36 — 3.2배 과대평가였다)
+#    ② 애초에 **자산이 다르다.** `metrics.NOISE_FLOORS` 는 전부 dragon-c 스코프이고
+#       `/real` 은 눈사람+호박을 돌린다. 남의 자산 바닥값을 쓰면 예외 없이 틀린 판정이 나온다
+#       — D33 이 `NoiseFloor` 를 **타입으로** 강제하는 이유가 정확히 이것이다.
 #
-#   ⚠️ A5000 은 Chamfer(평균 0.097 · 95% 0.177 · 최대 0.610 vox)도 같이 줬는데
-#      그건 **복셀 단위 거리**라 이 함수가 재는 무차원 1-IoU 와 단위가 다르다.
-#      단위가 다른 값을 바닥값에 넣으면 판정이 조용히 무의미해진다. 쓰지 않는다.
-REAL_NOISE_FLOOR = float(os.environ.get("REAL_NOISE_FLOOR", "0.0701"))
+# 눈사람에 대한 왕복 대조군은 아직 없다. 그래서 None 을 넘기고 보존은 **미결**로
+# 렌더된다 (D5-b). 추정값으로 통과시키지 않는다.
+REAL_NOISE_FLOOR = None
 
 # ── recolor(레벨1) 결과 자리 ────────────────────────────────────────────
 #
@@ -222,12 +223,13 @@ def _gate_rows(run):
          ("—" if d.get("preservation_excess_ratio") is None
           else f"{d['preservation_excess_ratio']:.4f}×"),
          "바닥값 대비 초과배수 — 절대값 문턱이 아니다", mark(g.get("preservation"))),
+        # ⚠️ `preservation_baseline` 은 **문자열**이다 (D36-a 이후). 맥북의
+        #    `describe()` 가 영역·표본까지 담아 낸 것이라 그대로 낸다 —
+        #    숫자로 포맷하려 들면 깨지고, 여기서 다시 판정하면 게이트와 갈라진다.
         ("preservation_geometry_distance", f"{d['preservation_geometry_distance']:.6f}",
-         ("≤ 잡음 바닥값 "
-          + (f"{d['preservation_baseline']:.6f}" if d["preservation_baseline"] is not None
-             else "(바닥값 없음 — D5-b 대기)")),
-         mark(None if d["preservation_baseline"] is None
-              else d["preservation_geometry_distance"] <= d["preservation_baseline"])),
+         ("≤ 잡음 바닥값 · " + str(d["preservation_baseline"]))
+         if d["preservation_baseline"] is not None else "(바닥값 없음 — D5-b 대기)",
+         mark(g.get("preservation"))),
         ("transfer_saving", f"{d['transfer_saving'] * 100:.2f}%", "> 40%",
          mark(d["transfer_saving"] > 0.40)),
         ("outside_new / outside_removed",
@@ -358,6 +360,80 @@ def debug_w9(side: str, kind: str) -> Response:
     cells = cbin_dir_to_occupancy(d)          # 그림용 (D28 진단 전용)
     png = (debugview.depth_png(cells) if kind == "depth"
            else debugview.pane_png({"x": {1: debugview.silhouette_png_arr(cells, 1)}}, "x", 1))
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+# ── 최근 산출물 목록 · 상세 (사용자 요청) ─────────────────────────────────
+#
+# ⚠️ 라우트를 `/runs/...` 아래에 둔다. `/debug/*.png` 아래에 점 구분 경로를 만들면
+#    기존 `/debug/{pane}.{axis}.png`(axis:int) 와 충돌해 422 가 난다 — W7 에서 겪었다.
+#    FastAPI 는 먼저 등록된 라우트가 이긴다.
+#
+# ⚠️ `run_id` 는 경로의 해시다. 라우트가 임의 경로를 열지 못하고, 화면에 절대경로가
+#    안 나간다 (§7 — 공개 URL 이다).
+_RUN_IMG_CACHE: dict = {}
+
+
+def _find_run(run_id: str):
+    from server import runs as runs_mod
+
+    for r in runs_mod.recent_runs(limit=32):
+        if r.run_id == run_id:
+            return r
+    raise HTTPException(status_code=404, detail=f"모르는 run: {run_id}")
+
+
+@app.get("/runs")
+def runs_index() -> Response:
+    from server import debugview
+    from server import runs as runs_mod
+
+    return Response(
+        debugview.render_runs_index(runs_mod.recent_runs(limit=5)),
+        media_type="text/html; charset=utf-8",
+    )
+
+
+@app.get("/runs/{run_id}")
+def runs_detail(run_id: str) -> Response:
+    from server import debugview
+    from server import runs as runs_mod
+
+    r = _find_run(run_id)
+    return Response(
+        debugview.render_run_detail(r, runs_mod.detail_kind(r.kind)),
+        media_type="text/html; charset=utf-8",
+    )
+
+
+@app.get("/runs/{run_id}/img/{name}")
+def runs_image(run_id: str, name: str) -> Response:
+    """상세 화면의 그림. 종류별 정본은 `runs.detail_kind()` 가 정한다."""
+    from server import debugview
+
+    if name not in ("front", "side", "top", "depth", "color", "color_after"):
+        raise HTTPException(status_code=404, detail=f"모르는 그림: {name}")
+    r = _find_run(run_id)
+    key = (run_id, name)
+    if key in _RUN_IMG_CACHE:
+        return Response(_RUN_IMG_CACHE[key], media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+    d = r.after_chunk_dir if name == "color_after" else r.chunk_dir
+    if d is None:
+        png = debugview.placeholder_png()
+    elif name.startswith("color"):
+        png = debugview.color_front_png(d)
+    else:
+        from server.realasset import cbin_dir_to_occupancy
+
+        cells = cbin_dir_to_occupancy(d)   # 그림용 (D28: 진단 전용)
+        if name == "depth":
+            png = debugview.depth_png(cells)
+        else:
+            axis = {"front": 1, "side": 0, "top": 2}[name]
+            png = debugview._png(debugview.silhouette_png_arr(cells, axis))
+    _RUN_IMG_CACHE[key] = png
     return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
