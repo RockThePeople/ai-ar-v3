@@ -38,6 +38,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # W17 — 라쏘 판정은 계약의 LassoVolume.cs 를 **실제로 컴파일해** 돌린다.
+      # 없으면 골든 검사만 돌고 C# 드리프트를 못 잡는다. 그래서 CI 에 둔다.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
       - name: install deps
         run: python -m pip install --upgrade pip -r server/requirements.txt
       - name: pytest

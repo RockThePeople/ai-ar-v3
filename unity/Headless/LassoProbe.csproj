@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AssemblyName>LassoProbe</AssemblyName>
+    <RootNamespace>LassoProbe</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 🔴 계약의 원본을 **복사하지 않고 링크로** 컴파일한다. 복사하면 드리프트가
+         생기고, 그러면 "증명된 코드를 썼다" 는 말이 거짓이 된다. -->
+    <Compile Include="../../contract/unity/LassoVolume.cs" Link="LassoVolume.cs" />
+    <Compile Include="../Runtime/SlatLassoPicker.cs" Link="SlatLassoPicker.cs" />
+    <Compile Include="UnityShim.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+</Project>
