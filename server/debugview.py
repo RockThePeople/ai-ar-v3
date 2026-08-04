@@ -318,7 +318,34 @@ def _banner(kind: str, source_label: str) -> str:
     )
 
 
-def render_html(run: dict, *, source_label: str, gate_rows, kind: str = "synthetic") -> str:
+def recolor_pane(ready: bool) -> str:
+    """⑥ 레벨1(색만) 자리. 산출물이 없으면 **미도착이라고 적는다.**"""
+    note = (
+        "레벨1 은 <b>기하가 불변</b>이라 위 실루엣·깊이맵으로는 before/after 가 똑같이 나온다 "
+        "— 두 그림 다 색 채널을 안 본다. 색 판정은 이 그림이 정본이다."
+    )
+    if not ready:
+        return (
+            '<div class="pane" style="margin-bottom:14px"><h2>⑥ 레벨1 색 편집 (recolor)</h2>'
+            '<div class="legend"><b>산출물 미도착.</b> 맥북의 <code>recolor.py</code> 가 '
+            '<code>.cbin</code> 세트를 내면 <code>RECOLOR_BEFORE_DIR</code> / '
+            '<code>RECOLOR_AFTER_DIR</code> 를 그쪽으로 돌리면 된다 — 이 화면은 안 고친다.<br>'
+            f'{note}</div></div>'
+        )
+    views = "".join(
+        f'<div class="view"><img src="/debug/recolor/{side}.png" alt="recolor {side}">'
+        f"<span>{label}</span></div>"
+        for side, label in (("before", "편집 전"), ("after", "편집 후 (마스크 안만 색 변경)"))
+    )
+    return (
+        '<div class="pane" style="margin-bottom:14px"><h2>⑥ 레벨1 색 편집 (recolor)</h2>'
+        f'<div class="views">{views}</div>'
+        f'<div class="legend">{note}</div></div>'
+    )
+
+
+def render_html(run: dict, *, source_label: str, gate_rows, kind: str = "synthetic",
+                recolor_ready: bool = False) -> str:
     rep = run["report"]
     sp = run["splice"]
     bk = run["bk"]
@@ -366,6 +393,7 @@ def render_html(run: dict, *, source_label: str, gate_rows, kind: str = "synthet
 <div class="legend">위 4분할은 <b>실루엣 투영</b>이라 깊이를 뭉갠다 — 파낸 구멍(삼각눈·톱니입)이
 뒷면으로 메워져 <b>원리적으로 안 보인다</b>. 그 질문에만 답하는 진단 그림이다.</div></div>
 
+{recolor_pane(recolor_ready)}
 <div class="grid">{"".join(panes)}</div>
 
 <table>
@@ -435,4 +463,49 @@ def depth_png(cells: np.ndarray, *, scale: int = 10) -> bytes:
                     img[span[2] - 1 - z, x] = (
                         int(40 + 215 * k), int(20 + 140 * k), int(10 + 30 * k)
                     )
+    return _png(np.repeat(np.repeat(img, scale, axis=0), scale, axis=1))
+
+
+# ══════════════════════════════════════════════════════ 색 렌더 (레벨1 / recolor)
+#
+# 왜 실루엣·깊이맵으로는 부족한가: 레벨1 은 **기하가 불변**이다. 형태가 안 바뀌므로
+# 실루엣도 깊이맵도 before/after 가 똑같이 나온다 — 두 그림 다 색 채널을 안 본다.
+# 색 편집을 눈으로 판정하려면 색을 그리는 그림이 따로 있어야 한다 (D19 와 같은 논리).
+#
+# 입력은 **`.cbin` 디렉터리**다. recolor 가 무엇을 노출하든 이 시스템의 산출물 모양은
+# 청크 세트 하나뿐이므로(D8), 새 계약을 발명하지 않고 그것만 받는다.
+def color_front_png(chunk_dir, *, scale: int = 8) -> bytes:
+    """`.cbin` 디렉터리 → 정면 컬러 렌더 PNG.
+
+    각 (x,z) 기둥에서 **가장 앞(min y)** 정점의 색을 쓴다. 색이 없는 청크
+    (`FLAG_COLOR` 미설정)는 건너뛴다 — 무채색으로 채우면 "색이 안 바뀌었다" 와
+    "색이 애초에 없다" 가 화면에서 같아 보인다.
+    """
+    from pathlib import Path
+
+    from deltacontract.chunkbin import decode  # type: ignore[import-not-found]
+    from deltacontract.coords import normalized_to_voxel  # type: ignore[import-not-found]
+
+    best = {}
+    for f in sorted(Path(chunk_dir).glob("*.cbin")):
+        mesh = decode(f.read_bytes())
+        if mesh.colors is None:
+            continue
+        cells = normalized_to_voxel(mesh.positions)
+        for (x, y, z), c in zip(cells, mesh.colors):
+            k = (int(x), int(z))
+            if k not in best or y < best[k][0]:
+                best[k] = (y, c[:3])
+
+    img = _canvas()
+    for (x, z), (_, c) in best.items():
+        img[VOXEL_RES - 1 - z, x] = c
+    return _png(np.repeat(np.repeat(img, scale, axis=0), scale, axis=1))
+
+
+def placeholder_png(text_rows: int = 3, *, scale: int = 8) -> bytes:
+    """산출물이 아직 없을 때의 자리표시. **빈 그림을 결과처럼 보이게 두지 않는다.**"""
+    img = _canvas()
+    for i in range(0, VOXEL_RES, 8):
+        img[i : i + 1, :] = (0x3A, 0x42, 0x52)
     return _png(np.repeat(np.repeat(img, scale, axis=0), scale, axis=1))
