@@ -15,12 +15,16 @@
 """
 
 from .frames import (  # noqa: F401
+    DECODER_NATIVE_TO_GLB,
+    DECODER_NATIVE_TO_VOXEL,
+    TO_GLB_ROTATION,
     GLB_TO_VOXEL,
     IDENTITY,
     VOXEL_TO_GLB,
     AxisTransform,
     all_signed_permutations,
     assert_not_identity,
+    decoder_native_to_voxel_frame,
     to_voxel_frame,
 )
 from .voxelize import (  # noqa: F401
@@ -48,12 +52,16 @@ from .delta import (  # noqa: F401
 from .package import DeltaPackage, encode_chunks, package_delta  # noqa: F401
 
 __all__ = [
+    "DECODER_NATIVE_TO_GLB",
+    "DECODER_NATIVE_TO_VOXEL",
+    "TO_GLB_ROTATION",
     "GLB_TO_VOXEL",
     "IDENTITY",
     "VOXEL_TO_GLB",
     "AxisTransform",
     "all_signed_permutations",
     "assert_not_identity",
+    "decoder_native_to_voxel_frame",
     "to_voxel_frame",
     "load_mesh",
     "normalize_to_normalized",

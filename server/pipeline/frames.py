@@ -45,12 +45,16 @@ from typing import List, Tuple
 import numpy as np
 
 __all__ = [
+    "DECODER_NATIVE_TO_GLB",
+    "DECODER_NATIVE_TO_VOXEL",
     "GLB_TO_VOXEL",
     "IDENTITY",
+    "TO_GLB_ROTATION",
     "VOXEL_TO_GLB",
     "AxisTransform",
     "all_signed_permutations",
     "assert_not_identity",
+    "decoder_native_to_voxel_frame",
     "to_voxel_frame",
 ]
 
@@ -120,9 +124,61 @@ VOXEL_TO_GLB = GLB_TO_VOXEL.inverse()
 IDENTITY = AxisTransform(perm=(0, 1, 2), sign=(1, 1, 1), note="항등 — 오답")
 
 
+# ══════════════════════════════════════════ D9-b — 두 번째 좌표 함정
+#
+# 🔴 **같은 파이프라인에 좌표 함정이 둘이고, 둘은 서로 반대 방향이다.**
+#
+#     D9    GLB 파일에서 읽은 메시   → 항등을 쓰면 **틀린다** (IoU 0.19)
+#     D9-b  디코더 native 메시       → 항등이 **정답이다**
+#
+# 디코더의 native 프레임은 z-up 이고 **그것이 복셀 격자 프레임과 같다.** TRELLIS 의
+# `to_glb` 는 마지막에 아래 회전을 걸어 z-up 을 y-up 으로 바꾼 뒤 파일로 내보낸다:
+#
+#     vertices @ [[1, 0, 0],
+#                 [0, 0, -1],
+#                 [0, 1, 0]]        # = (x, y, z) → (x, z, -y)
+#
+# 이 행렬은 `VOXEL_TO_GLB` 와 **같은 변환**이다 (테스트가 확인한다).
+#
+# ⇒ `to_glb` 를 **거친** 것(=GLB 파일)을 복셀과 비교할 때는 `GLB_TO_VOXEL` 을 건다.
+# ⇒ `to_glb` 를 **거치지 않은** 것(=기하 전용 export, 디버그 덤프)은 이미 복셀
+#    프레임이므로 **아무것도 걸지 않는다.** 여기에 `GLB_TO_VOXEL` 을 걸면 틀린다.
+#
+# 근거: A5000 이 기하 전용 export 에서 이 회전을 빠뜨려 왕복 메시만 z-up 이었다.
+#       소스를 읽고 잡았다 — 놓쳤으면 **잡음 바닥값이 통째로 허수가 됐다** (D9-b).
+
+# `to_glb` 말미의 회전 행렬 원문. `v @ TO_GLB_ROTATION` 형태로 쓴다.
+TO_GLB_ROTATION = np.array(
+    [[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.int64
+)
+
+# 디코더 native(z-up) → GLB(y-up). 위 행렬과 같다.
+DECODER_NATIVE_TO_GLB = VOXEL_TO_GLB
+
+# 🔴 디코더 native → 복셀 격자. **항등이다.** 두 프레임이 같기 때문이다.
+#    D9 에서 항등이 오답이었던 것과 정반대다 — 그래서 이름을 따로 준다.
+#    `assert_not_identity` 를 이 경로에 쓰지 마라.
+DECODER_NATIVE_TO_VOXEL = AxisTransform(
+    perm=(0, 1, 2), sign=(1, 1, 1), note="D9-b: 디코더 native 는 이미 복셀 프레임이다"
+)
+
+
 def to_voxel_frame(pts: np.ndarray) -> np.ndarray:
-    """GLB(Y-up) 좌표 → 복셀 격자(Z-up) 좌표. GLB 를 읽는 모든 경로가 통과한다."""
+    """GLB(Y-up) 좌표 → 복셀 격자(Z-up) 좌표. GLB **파일**을 읽는 경로가 통과한다.
+
+    ⚠️ 디코더 native 메시(`to_glb` 를 안 거친 것)에는 쓰지 마라 — 그건 이미 복셀
+       프레임이다 (D9-b). `decoder_native_to_voxel_frame()` 을 써라.
+    """
     return GLB_TO_VOXEL.apply(pts)
+
+
+def decoder_native_to_voxel_frame(pts: np.ndarray) -> np.ndarray:
+    """디코더 native(z-up) 좌표 → 복셀 격자 좌표. **항등이다** (D9-b).
+
+    함수로 두는 이유는 호출부가 "변환을 생각했다" 는 것을 코드에 남기기 위해서다.
+    항등이라 없어도 되지만, 없으면 다음 세션이 `to_voxel_frame` 을 잘못 건다.
+    """
+    return DECODER_NATIVE_TO_VOXEL.apply(pts)
 
 
 def assert_not_identity(transform: AxisTransform, where: str = "") -> None:

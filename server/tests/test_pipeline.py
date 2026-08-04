@@ -672,3 +672,112 @@ def test_donor_fits_the_mask_without_cropping(run):
     )
     # 그리고 마스크를 실제로 채운다 — 한 축이라도 닿아야 "맞춘" 것이다.
     assert np.any(donor_span >= mask_span - 2)
+
+
+# ══════════════════════════════ 11. D17 — churn_ratio 정의 확정
+def test_churn_ratio_is_identical_to_one_minus_iou():
+    """★ D17 — `churn_rate(R) = (|new|+|removed|) / |(before ∪ after) ∩ R|` 이
+    항등적으로 `1 − IoU(R)` 임을 확인한다. 이 항등성이 정의 채택의 이유다.
+    """
+    base = surface_voxelize(*snowman_mesh())
+    mask = build_mask(top_region_cells(base, fraction=HEAD_FRACTION), halo=HALO)
+    donor, _ = fit_donor_to_mask(*donor_mesh(), mask)
+    after = splice(base, donor, mask, crop_fraction=1.0).cells
+
+    m = metrics._codes(mask.dilated)
+    b = np.intersect1d(metrics._codes(base), m, assume_unique=True)
+    a = np.intersect1d(metrics._codes(after), m, assume_unique=True)
+
+    new = np.setdiff1d(a, b, assume_unique=True).size
+    removed = np.setdiff1d(b, a, assume_unique=True).size
+    union = np.union1d(a, b).size
+
+    assert abs((new + removed) / union - (1.0 - metrics._iou(b, a))) < 1e-12
+
+
+def test_churn_ratio_is_bounded_unlike_the_rejected_definition():
+    """★ D17 — 기각된 before-점유 정규화가 왜 무계인지 숫자로 남긴다.
+
+    내가 W3 에서 제안했던 정의는 마스크 안에서 1.188 > 1 을 냈다 (A5000 실측).
+    "비율" 로 해석할 수 없고 before 가 빈 영역에서 발산한다. 합집합 정규화는
+    항상 [0,1] 이다.
+    """
+    base = surface_voxelize(*snowman_mesh())
+    mask = build_mask(top_region_cells(base, fraction=HEAD_FRACTION), halo=HALO)
+    donor, _ = fit_donor_to_mask(*donor_mesh(), mask)
+    after = splice(base, donor, mask, crop_fraction=1.0).cells
+
+    m = metrics._codes(mask.dilated)
+    b = np.intersect1d(metrics._codes(base), m, assume_unique=True)
+    a = np.intersect1d(metrics._codes(after), m, assume_unique=True)
+    new = np.setdiff1d(a, b, assume_unique=True).size
+    removed = np.setdiff1d(b, a, assume_unique=True).size
+
+    union_norm = (new + removed) / np.union1d(a, b).size
+    before_norm = (new + removed) / max(1, b.size)      # 기각된 정의
+
+    assert 0.0 <= union_norm <= 1.0
+    assert before_norm > union_norm, "두 정의가 같은 값을 내면 이 테스트는 무의미하다"
+
+
+def test_churn_ratio_reproduces_a5000_arithmetic():
+    """A5000 이 보고한 4.97 이 D17 정의에서 나오는지 산술로 확인한다.
+
+    IoU_in 0.2700 · IoU_out 0.8531 → (1−0.2700)/(1−0.8531) = 0.7300/0.1469 = 4.97
+    """
+    assert abs((1 - 0.2700) / (1 - 0.8531) - 4.97) < 0.01
+
+
+# ══════════════════════════════ 12. D16 — 바닥값 대비 초과배수
+def test_preservation_uses_excess_ratio_not_absolute_threshold():
+    """★ D16 — 절대 IoU 0.99 문턱은 항진적으로 실패한다. 배수로 판정한다.
+
+    A5000 실측을 그대로 넣는다: 바닥값 0.0701(= 1−0.9299), VoxHammer 거리
+    0.1469(= 1−0.8531) → **2.10배**. 절대 문턱 0.99 였다면 바닥값 자체도
+    (1−0.9299=0.0701 > 0.01) 실패했을 것이다 — 어떤 디코더로도 통과 불가다.
+    """
+    floor = 1.0 - 0.9299
+    voxhammer = metrics.PreservationDistance(
+        distance=1.0 - 0.8531, baseline=floor, max_excess_ratio=1.0
+    )
+    assert abs(voxhammer.excess_ratio - 2.10) < 0.02
+    assert voxhammer.passes is False
+
+    # 바닥값 자체는 정의상 1.00배 — 통과해야 한다.
+    roundtrip = metrics.PreservationDistance(
+        distance=floor, baseline=floor, max_excess_ratio=1.0
+    )
+    assert roundtrip.excess_ratio == 1.0
+    assert roundtrip.passes is True
+
+    # 🔴 옛 절대 문턱(IoU > 0.99)이었다면 바닥값조차 실패한다 — 항진적 실패.
+    assert (1.0 - floor) < 0.99
+
+
+def test_preservation_still_refuses_without_baseline():
+    """D16 이 들어와도 baseline-없으면-거부는 유지된다 (D5-b)."""
+    p = metrics.PreservationDistance(distance=0.1469, baseline=None)
+    with pytest.raises(metrics.NoiseFloorUnknown, match="바닥값"):
+        _ = p.excess_ratio
+    with pytest.raises(metrics.NoiseFloorUnknown):
+        _ = p.passes
+
+
+def test_synthetic_preservation_is_zero_excess(run):
+    """합성 경로는 재디코딩 영역이 공집합이라 거리 0.0 · 초과배수 0.0 이다."""
+    p = run["report"].preservation
+    assert p.distance == 0.0
+    assert p.excess_ratio == 0.0
+    assert p.passes is True
+
+
+def test_assemble_path_beats_voxhammer_on_preservation():
+    """★ D3(관통 우선)의 정당성 — assemble 경로가 보존에서 압도적이다.
+
+    assemble(strict_containment=True) 마스크 밖 IoU 1.000000 → 초과배수 0.0
+    VoxHammer                          마스크 밖 IoU 0.8531   → 초과배수 2.10
+    """
+    floor = 1.0 - 0.9299
+    assemble = metrics.PreservationDistance(distance=0.0, baseline=floor)
+    voxhammer = metrics.PreservationDistance(distance=1.0 - 0.8531, baseline=floor)
+    assert assemble.passes and not voxhammer.passes

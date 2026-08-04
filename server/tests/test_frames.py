@@ -204,3 +204,92 @@ def test_occupancy_roundtrip_is_frame_agnostic():
     cells = surface_voxelize(*asymmetric_asset_voxel_frame())
     again = surface_voxelize(*occupancy_to_mesh(cells))
     assert _iou_of(cells, again) > 0.99
+
+
+# ══════════════════ 5. D9-b — 두 번째 좌표 함정 (방향이 반대다)
+def test_to_glb_rotation_matrix_equals_voxel_to_glb():
+    """★ `to_glb` 말미의 회전이 `VOXEL_TO_GLB` 와 **같은 변환**인지.
+
+    TRELLIS 원문:  vertices @ [[1,0,0],[0,0,-1],[0,1,0]]
+    이게 우리 상수와 다르면 D9 와 D9-b 중 하나가 틀린 것이다.
+    """
+    from server.pipeline.frames import TO_GLB_ROTATION, DECODER_NATIVE_TO_GLB
+
+    pts = np.array(
+        [[0.1, -0.2, 0.3], [-0.5, 0.5, 0.0], [1.0, 2.0, 3.0]], dtype=np.float64
+    )
+    assert np.array_equal(pts @ TO_GLB_ROTATION, DECODER_NATIVE_TO_GLB.apply(pts))
+    assert np.array_equal(pts @ TO_GLB_ROTATION, VOXEL_TO_GLB.apply(pts))
+    # (x, y, z) → (x, z, -y) 임을 직접 확인
+    assert np.array_equal(pts @ TO_GLB_ROTATION, np.stack(
+        [pts[:, 0], pts[:, 2], -pts[:, 1]], axis=1))
+
+
+def test_decoder_native_is_already_the_voxel_frame():
+    """★★ D9-b — 디코더 native 에서는 **항등이 정답이다.** D9 와 정반대다.
+
+    `to_glb` 를 거치지 않은 메시(기하 전용 export·디버그 덤프)는 이미 z-up 이고
+    그게 복셀 격자 프레임이다. 여기에 `GLB_TO_VOXEL` 을 걸면 틀린다.
+
+    A5000 이 이 회전을 빠뜨렸다가 소스를 읽고 잡았다 — 놓쳤으면 잡음 바닥값이
+    통째로 허수가 됐다.
+    """
+    from server.pipeline.frames import (
+        DECODER_NATIVE_TO_VOXEL,
+        decoder_native_to_voxel_frame,
+    )
+
+    assert DECODER_NATIVE_TO_VOXEL.is_identity, "D9-b 는 항등이어야 한다"
+
+    native, faces = asymmetric_asset_voxel_frame()   # 디코더 native = 복셀 프레임
+    reference = surface_voxelize(native, faces)
+
+    # 올바른 처리: 아무것도 걸지 않는다.
+    right = surface_voxelize(decoder_native_to_voxel_frame(native), faces)
+    assert _iou_of(right, reference) == 1.0
+
+    # 🔴 흔한 오류: D9 변환을 native 메시에 또 건다.
+    wrong = surface_voxelize(GLB_TO_VOXEL.apply(native), faces)
+    assert _iou_of(wrong, reference) < 0.5, (
+        f"native 에 GLB_TO_VOXEL 을 걸었는데 참조와 맞아 버렸다 "
+        f"(IoU {_iou_of(wrong, reference):.4f}) — 픽스처가 대칭이라 함정을 못 잡는다"
+    )
+
+
+def test_two_traps_point_in_opposite_directions():
+    """★ D9 와 D9-b 를 한 자리에서 대조한다. 헷갈리면 여기를 보면 된다.
+
+        D9    GLB 파일 메시    → 항등은 **오답** (IoU 낮음)
+        D9-b  디코더 native   → 항등이 **정답** (IoU 1.0)
+    """
+    reference = surface_voxelize(*asymmetric_asset_voxel_frame())
+
+    glb_verts, faces = asymmetric_asset_glb_frame()
+    native_verts, _ = asymmetric_asset_voxel_frame()
+
+    d9_identity = _iou_of(surface_voxelize(IDENTITY.apply(glb_verts), faces), reference)
+    d9_correct = _iou_of(surface_voxelize(GLB_TO_VOXEL.apply(glb_verts), faces), reference)
+    d9b_identity = _iou_of(surface_voxelize(IDENTITY.apply(native_verts), faces), reference)
+
+    assert d9_identity < 0.5 < d9_correct      # D9: 항등이 오답
+    assert d9b_identity == 1.0                 # D9-b: 항등이 정답
+
+
+def test_glb_export_roundtrip_returns_to_the_voxel_frame(tmp_path):
+    """★ 안전성: native → to_glb → 파일 → `load_mesh(frame="voxel")` = 원래 프레임.
+
+    이 왕복이 항등이어야 "GLB 로 내보냈다가 다시 읽어도 같은 물체" 가 성립한다.
+    깨지면 3090 이 DebugView 에 띄운 것과 우리가 계측한 것이 다른 물체가 된다.
+    """
+    trimesh = pytest.importorskip("trimesh", reason="GLB 왕복 전용")
+    from server.pipeline import load_mesh
+    from server.pipeline.frames import DECODER_NATIVE_TO_GLB
+
+    native, faces = asymmetric_asset_voxel_frame()
+    exported = DECODER_NATIVE_TO_GLB.apply(native)      # to_glb 가 하는 일
+
+    path = tmp_path / "roundtrip.glb"
+    trimesh.Trimesh(vertices=exported, faces=faces, process=False).export(path)
+
+    back, _ = load_mesh(str(path), frame="voxel")
+    assert np.allclose(back, native, atol=1e-6), "GLB 왕복이 프레임을 바꿨다"

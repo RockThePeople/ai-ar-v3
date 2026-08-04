@@ -349,40 +349,42 @@ def churn_ratio(
     더 크게 나오고("밖이 더 많이 바뀌었다"), 그건 영역 크기가 다르기 때문이지
     누출이 아니다.
 
-    정규화: 각 영역의 **편집 전 점유 복셀 수**로 나눈다.
+    ────────────────────────────────────────────────────────────────────
+    D17 (rev8) — 정의 확정: **합집합 정규화 ≡ 1 − IoU**
+    ────────────────────────────────────────────────────────────────────
+        churn_rate(R) = (|new| + |removed|) / |(before ∪ after) ∩ R|  ≡  1 − IoU(R)
+        churn_ratio   = (1 − IoU_in) / (1 − IoU_out)
 
-        density(R) = churn(R) / |before ∩ R|
-        ratio      = density(mask) / density(outside)
+    A5000 실측 = 0.7300 / 0.1469 = **4.97**.
 
-    ⚠️ 이 정규화는 A5000 의 4.97 을 재현하도록 고른 것이다 (신규/제거 개수와
-       TRELLIS 총 복셀 7,125 로부터 역산하면 영역별 점유 수 기준이 맞는다).
-       **W3-A5000 이 자기 계산과 대조해 확인해야 한다** — 다르면 여기를 고친다.
+    채택 이유  ① 항등적으로 1−IoU 라 IoU 만 있으면 재현된다 (별도 상태 불필요)
+               ② 유계 [0,1]        ③ before/after 대칭
 
-    마스크 밖 churn 이 0 이면 `inf` 를 돌려준다 (완전 국소). 합성 디코더가
-    구조적으로 그 상태다 — 실자산에서는 절대 안 나온다.
+    기각한 것 — **내가 W3 에서 제안했던 before-점유 정규화**(= 7.459).
+        무계다. 마스크 안에서 1.188 > 1 이 나와 "비율" 로 해석할 수 없고,
+        before 가 빈 영역에서 발산한다. 결론(≫1)은 같았지만 정의가 틀렸다.
+    오답      원시 개수비 0.5134 — 영역 크기를 무시한다.
+
+    마스크 밖 churn 이 0 이면 `inf` (완전 국소). 합성 디코더가 구조적으로 그
+    상태다 — 실자산에서는 절대 안 나온다.
     """
     m = _codes(mask_region)
     b_all, a_all = _codes(before), _codes(after)
 
-    b_in = np.intersect1d(b_all, m, assume_unique=True)
-    a_in = np.intersect1d(a_all, m, assume_unique=True)
-    b_out = np.setdiff1d(b_all, m, assume_unique=True)
-    a_out = np.setdiff1d(a_all, m, assume_unique=True)
-
-    churn_in = (
-        np.setdiff1d(a_in, b_in, assume_unique=True).size
-        + np.setdiff1d(b_in, a_in, assume_unique=True).size
+    iou_in = _iou(
+        np.intersect1d(b_all, m, assume_unique=True),
+        np.intersect1d(a_all, m, assume_unique=True),
     )
-    churn_out = (
-        np.setdiff1d(a_out, b_out, assume_unique=True).size
-        + np.setdiff1d(b_out, a_out, assume_unique=True).size
+    iou_out = _iou(
+        np.setdiff1d(b_all, m, assume_unique=True),
+        np.setdiff1d(a_all, m, assume_unique=True),
     )
 
-    density_in = churn_in / float(max(1, b_in.size))
-    density_out = churn_out / float(max(1, b_out.size))
-    if density_out == 0.0:
-        return float("inf") if density_in > 0.0 else 0.0
-    return density_in / density_out
+    churn_in = 1.0 - iou_in
+    churn_out = 1.0 - iou_out
+    if churn_out == 0.0:
+        return float("inf") if churn_in > 0.0 else 0.0
+    return churn_in / churn_out
 
 
 # ══════════════════════════════════════════════════════════════ 보존 (B)
@@ -410,21 +412,51 @@ def inherited_byte_identity(
 
 @dataclass(frozen=True)
 class PreservationDistance:
-    """보존-B 계측치 + 판정. 판정은 잡음 바닥값이 있어야만 나온다."""
+    """보존-B 계측치 + 판정.
+
+    ────────────────────────────────────────────────────────────────────
+    D16 (rev8) — 절대 문턱이 아니라 **바닥값 대비 초과배수**로 판정한다
+    ────────────────────────────────────────────────────────────────────
+    마스크 밖 IoU 0.853 은 "0.99 미만이라 실패" 가 아니라 "바닥값 0.9299 대비
+    **2.10배 초과**라 실패" 다. 절대 IoU 문턱(0.99)은 리메싱 잡음 때문에 **어떤
+    디코더로도 달성 불가능**하다 — 항진적으로 실패하므로 지표가 죽는다.
+
+    임계는 **왕복 잡음(0.0701) 기준**이지 디코더 분산(0.0003) 기준이 아니다.
+    분산 기준으로 잡으면 모든 것이 유의해져서 역시 지표가 죽는다.
+
+    D5·D11·D12 와 같은 병이다 — **문턱이 측정 대상의 물리를 반영하지 않으면
+    거짓말한다.**
+    """
 
     distance: float
     baseline: Optional[float]
+    max_excess_ratio: float = 1.0
+
+    @property
+    def excess_ratio(self) -> float:
+        """거리 / 바닥값. 1.0 이면 왕복 잡음과 같은 수준이라는 뜻이다.
+
+        A5000 실측 VoxHammer 경로 = 0.1469 / 0.0701 = **2.10배**.
+        assemble 경로(strict_containment=True) = 0.0 / 바닥값 = **0.0배**.
+        """
+        if self.baseline is None:
+            raise NoiseFloorUnknown(_NO_BASELINE_MSG.format(d=self.distance))
+        if self.baseline == 0.0:
+            # 재디코딩 영역이 공집합이면 바닥값도 0 이다. 거리도 0 이어야 성립.
+            return 0.0 if self.distance == 0.0 else float("inf")
+        return self.distance / self.baseline
 
     @property
     def passes(self) -> bool:
-        if self.baseline is None:
-            raise NoiseFloorUnknown(
-                f"재디코딩 영역 기하 거리 {self.distance:.4f} 를 판정할 잡음 바닥값이 "
-                "없다. 바닥값은 **편집 없이 인코드→디코드만 왕복시킨 대조군**에서 "
-                "나오고 W3-A5000 에 배정돼 있다 (D5-b). 추정값을 넣어 통과시키면 "
-                "'잡음인지 누출인지 못 가른 채 보존됨이라고 적는' 것이 된다."
-            )
-        return self.distance <= self.baseline
+        return self.excess_ratio <= self.max_excess_ratio
+
+
+_NO_BASELINE_MSG = (
+    "재디코딩 영역 기하 거리 {d:.4f} 를 판정할 잡음 바닥값이 없다. 바닥값은 "
+    "**편집 없이 인코드→디코드만 왕복시킨 대조군**에서 나온다 (D5-b · D14). "
+    "추정값을 넣어 통과시키면 '잡음인지 누출인지 못 가른 채 보존됨이라고 적는' "
+    "것이 된다."
+)
 
 
 def preservation_geometry_distance(
@@ -433,6 +465,7 @@ def preservation_geometry_distance(
     edited_region: np.ndarray,
     *,
     baseline: Optional[float] = None,
+    max_excess_ratio: float = 1.0,
 ) -> PreservationDistance:
     """★ 보존-B. 재디코딩 영역(= 편집 영역 **밖**)의 기하 거리 = 1 - IoU.
 
@@ -444,11 +477,20 @@ def preservation_geometry_distance(
         edited_region: 우리가 건드리겠다고 선언한 영역 (halo 까지 팽창시킨 마스크).
                        이 **밖**에서 잰다.
         baseline: 잡음 바닥값. None 이면 계측은 되지만 `.passes` 가 거부한다.
+        max_excess_ratio: D16 — 바닥값 대비 몇 배까지 허용할지. 기본 1.0 은
+            rev6 G2 의 "기하 거리 ≤ 잡음 바닥값" 을 배수로 옮긴 것이다.
+            ⚠️ 정확한 배수는 Chat 이 정할 사안이다 (보고에 올렸다). 알려진 두
+            데이터점(assemble 0.0배 · VoxHammer 2.10배)은 (0, 2.10) 안의 어떤
+            값을 써도 같은 판정을 낸다.
     """
     m = _codes(edited_region)
     b = np.setdiff1d(_codes(before), m, assume_unique=True)
     a = np.setdiff1d(_codes(after), m, assume_unique=True)
-    return PreservationDistance(distance=1.0 - _iou(b, a), baseline=baseline)
+    return PreservationDistance(
+        distance=1.0 - _iou(b, a),
+        baseline=baseline,
+        max_excess_ratio=max_excess_ratio,
+    )
 
 
 def preservation_iou_out(
@@ -552,6 +594,10 @@ class MetricReport:
             "inherited_byte_identity": self.inherited_byte_identity,
             "preservation_geometry_distance": self.preservation.distance,
             "preservation_baseline": self.preservation.baseline,
+            "preservation_excess_ratio": (
+                None if self.preservation.baseline is None
+                else self.preservation.excess_ratio
+            ),
             "transfer_saving": self.transfer_saving,
             "reference": dict(self.reference),
         }
@@ -573,7 +619,7 @@ class MetricReport:
                      AND (신규 ∪ 제거)의 최대 연결성분 ≥ 0.8      ← D12 (rev7)
                      AND churn(안)/churn(밖) ≥ 3.0
             ★ 보존   승계 청크 바이트 동일률 100%
-                     AND 재디코딩 영역 기하 거리 ≤ 잡음 바닥값
+                     AND 재디코딩 영역 기하 거리 ≤ 바닥값 × max_excess_ratio  ← D16
             ★ 절감   전송 절감 > 40%
 
         `visual_confirmed` 는 **코드가 만들 수 없는 사실**이다 (원칙 7: 육안
@@ -618,6 +664,7 @@ def evaluate(
     delta_bytes: int,
     containment_enforced: bool,
     noise_floor: Optional[float] = None,
+    max_excess_ratio: float = 1.0,
 ) -> MetricReport:
     """전 지표를 한 번에 계산한다.
 
@@ -651,7 +698,8 @@ def evaluate(
             parent_blobs, child_blobs, book
         ),
         preservation=preservation_geometry_distance(
-            before, after, edited_region_cells, baseline=noise_floor
+            before, after, edited_region_cells,
+            baseline=noise_floor, max_excess_ratio=max_excess_ratio,
         ),
         transfer_saving=transfer_saving(full_bytes, delta_bytes),
         reference={
