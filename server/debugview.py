@@ -274,6 +274,7 @@ a { color:#7dd3fc; }
             border:1px solid #232a36; border-radius:4px; background:#10131a; }
 .view span { display:block; color:#6b7688; font-size:11px; margin-top:4px; }
 .legend { margin-top:8px; color:#8b96a8; font-size:11px; }
+.legend.warn { color:#e8b46a; }
 .sw { display:inline-block; width:9px; height:9px; border-radius:2px;
       margin:0 4px 0 10px; vertical-align:middle; }
 table { border-collapse:collapse; margin-top:18px; width:100%; }
@@ -596,10 +597,18 @@ def render_run_detail(r, spec) -> str:
             f'alt="{delivered[canon_name]}">'
             f'<span>{delivered[canon_name]} ★ 정본</span></div>' if canon_name else ""
         )
+        # 🔴 4방향 짝은 **정본과 같은 급**으로 전폭에 둔다. 옆·뒤 뷰가
+        #    "정말 3D 로 바뀌었나" 에 답하는 그림이라 썸네일로 깔면 뜻이 없다.
+        four = "_paired_4dir.png"
+        if four in delivered:
+            head += (
+                f'<div class="hero"><img src="/runs/{r.run_id}/img/{four}" '
+                f'alt="{delivered[four]}"><span>{delivered[four]}</span></div>'
+            )
         tiles = [head] + [
             f'<div class="view"><img src="/runs/{r.run_id}/img/{n}" alt="{lbl}">'
             f"<span>{lbl}</span></div>"
-            for n, lbl in delivered.items() if n != canon_name
+            for n, lbl in delivered.items() if n not in (canon_name, four)
         ]
     else:
         tiles = []
@@ -609,6 +618,37 @@ def render_run_detail(r, spec) -> str:
                 f'<div class="view"><img src="/runs/{r.run_id}/img/{name}" alt="{labels[name]}">'
                 f"<span>{labels[name]}{canon}</span></div>"
             )
+    # ── 3D 뷰어 (model-viewer). 깊이맵은 **투영**이라 "3D 로 정말 바뀌었나" 에
+    #    답하지 못한다 — 돌려 봐야 답이 나온다. CDN 스크립트 한 줄만 쓴다.
+    models = r.models
+    viewer = ""
+    if models:
+        cards = "".join(
+            f'<div class="mv"><model-viewer src="/runs/{r.run_id}/img/{n}" '
+            f'camera-controls touch-action="pan-y" auto-rotate rotation-per-second="20deg" '
+            f'shadow-intensity="0.6" exposure="1.1" alt="{lbl}"></model-viewer>'
+            f"<span>{lbl}</span></div>"
+            for n, lbl in models.items()
+        )
+        only_after = "dragon-c_before.glb" not in models
+        note_m = (
+            '<div class="legend">⚠️ 편집 전 GLB 가 없어 <b>편집 후만</b> 걸었다.</div>'
+            if only_after else
+            '<div class="legend">드래그로 돌려 본다. 편집 전 GLB 는 3090 이 dragon-c 의 '
+            '<code>.cbin</code> 청크를 이어 붙여 만든 것이다 — A5000 에 요청하지 않았고, '
+            '<code>.cbin</code> 은 디코더가 낸 <b>실제 표면 메시</b>라 대용물이 아니다. '
+            '좌표는 <code>frames.VOXEL_TO_GLB</code> 로 GLB 프레임에 맞췄다 — 안 걸면 '
+            '편집 전만 90° 누워 보여 좌우 비교가 뜻을 잃는다 (D9).</div>'
+            # 🔴 안 적으면 "색이 바뀌었다" 로 오독된다 — 이번 편집은 형태 편집이다.
+            '<div class="legend warn">⚠️ 편집 전이 <b>흰색</b>인 것은 편집 결과가 아니다. '
+            '<code>.cbin</code> 은 정점·면만 담고 <b>색 채널이 없다</b> — 여기서 색을 '
+            '비교하지 마라. 이 판정에서 볼 것은 <b>형태</b>뿐이다.</div>'
+        )
+        viewer = (
+            '<div class="pane"><h2>3D 뷰어 — 돌려서 확인</h2>'
+            f'<div class="mvs">{cards}</div>{note_m}</div>'
+        )
+
     have = r.chunk_dir is not None or bool(r.delivered)
     note = "" if have else (
         '<div class="warn"><b>산출물 청크가 없다.</b> 자리표시를 그린다 — '
@@ -676,8 +716,15 @@ def render_run_detail(r, spec) -> str:
 
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ai-ar-v3 — {r.asset_id or r.rel}</title><style>{_CSS}
+<title>ai-ar-v3 — {r.asset_id or r.rel}</title>
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+<style>{_CSS}
 .mono {{ font-variant-numeric:tabular-nums; }}
+.mvs {{ display:flex; gap:12px; flex-wrap:wrap; }}
+.mv {{ flex:1 1 340px; min-width:0; }}
+.mv model-viewer {{ width:100%; height:420px; background:#0b0e14;
+                    border:1px solid #232a36; border-radius:6px; --poster-color:transparent; }}
+.mv span {{ display:block; color:#8b96a8; font-size:12px; margin-top:6px; }}
 .views .view {{ max-width:320px; }}
 .hero {{ margin:0 0 14px; }}
 .hero img {{ width:100%; height:auto; display:block; border:1px solid #232a36;
@@ -687,6 +734,7 @@ def render_run_detail(r, spec) -> str:
 <h1>{_KIND_KO.get(r.kind, r.kind)} · {r.asset_id or r.rel}</h1>
 <p class="sub">{r.when} · <code>{r.rel}</code> · <a href="/runs">← 목록</a></p>
 {note}
+{viewer}
 <div class="pane"><h2>정본 그림</h2>{tiles[0] if delivered else ""}
 <div class="views">{"".join(tiles[1:] if delivered else tiles)}</div>
 <div class="legend">{spec["why"]}</div></div>

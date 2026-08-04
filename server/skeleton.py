@@ -412,6 +412,12 @@ def runs_image(run_id: str, name: str) -> Response:
     from server import debugview
 
     r = _find_run(run_id)
+    # 3D 뷰어용 GLB. 화이트리스트(runs.Run.models)로만 연다 — 임의 파일이 아니다.
+    if name in r.models:
+        return Response(
+            (r.path / name).read_bytes(), media_type="model/gltf-binary",
+            headers={"Cache-Control": "no-store"},
+        )
     # A5000 이 렌더해 보낸 그림이면 **그대로 낸다** — 다시 렌더하지 않는다.
     # 파일명은 화이트리스트(runs.DELIVERED)로만 받는다 — 경로를 파라미터로 받지 않는다 (§7).
     if name in r.delivered:

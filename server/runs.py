@@ -114,9 +114,8 @@ def scan_dirs() -> List[Path]:
 #: 임의 파일명을 경로로 받지 않는다 (§7, 공개 URL).
 DELIVERED = {
     "DELIVER_depth_w12_wide.png": ("편집 전 / 편집 후 (넓게)", True),
+    "_paired_4dir.png": ("4방향 — 같은 방위끼리 (위 before / 아래 after)", False),
     "DELIVER_depth_w12.png": ("갈라짐 부위 확대", False),
-    "depth_runC.png": ("편집 후 4방향", False),
-    "depth_before.png": ("편집 전 4방향", False),
     "DELIVER_depth_w11_runA_FAILED.png": ("★ 대조 — W11 실패본 (목이 하나로 굵어지기만)", False),
 }
 
@@ -174,6 +173,25 @@ class Run:
             if canon and (self.path / n).is_file():
                 return n
         return None
+
+    @property
+    def models(self) -> Dict[str, str]:
+        """3D 뷰어에 걸 GLB. **깊이맵만으로는 "3D 로 정말 바뀌었나" 에 답이 안 된다.**
+
+        `dragon-c_before.glb` 는 3090 이 dragon-c 의 `.cbin` 청크를 이어 붙여 만든 것이다
+        (A5000 에 요청하지 않았다). `.cbin` 은 디코더가 낸 **실제 표면 메시**를 담으므로
+        대용물이 아니라 원본 그대로다.
+
+        🔴 D9 — `.cbin` 정점은 복셀 프레임(Z-up) 이고 `runC.glb` 는 GLB(Y-up) 이다.
+           그대로 나란히 걸면 before 만 90° 누워 보이고 좌우 비교가 뜻을 잃는다.
+           export 때 `frames.VOXEL_TO_GLB` 를 건다 (매직 회전을 쓰지 않는다).
+        """
+        out = {}
+        for name, label in (("dragon-c_before.glb", "편집 전 (dragon-c)"),
+                            ("runC.glb", "편집 후 (runC)")):
+            if (self.path / name).is_file():
+                out[name] = label
+        return out
 
     @property
     def note_caution(self) -> Optional[str]:
