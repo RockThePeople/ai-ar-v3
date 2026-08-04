@@ -1,0 +1,20 @@
+{
+  "asset_id": "v3-dragon-c",
+  "grid_source": "slat_coords",
+  "voxel_res": 64,
+  "n_coords": 9591,
+  "dtype": "int16",
+  "voxel_count_total": 9591,
+  "bbox_min": [
+    1,
+    0,
+    0
+  ],
+  "bbox_max": [
+    62,
+    63,
+    62
+  ],
+  "a5000_job_id": "j-546c20e6f886",
+  "note": "A5000 원본 slat.safetensors 에서 그대로 뽑은 좌표다. 3090 이 계산하지 않았다 (D34: .cbin 에서는 유도할 수 없다). 개수는 manifest 의 voxel_count_total 과 대조해 통과했다 (D28)."
+}

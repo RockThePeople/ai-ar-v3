@@ -438,12 +438,21 @@ def render_html(run: dict, *, source_label: str, gate_rows, kind: str = "synthet
 # 실루엣은 답할 수 없다. 그래서 진단용으로 앞면 깊이맵을 따로 낸다.
 #
 # 게이트 지표가 아니다. 판정은 여전히 `gate_g2()` 가 한다.
-def depth_png(cells: np.ndarray, *, scale: int = 10) -> bytes:
-    """앞면 깊이맵 PNG. 각 (x,z) 기둥에서 가장 앞(min y) 복셀의 깊이를 밝기로.
+def depth_png(cells: np.ndarray, *, scale: int = 10, view_axis: int = 1) -> bytes:
+    """깊이맵 PNG. 시선 축을 향해 가장 가까운 복셀의 깊이를 밝기로.
 
     밝을수록 앞, 어두울수록 뒤 — 즉 **어두운 자리가 파인 곳**이다.
+
+    ⚠️ `view_axis` 를 두는 이유: 정면 하나로는 **자산에 따라 판정을 못 한다.**
+       moto-b 가 그 자리였다 — 긴 축이 y 라, 정면(y 시선)에서는 오토바이를 앞에서
+       본 그림이 나오고 바퀴가 전부 겹친다. 바퀴가 몸체와 갈리는지는 옆면(x 시선)
+       에서만 보인다. 기본값은 종전 그대로 y 다.
     """
     c = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if view_axis != 1:
+        # 보고 싶은 축을 깊이 자리(1)로 옮긴다. 좌표계 변환이 아니라 **표시용**이다 (D9).
+        order = [a for a in (0, 1, 2) if a != view_axis]
+        c = c[:, [order[0], view_axis, order[1]]]
     if c.size == 0:
         return _png(np.zeros((scale, scale, 3), dtype=np.uint8))
     c = c - c.min(axis=0)
@@ -534,37 +543,67 @@ _GATE_CLS = {"통과": "pass", "실패": "fail", "미결": "undecided",
 _KIND_KO = {"generate": "생성", "edit": "형태 변경", "recolor": "색 변경", "미상": "미상"}
 
 
+#: 갈래별 표 머리말. Dragon 은 D56 으로 **종결**됐고 산출물만 남았다.
+_TRACKS = (
+    ("current", "현행 작업 (작업 1 / 2 / 3)",
+     "여기 없는 작업의 자산은 <b>아직 안 만들었다</b>. 화면이 비어 있는 것이 "
+     "그 사실이다 — 없는 것을 다른 갈래로 채우지 않는다."),
+    ("dragon", "Dragon 갈래 — 참고 기록",
+     "D56 으로 <b>종결된 갈래</b>다. 현행 작업의 직전 결과가 아니다 — "
+     "대조군으로만 본다. 지우지 않는 이유는 지우면 대조군이 없어지기 때문이다."),
+    ("legacy", "그 밖 — 이전 자산",
+     "눈사람·호박 등 W2 때 확보한 것들이다. 현행 작업도 Dragon 갈래도 아니다."),
+)
+
+
 def render_runs_index(runs) -> str:
-    """최근 5건 목록. 없는 값은 '미도착' 으로 나간다 (원칙 7)."""
-    rows = []
-    for r in runs:
-        cls = _GATE_CLS.get(r.gate, "ref")
-        if r.pending_reason:
+    """최근 산출물 목록. 없는 값은 '미도착' 으로 나간다 (원칙 7).
+
+    🔴 갈래를 **갈라서** 낸다. 목록은 시간순이라, 섞어 놓으면 종결된 Dragon 런이
+    현행 작업의 직전 결과처럼 읽힌다.
+    """
+    def _rows_for(runs):
+        rows = []
+        for r in runs:
+            cls = _GATE_CLS.get(r.gate, "ref")
+            if r.pending_reason:
+                rows.append(
+                    f'<tr class="pending"><td>—</td><td>{_KIND_KO.get(r.kind, r.kind)}</td>'
+                    f'<td colspan="2">{r.rel} — {r.pending_reason}</td>'
+                    f'<td class="ref">{r.gate}</td></tr>'
+                )
+                continue
+            # 🔴 철회된 수치는 **철회됐다고 적고 낸다.** 지우면 "왜 안 보이지" 가 되고,
+            #    그냥 두면 현행 수치와 구분이 안 된다. 둘 다 나쁘다.
+            void = (f'<div class="void">철회 — {r.invalidated}</div>'
+                    if r.invalidated else "")
             rows.append(
-                f'<tr class="pending"><td>—</td><td>{_KIND_KO.get(r.kind, r.kind)}</td>'
-                f'<td colspan="2">{r.rel} — {r.pending_reason}</td>'
-                f'<td class="ref">{r.gate}</td></tr>'
+                f'<tr class="{"voided" if r.invalidated else ""}">'
+                f'<td class="mono">{r.when}</td>'
+                f"<td>{_KIND_KO.get(r.kind, r.kind)}</td>"
+                f'<td class="mono">{r.asset_id or MISSING_TXT}</td>'
+                # 취소선은 **수치 텍스트에만** 건다. 셀 전체에 걸면 철회 사유까지
+                # 그어져서, 왜 철회됐는지를 읽지 말라는 화면이 된다.
+                f'<td><span class="{"struck" if r.invalidated else ""}">{r.headline}</span>{void}</td>'
+                # 사유를 같이 낸다 — "미도착" 두 건이 서로 다른 이유일 수 있다
+                # (judgment.json 이 없다 vs gate_g2 블록이 없다). 라벨만으로는 못 가른다.
+                f'<td class="{cls}">{"—" if r.gate == NOT_APPLICABLE_TXT else r.gate}'
+                f'{f"<br><span class=\"why\">{r.gate_reason}</span>" if r.gate_reason else ""}</td>'
+                f'<td><a href="/runs/{r.run_id}">상세 →</a></td></tr>'
             )
+        return rows
+
+    HEAD = ('<tr><th>시각</th><th>종류</th><th>자산 id</th><th>한눈 결과</th>'
+            '<th>게이트</th><th></th></tr>')
+    sections = ""
+    for key, title, note in _TRACKS:
+        rows = _rows_for([r for r in runs if r.track == key])
+        if not rows:
             continue
-        # 🔴 철회된 수치는 **철회됐다고 적고 낸다.** 지우면 "왜 안 보이지" 가 되고,
-        #    그냥 두면 현행 수치와 구분이 안 된다. 둘 다 나쁘다.
-        void = (f'<div class="void">철회 — {r.invalidated}</div>'
-                if r.invalidated else "")
-        rows.append(
-            f'<tr class="{"voided" if r.invalidated else ""}">'
-            f'<td class="mono">{r.when}</td>'
-            f"<td>{_KIND_KO.get(r.kind, r.kind)}</td>"
-            f'<td class="mono">{r.asset_id or MISSING_TXT}</td>'
-            # 취소선은 **수치 텍스트에만** 건다. 셀 전체에 걸면 철회 사유까지
-            # 그어져서, 왜 철회됐는지를 읽지 말라는 화면이 된다.
-            f'<td><span class="{"struck" if r.invalidated else ""}">{r.headline}</span>{void}</td>'
-            # 사유를 같이 낸다 — "미도착" 두 건이 서로 다른 이유일 수 있다
-            # (judgment.json 이 없다 vs gate_g2 블록이 없다). 라벨만으로는 못 가른다.
-            f'<td class="{cls}">{"—" if r.gate == NOT_APPLICABLE_TXT else r.gate}'
-            f'{f"<br><span class=\"why\">{r.gate_reason}</span>" if r.gate_reason else ""}</td>'
-            f'<td><a href="/runs/{r.run_id}">상세 →</a></td></tr>'
-        )
-    body = "".join(rows) or '<tr><td colspan="6">스캔된 산출물이 없다</td></tr>'
+        sections += (f"<h2>{title}</h2>"
+                     + (f'<div class="legend">{note}</div>' if note else "")
+                     + f"<table>{HEAD}{''.join(rows)}</table>")
+    body = sections or '<table><tr><td>스캔된 산출물이 없다</td></tr></table>'
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ai-ar-v3 — 최근 산출물</title><style>{_CSS}
@@ -575,10 +614,9 @@ tr.voided td {{ color:#6b7688; }}
 .struck {{ text-decoration:line-through; }}
 .void {{ color:#e8b46a; font-size:11px; margin-top:4px; }}
 </style></head><body>
-<h1>최근 산출물 5건</h1>
+<h1>최근 산출물 10건</h1>
 <p class="sub"><a href="/">합성 픽스처</a> · <a href="/real">실자산</a> · <a href="/runs">목록</a></p>
-<table><tr><th>시각</th><th>종류</th><th>자산 id</th><th>한눈 결과</th><th>게이트</th><th></th></tr>
-{body}</table>
+{body}
 <p class="foot">
 게이트 열은 <code>gate_g2()</code> 가 기록한 것을 <b>읽기만</b> 한다 — 이 화면은 문턱을
 다시 계산하지 않는다. 상태는 셋으로 갈린다:
@@ -593,7 +631,8 @@ tr.voided td {{ color:#6b7688; }}
 def render_run_detail(r, spec) -> str:
     """상세. **종류별 정본 그림이 다르다** — `runs.detail_kind()` 가 정한다."""
     labels = {"front": "정면 실루엣", "side": "옆면 실루엣", "top": "위 실루엣",
-              "depth": "앞면 깊이맵", "color": "색 렌더 (편집 전)",
+              "depth": "앞면 깊이맵", "depth_side": "옆면 깊이맵",
+              "color": "색 렌더 (편집 전)",
               "color_after": "색 렌더 (편집 후)"}
     # A5000 이 렌더해 보낸 그림이 있으면 **그것이 정본**이다 — 깊이 카메라가 그쪽 것이고
     # 우리가 다시 렌더하면 다른 그림이 된다.

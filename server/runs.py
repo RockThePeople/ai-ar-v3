@@ -70,6 +70,8 @@ __all__ = [
     "PENDING_A5000",
     "MODELS",
     "STAGE_PAIR",
+    "DRAGON_WAVES",
+    "TASK_ASSETS",
     "Run",
     "detail_kind",
     "a5000_dirs",
@@ -121,6 +123,15 @@ DELIVERED = {
     "DELIVER_heads_zoom_runG.png": ("★ runG 측면 머리 — 주둥이 + 뒤로 젖힌 뿔", True),
     "DELIVER_heads_zoom_runF.png": ("runF 측면 머리 — 보존만 고친 단계", False),
     "DELIVER_depth_runG_pair.png": ("runG 편집 전 / 편집 후 (전신)", False),
+    # ── W13 (마스크 2D 경로). 수치는 철회됐지만 **그림은 그림이다** — 무엇을
+    #    보고 무엇을 놓쳤는지가 다음 작업의 참고다.
+    "DELIVER_depth_w13_pair.png": ("W13 편집 전 / 편집 후", True),
+    "DELIVER_heads_zoom.png": ("W13 머리 확대 — 뭉툭한 몽둥이", False),
+    "DELIVER_depth_w13_4views.png": ("W13 4방향", False),
+    "DELIVER_depth_w13_front.png": ("W13 정면 깊이맵", False),
+    "mask_overlay.png": ("마스크 오버레이", False),
+    "mask_on_render.png": ("렌더 위 마스크", False),
+    "2d_mask.png": ("2D 마스크", False),
     # ── W12
     "DELIVER_depth_w12_wide.png": ("편집 전 / 편집 후 (넓게)", True),
     "_paired_4dir.png": ("4방향 — 같은 방위끼리 (위 before / 아래 after)", False),
@@ -151,6 +162,17 @@ INVALIDATED: Dict[str, str] = {
     w: ("보존이 구조적으로 꺼진 채 측정됐다 (8,511 중 13만 보존) — "
         "보존·halo·overflow 수치가 <b>무효</b>다. A5000 이 W15(D51)에서 선언했다")
     for w in ("w10-out", "w11-out", "w12-out", "w13-out")
+}
+
+#: 🔴 Dragon 갈래로 돌린 웨이브. **선언이다** — 추론하지 않는다.
+#: `w12-out/judgment.json` 에는 asset_id 가 아예 없어서 내용으로 못 가른다.
+#: (자산 이름에 dragon 이 들어가는 경우는 그대로 따로 잡힌다.)
+DRAGON_WAVES = {f"w{n}-out" for n in range(10, 16)}
+
+#: 현행 작업의 자산 — **아는 것만 적는다.** 작업 1·3 의 자산은 아직 없다.
+#: 모르는 것을 "현행" 으로 넣으면 종결된 갈래가 현행처럼 읽힌다.
+TASK_ASSETS = {
+    "moto-b": "작업 2 — Black Motorcycle with driver",
 }
 
 #: 3D 뷰어에 걸 GLB **화이트리스트**. 임의 파일명을 경로로 받지 않는다 (§7).
@@ -241,6 +263,20 @@ class Run:
            export 때 `frames.VOXEL_TO_GLB` 를 건다 (매직 회전을 쓰지 않는다).
         """
         return {n: lbl for n, lbl in MODELS.items() if (self.path / n).is_file()}
+
+    @property
+    def track(self) -> str:
+        """어느 갈래인가 — `current` | `dragon`.
+
+        🔴 Dragon 갈래는 **종결됐다** (D56). 그런데 산출물은 디스크에 그대로 있고
+        글롭이 계속 줍는다. 한 표에 섞어 놓으면 종결된 갈래의 런이 현행 작업의
+        직전 결과처럼 읽힌다 — 목록은 시간순이지 갈래순이 아니기 때문이다.
+        지우지 않고 **갈라서** 보여준다: 지우면 대조군이 없어진다.
+        """
+        hay = f"{self.asset_id or ''} {self.rel}".lower()
+        if self.path.name in DRAGON_WAVES or "dragon" in hay:
+            return "dragon"
+        return "current" if self.path.name in TASK_ASSETS else "legacy"
 
     @property
     def invalidated(self) -> Optional[str]:
@@ -501,8 +537,13 @@ def _iter_candidates(root: Path):
                 yield p
 
 
-def recent_runs(limit: int = 5) -> List[Run]:
-    """최근 `limit` 건. 없으면 빈 목록이다 — 만들어 내지 않는다."""
+def recent_runs(limit: int = 10) -> List[Run]:
+    """최근 `limit` 건. 없으면 빈 목록이다 — 만들어 내지 않는다.
+
+    상한이 10 인 이유: 사용자가 화면에서 **직접 육안 판정**한다. 5 로 자르면
+    한 웨이브만 밀려도 직전 대조군이 화면 밖으로 나가고, 대조군 없는 판정은
+    "좋아졌다" 를 확인할 방법이 없다.
+    """
     seen: Dict[Path, Run] = {}
     for root in scan_dirs():
         for d in _iter_candidates(root):
@@ -591,7 +632,11 @@ def detail_kind(kind: str) -> Dict[str, Any]:
             ),
         }
     return {
-        "canonical": "depth",
-        "images": ["front", "side", "top", "depth"],
-        "why": "생성물은 실루엣 3뷰로 형태를, 깊이맵으로 오목 디테일을 본다 (D19).",
+        "canonical": "depth_side",
+        "images": ["front", "side", "top", "depth", "depth_side"],
+        "why": (
+            "생성물은 실루엣 3뷰로 형태를, 깊이맵으로 오목 디테일을 본다 (D19). "
+            "<b>옆면 깊이맵이 정본</b>이다 — 정면 하나로는 긴 축이 시선과 나란한 자산"
+            "(오토바이 등)에서 부품이 전부 겹쳐 <b>구조를 못 가른다</b>."
+        ),
     }

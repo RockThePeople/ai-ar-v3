@@ -389,7 +389,9 @@ def runs_index() -> Response:
     from server import runs as runs_mod
 
     return Response(
-        debugview.render_runs_index(runs_mod.recent_runs(limit=5)),
+        # 🔴 10건. 사용자가 화면에서 직접 육안 판정하고, 5 로 자르면 한 웨이브만
+        # 밀려도 직전 대조군이 화면 밖으로 나간다.
+        debugview.render_runs_index(runs_mod.recent_runs(limit=10)),
         media_type="text/html; charset=utf-8",
     )
 
@@ -423,7 +425,7 @@ def runs_image(run_id: str, name: str) -> Response:
     if name in r.delivered:
         return Response((r.path / name).read_bytes(), media_type="image/png",
                         headers={"Cache-Control": "no-store"})
-    if name not in ("front", "side", "top", "depth", "color", "color_after"):
+    if name not in ("front", "side", "top", "depth", "depth_side", "color", "color_after"):
         raise HTTPException(status_code=404, detail=f"모르는 그림: {name}")
     key = (run_id, name)
     if key in _RUN_IMG_CACHE:
@@ -441,6 +443,9 @@ def runs_image(run_id: str, name: str) -> Response:
         cells = cbin_dir_to_occupancy(d)   # 그림용 (D28: 진단 전용)
         if name == "depth":
             png = debugview.depth_png(cells)
+        elif name == "depth_side":
+            # 시선 = x. 긴 축이 y 인 자산(오토바이)은 이 뷰라야 판정이 된다.
+            png = debugview.depth_png(cells, view_axis=0)
         else:
             axis = {"front": 1, "side": 0, "top": 2}[name]
             png = debugview._png(debugview.silhouette_png_arr(cells, axis))
