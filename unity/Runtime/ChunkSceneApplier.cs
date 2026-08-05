@@ -71,6 +71,10 @@ namespace DeltaContract
         /// 매직넘버를 흩뿌리지 않는다. 이 함수 하나만 고친다.</summary>
         public static Vector3 VoxelToUnity(Vector3 v) => new Vector3(v.x, v.z, -v.y);
 
+        /// <summary>그 역. 라쏘의 지배축은 **복셀 인덱스 공간**에서 정해지므로
+        /// 시선 벡터를 이쪽으로 되돌려서 넘겨야 한다.</summary>
+        public static Vector3 UnityToVoxel(Vector3 v) => new Vector3(v.x, -v.z, v.y);
+
         public ChunkSceneApplier(Transform root, bool addCollider = true)
         {
             _root = root;
@@ -171,6 +175,7 @@ namespace DeltaContract
             var data = ChunkBin.Decode(blob);          // 계약 코드. 재구현하지 않는다
             ToUnityFrame(data);
             ChunkBin.ApplyTo(node.Mesh, data);         // 같은 Mesh 인스턴스에 덮어쓴다
+            if (data.Normals == null) node.Mesh.RecalculateNormals();   // 없으면 음영이 안 생긴다
             node.ContentHash = ContentHashOf(data);
             // MeshCollider 는 같은 Mesh 를 참조하므로 갱신을 알려 준다.
             if (node.Go != null)
@@ -188,6 +193,9 @@ namespace DeltaContract
             go.transform.SetParent(_root, false);
             var mesh = new Mesh { name = $"cbin_{key}" };
             ChunkBin.ApplyTo(mesh, data);
+            // `.cbin` 에 법선이 없으면 셰이더의 음영 항이 상수가 되어 **평면으로 보인다.**
+            // 실기에서 "2D 인지 3D 인지 모르겠다" 는 보고가 나온 원인 중 하나다.
+            if (data.Normals == null) mesh.RecalculateNormals();
             var mf = go.AddComponent<MeshFilter>();
             mf.sharedMesh = mesh;
             go.AddComponent<MeshRenderer>();
