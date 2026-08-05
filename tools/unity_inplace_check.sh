@@ -22,6 +22,7 @@ fi
 mkdir -p "$PROJ/Assets/DeltaContract" "$PROJ/Assets/Editor"
 ln -sf "$REPO/contract/unity/LassoVolume.cs"       "$PROJ/Assets/DeltaContract/LassoVolume.cs"
 ln -sf "$REPO/contract/unity/ChunkBin.cs"          "$PROJ/Assets/DeltaContract/ChunkBin.cs"
+ln -sf "$REPO/unity/Runtime/VoxelFrame.cs"        "$PROJ/Assets/DeltaContract/VoxelFrame.cs"
 ln -sf "$REPO/unity/Runtime/SlatLassoPicker.cs"    "$PROJ/Assets/DeltaContract/SlatLassoPicker.cs"
 ln -sf "$REPO/unity/Runtime/ChunkSceneApplier.cs"  "$PROJ/Assets/DeltaContract/ChunkSceneApplier.cs"
 ln -sf "$REPO/unity/Editor/LassoProbeWindow.cs"    "$PROJ/Assets/Editor/LassoProbeWindow.cs"

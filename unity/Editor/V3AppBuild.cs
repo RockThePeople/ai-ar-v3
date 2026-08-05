@@ -19,7 +19,7 @@ namespace DeltaContract.EditorTools
 {
     public static class V3AppBuild
     {
-        const string ScenePath = "Assets/Scenes/LassoProbe.unity";
+        const string ScenePath = "Assets/Scenes/LassoEdit.unity";
 
         public static void Build()
         {
@@ -58,12 +58,12 @@ namespace DeltaContract.EditorTools
 
             // 🔴 런타임에 만드는 머티리얼의 셰이더는 씬이 참조하지 않아 **IL2CPP 에서
             //    스트립된다** — 그러면 메시가 shader=NULL 로 **안 보인다** (v2 실기 경험).
-            IncludeShader("DeltaContract/VoxelUnlit");
+            IncludeShader("DeltaContract/ChunkSurface");
 
-            var go = new GameObject("TouchLasso");
-            var ctl = go.AddComponent<TouchLassoController>();
-            ctl.CaseFile = caseFile;      // ★ 씬에 **구워진다** — APK 안에서 확인해야 한다
-            ctl.LiveCamera = cam;
+            var go = new GameObject("LassoEditApp");
+            var app = go.AddComponent<LassoEditApp>();
+            app.CaseFile = caseFile;      // ★ 씬에 **구워진다** — APK 안에서 확인해야 한다
+            app.ViewCamera = cam;
 
             Directory.CreateDirectory("Assets/Scenes");
             EditorSceneManager.SaveScene(scene, ScenePath);
@@ -89,7 +89,7 @@ namespace DeltaContract.EditorTools
         static void ConfigurePlayer()
         {
             PlayerSettings.companyName = "ai-ar-v3";
-            PlayerSettings.productName = "LassoProbe";
+            PlayerSettings.productName = "LassoEdit";
             PlayerSettings.SetApplicationIdentifier(
                 UnityEditor.Build.NamedBuildTarget.Android, "com.aiarv3.lassoprobe");
 

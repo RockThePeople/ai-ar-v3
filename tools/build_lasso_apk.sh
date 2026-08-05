@@ -27,11 +27,13 @@ fi
 ln -sf "$REPO/contract/unity/LassoVolume.cs"      "$PROJ/Assets/DeltaContract/LassoVolume.cs"
 ln -sf "$REPO/contract/unity/ChunkBin.cs"         "$PROJ/Assets/DeltaContract/ChunkBin.cs"
 ln -sf "$REPO/unity/Runtime/SlatLassoPicker.cs"   "$PROJ/Assets/DeltaContract/SlatLassoPicker.cs"
+ln -sf "$REPO/unity/Runtime/VoxelFrame.cs"        "$PROJ/Assets/DeltaContract/VoxelFrame.cs"
 ln -sf "$REPO/unity/Runtime/LassoCase.cs"         "$PROJ/Assets/DeltaContract/LassoCase.cs"
-ln -sf "$REPO/unity/Runtime/TouchLassoController.cs" "$PROJ/Assets/DeltaContract/TouchLassoController.cs"
-ln -sf "$REPO/unity/Runtime/ChunkSceneApplier.cs" "$PROJ/Assets/DeltaContract/ChunkSceneApplier.cs"
+ln -sf "$REPO/unity/Runtime/LassoEditApp.cs"       "$PROJ/Assets/DeltaContract/LassoEditApp.cs"
+# ChunkSceneApplier·TouchLassoController 는 **앱에서 걷어냈다** (W23).
+#   in-place 계측 하네스는 unity_inplace_check.sh 쪽에 그대로 남아 있다.
 ln -sf "$REPO/unity/Editor/V3AppBuild.cs"         "$PROJ/Assets/Editor/V3AppBuild.cs"
-ln -sf "$REPO/unity/Runtime/VoxelUnlit.shader"    "$PROJ/Assets/DeltaContract/VoxelUnlit.shader"
+ln -sf "$REPO/unity/Runtime/ChunkSurface.shader"  "$PROJ/Assets/DeltaContract/ChunkSurface.shader"
 
 # 🔴 자산 기하 — 이게 없으면 화면에 **아무것도 안 뜬다** (좌표만으로는 안 보인다)
 CHUNKS="${V3_CHUNK_DIR:-$REPO/../.inplace}/parent"

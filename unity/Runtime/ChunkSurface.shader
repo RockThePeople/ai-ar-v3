@@ -1,9 +1,12 @@
-// VoxelUnlit — 정점 색을 그대로 보여 주는 최소 언릿 셰이더.
+// ChunkSurface — `.cbin` 청크 메시를 그린다. **정점 색 + 청크별 틴트.**
 //
 // 🔴 왜 직접 두는가. 런타임에 `Shader.Find` 로 빌트인 셰이더를 찾으면 IL2CPP
 //    스트립에 걸려 **메시가 shader=NULL 로 안 보인다** (ai-ar-v2 가 실기에서 겪은 것).
 //    이 파일을 프로젝트에 두고 Always Included Shaders 에 넣어 그 경로를 막는다.
-Shader "DeltaContract/VoxelUnlit"
+//
+// `_Tint` 는 **선택된 청크 표시**에 쓴다. MaterialPropertyBlock 으로 청크마다 따로
+// 준다 — 머티리얼을 청크 수만큼 만들면 드로콜과 메모리가 청크 수만큼 늘어난다.
+Shader "DeltaContract/ChunkSurface"
 {
     Properties { _Tint ("Tint", Color) = (1,1,1,1) }
     SubShader

@@ -79,9 +79,9 @@ namespace DeltaContract
             //    안 옮기면 **화면에 보이는 것과 라쏘가 잡는 것이 다른 프레임**이 되고 —
             //    W22 실기 스크린샷에서 오토바이가 90° 누워 보인 것이 그 증상이다 —
             //    사용자가 뒷바퀴를 둘러 그려도 엉뚱한 데가 잡힌다. **예외는 안 난다.**
-            go.transform.position = ChunkSceneApplier.VoxelToUnity(Eye);
-            go.transform.LookAt(ChunkSceneApplier.VoxelToUnity(Target),
-                                ChunkSceneApplier.VoxelToUnity(Up));
+            go.transform.position = VoxelFrame.ToUnity(Eye);
+            go.transform.LookAt(VoxelFrame.ToUnity(Target),
+                                VoxelFrame.ToUnity(Up));
             return cam;
         }
 

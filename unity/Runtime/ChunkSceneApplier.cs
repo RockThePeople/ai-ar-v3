@@ -69,11 +69,11 @@ namespace DeltaContract
         ///     역변환       : unity = (vx, vz, −vy)     ← 여기서 쓰는 것
         ///
         /// 매직넘버를 흩뿌리지 않는다. 이 함수 하나만 고친다.</summary>
-        public static Vector3 VoxelToUnity(Vector3 v) => new Vector3(v.x, v.z, -v.y);
+        public static Vector3 VoxelToUnity(Vector3 v) => VoxelFrame.ToUnity(v);
 
         /// <summary>그 역. 라쏘의 지배축은 **복셀 인덱스 공간**에서 정해지므로
         /// 시선 벡터를 이쪽으로 되돌려서 넘겨야 한다.</summary>
-        public static Vector3 UnityToVoxel(Vector3 v) => new Vector3(v.x, -v.z, v.y);
+        public static Vector3 UnityToVoxel(Vector3 v) => VoxelFrame.ToVoxel(v);
 
         public ChunkSceneApplier(Transform root, bool addCollider = true)
         {
