@@ -61,7 +61,7 @@ from typing import Any, Dict, List, Optional, Tuple
 #:    "op": "add"}
 #:
 #: 🔴 화면은 이 블록을 **읽기만** 한다. `gate_g2()` 가 정본이고 여기서 다시 계산하지 않는다.
-GATE_FORMAT_HINT = "judgment.json 에 gate_g2 블록이 없다 — 측정치만 있다"
+GATE_FORMAT_HINT = "judgment.json 에 gate_g2 · gate_level1 블록이 없다 — 측정치만 있다"
 
 __all__ = [
     "MISSING",
@@ -118,6 +118,10 @@ def scan_dirs() -> List[Path]:
 #: A5000 이 육안 인계로 밀어 준 산출물의 **파일명 → 라벨**. 화이트리스트다 —
 #: 임의 파일명을 경로로 받지 않는다 (§7, 공개 URL).
 DELIVERED = {
+    # ── W21 라쏘 교환비(D69)의 나머지 절반 — 오염이 **육안으로** 어떻게 보이는가.
+    #    왼쪽부터 편집 전 · 오염 0셀 마스크 · 원판 전체 마스크 · 차이(빨강)다.
+    "w21_contamination_compare.png": (
+        "★ 오염 대조 — 편집 전 / 오염 0셀(1,386) / 원판 전체(2,310) / 차이(빨강)", True),
     # ── W15 (D51 보존 수정). 판정 대상은 **측면 머리의 주둥이 + 뿔**이라
     #    heads_zoom_runG 가 정본이다. 깊이맵 정본(D19)은 그 다음이다.
     "DELIVER_heads_zoom_runG.png": ("★ runG 측면 머리 — 주둥이 + 뒤로 젖힌 뿔", True),
@@ -398,8 +402,9 @@ class Run:
 
 def _kind_of(rec: Dict[str, Dict[str, Any]], path: Path) -> str:
     """종류 추론. **모르면 '미상' 이다** — 그럴듯한 기본값을 고르지 않는다."""
-    if any((path / n).is_file() for n in DELIVERED):
-        return "edit"
+    # 🔴 `op` 가 인계 그림보다 **우선**이다. 그림은 그 런에 무엇이 붙어 있는지를
+    #    말할 뿐이고, 무엇을 한 편집인지는 판정 파일이 말한다. W21 에서 실제로
+    #    뒤집혔다 — recolor 런에 대조 그림을 붙였더니 종류가 edit 가 됐다.
     j = rec.get("judgment") or {}
     for key in ("kind", "op", "edit_kind"):
         v = j.get(key)
@@ -410,6 +415,8 @@ def _kind_of(rec: Dict[str, Dict[str, Any]], path: Path) -> str:
                 return "edit"
             if v in ("generate", "create"):
                 return "generate"
+    if any((path / n).is_file() for n in DELIVERED):
+        return "edit"
     if (path / "chunks_level1").is_dir() or (path / "recolor").is_dir():
         return "recolor"
     m = rec.get("manifest") or {}
@@ -479,6 +486,20 @@ def _fmt_headline(kind: str, rec: Dict[str, Dict[str, Any]]) -> str:
         if save is not None:
             parts.append(f"참고 절감 {float(save) * 100:.1f}%")
     elif kind == "recolor":
+        # D72 형식 — 원시 개수를 앞에 둔다 (D37). hue 는 무채색 원본에서 뜻이 없어서
+        # 뒤에 붙이고, 그 사실(`is_achromatic`)을 같이 적는다.
+        ed = (rec.get("judgment") or {}).get("efficacy_detail")
+        ip = (rec.get("judgment") or {}).get("in_place_detail")
+        if ed is not None and ip is not None:
+            parts.append(f"변경 청크 {ip.get('changed')}")
+            parts.append(f"정점 {ed.get('after', {}).get('n_vertices', MISSING):,}"
+                         if isinstance(ed.get("after", {}).get("n_vertices"), int)
+                         else f"정점 {MISSING}")
+            if ed.get("is_achromatic"):
+                parts.append(f"무채색 원본 — hue {ed.get('hue_shift_deg')}° 는 무의미")
+            else:
+                parts.append(f"hue {ed.get('hue_shift_deg')}°")
+            return " · ".join(parts)
         hue = g("hue_shift_deg", "hue_shift", "mean_hue_shift")
         chg = g("changed_chunks", "n_changed")
         if chg is not None:
@@ -508,12 +529,12 @@ def _runs_block(j: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def _gate_blocks(j: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """{런 이름: gate_g2}. 최상위 우선, 없으면 런별로 모은다."""
-    top = j.get("gate_g2") or j.get("gate")
+    top = j.get("gate_g2") or j.get("gate_level1") or j.get("gate")
     if isinstance(top, dict) and top:
         return {"": top}
     out = {}
     for name, blk in _runs_block(j).items():
-        g = blk.get("gate_g2") or blk.get("gate")
+        g = blk.get("gate_g2") or blk.get("gate_level1") or blk.get("gate")
         if isinstance(g, dict) and g:
             out[name] = g
     return out
