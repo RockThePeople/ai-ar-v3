@@ -1,0 +1,20 @@
+{
+  "asset_id": "v3-moto-b",
+  "grid_source": "slat_coords",
+  "voxel_res": 64,
+  "n_coords": 9150,
+  "dtype": "int16",
+  "voxel_count_total": 9150,
+  "bbox_min": [
+    19,
+    0,
+    8
+  ],
+  "bbox_max": [
+    44,
+    63,
+    55
+  ],
+  "a5000_job_id": "j-00ae8c4f3513",
+  "note": "A5000 원본 slat.safetensors 에서 그대로 뽑은 좌표다. 3090 이 계산하지 않았다 (D34: .cbin 에서는 유도할 수 없다). 개수는 manifest 의 voxel_count_total 과 대조해 통과했다 (D28)."
+}

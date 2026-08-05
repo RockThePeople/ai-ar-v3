@@ -70,6 +70,9 @@ MASK = (0x38, 0xBD, 0xF8)      # 마스크 — 시안
 HALO = (0x1E, 0x5F, 0x7A)      # halo 만 — 어두운 시안
 BOOK = (0xF5, 0x9E, 0x0B)      # 변경청크 — 호박색
 
+MISSING_TXT = "미도착"
+NOT_APPLICABLE_TXT = "해당 없음"
+
 SCALE = 8  # 64 → 512 픽셀 (최근접. 복셀 경계를 뭉개지 않는다)
 
 # (axis, 라벨). metrics._silhouette 의 axis 규약을 그대로 쓴다.
@@ -271,6 +274,7 @@ a { color:#7dd3fc; }
             border:1px solid #232a36; border-radius:4px; background:#10131a; }
 .view span { display:block; color:#6b7688; font-size:11px; margin-top:4px; }
 .legend { margin-top:8px; color:#8b96a8; font-size:11px; }
+.legend.warn { color:#e8b46a; }
 .sw { display:inline-block; width:9px; height:9px; border-radius:2px;
       margin:0 4px 0 10px; vertical-align:middle; }
 table { border-collapse:collapse; margin-top:18px; width:100%; }
@@ -434,12 +438,21 @@ def render_html(run: dict, *, source_label: str, gate_rows, kind: str = "synthet
 # 실루엣은 답할 수 없다. 그래서 진단용으로 앞면 깊이맵을 따로 낸다.
 #
 # 게이트 지표가 아니다. 판정은 여전히 `gate_g2()` 가 한다.
-def depth_png(cells: np.ndarray, *, scale: int = 10) -> bytes:
-    """앞면 깊이맵 PNG. 각 (x,z) 기둥에서 가장 앞(min y) 복셀의 깊이를 밝기로.
+def depth_png(cells: np.ndarray, *, scale: int = 10, view_axis: int = 1) -> bytes:
+    """깊이맵 PNG. 시선 축을 향해 가장 가까운 복셀의 깊이를 밝기로.
 
     밝을수록 앞, 어두울수록 뒤 — 즉 **어두운 자리가 파인 곳**이다.
+
+    ⚠️ `view_axis` 를 두는 이유: 정면 하나로는 **자산에 따라 판정을 못 한다.**
+       moto-b 가 그 자리였다 — 긴 축이 y 라, 정면(y 시선)에서는 오토바이를 앞에서
+       본 그림이 나오고 바퀴가 전부 겹친다. 바퀴가 몸체와 갈리는지는 옆면(x 시선)
+       에서만 보인다. 기본값은 종전 그대로 y 다.
     """
     c = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if view_axis != 1:
+        # 보고 싶은 축을 깊이 자리(1)로 옮긴다. 좌표계 변환이 아니라 **표시용**이다 (D9).
+        order = [a for a in (0, 1, 2) if a != view_axis]
+        c = c[:, [order[0], view_axis, order[1]]]
     if c.size == 0:
         return _png(np.zeros((scale, scale, 3), dtype=np.uint8))
     c = c - c.min(axis=0)
@@ -516,3 +529,331 @@ def silhouette_png_arr(cells, axis: int):
     img = _canvas()
     _paint(img, _project(cells, axis), GEOM)
     return _upscale(img)
+
+
+# ══════════════════════════════════════════════ 최근 산출물 목록 · 상세
+#
+# 🔴 게이트 판정을 여기서 다시 계산하지 않는다. `gate_g2()` 가 정본이고 화면은
+#    `runs.py` 가 **읽어 온 것**을 표시만 한다 (W5 규약). 문턱을 화면에 다시 적으면
+#    게이트와 화면이 갈라지고, 갈라진 줄 아무도 모른다.
+#
+# 🔴 원시 개수가 비율보다 앞이다 (D37) — `runs._fmt_headline` 이 그 순서로 만든다.
+_GATE_CLS = {"통과": "pass", "실패": "fail", "미결": "undecided",
+             "해당 없음": "ref", "미도착": "ref"}
+_KIND_KO = {"generate": "생성", "edit": "형태 변경", "recolor": "색 변경", "미상": "미상"}
+
+
+#: 갈래별 표 머리말. Dragon 은 D56 으로 **종결**됐고 산출물만 남았다.
+_TRACKS = (
+    ("current", "현행 작업 (작업 1 / 2 / 3)",
+     "여기 없는 작업의 자산은 <b>아직 안 만들었다</b>. 화면이 비어 있는 것이 "
+     "그 사실이다 — 없는 것을 다른 갈래로 채우지 않는다."),
+    ("dragon", "Dragon 갈래 — 참고 기록",
+     "D56 으로 <b>종결된 갈래</b>다. 현행 작업의 직전 결과가 아니다 — "
+     "대조군으로만 본다. 지우지 않는 이유는 지우면 대조군이 없어지기 때문이다."),
+    ("legacy", "그 밖 — 이전 자산",
+     "눈사람·호박 등 W2 때 확보한 것들이다. 현행 작업도 Dragon 갈래도 아니다."),
+)
+
+
+def render_runs_index(runs) -> str:
+    """최근 산출물 목록. 없는 값은 '미도착' 으로 나간다 (원칙 7).
+
+    🔴 갈래를 **갈라서** 낸다. 목록은 시간순이라, 섞어 놓으면 종결된 Dragon 런이
+    현행 작업의 직전 결과처럼 읽힌다.
+    """
+    def _rows_for(runs):
+        rows = []
+        for r in runs:
+            cls = _GATE_CLS.get(r.gate, "ref")
+            if r.pending_reason:
+                rows.append(
+                    f'<tr class="pending"><td>—</td><td>{_KIND_KO.get(r.kind, r.kind)}</td>'
+                    f'<td colspan="2">{r.rel} — {r.pending_reason}</td>'
+                    f'<td class="ref">{r.gate}</td></tr>'
+                )
+                continue
+            # 🔴 철회된 수치는 **철회됐다고 적고 낸다.** 지우면 "왜 안 보이지" 가 되고,
+            #    그냥 두면 현행 수치와 구분이 안 된다. 둘 다 나쁘다.
+            void = (f'<div class="void">철회 — {r.invalidated}</div>'
+                    if r.invalidated else "")
+            rows.append(
+                f'<tr class="{"voided" if r.invalidated else ""}">'
+                f'<td class="mono">{r.when}</td>'
+                f"<td>{_KIND_KO.get(r.kind, r.kind)}</td>"
+                f'<td class="mono">{r.asset_id or MISSING_TXT}</td>'
+                # 취소선은 **수치 텍스트에만** 건다. 셀 전체에 걸면 철회 사유까지
+                # 그어져서, 왜 철회됐는지를 읽지 말라는 화면이 된다.
+                f'<td><span class="{"struck" if r.invalidated else ""}">{r.headline}</span>{void}</td>'
+                # 사유를 같이 낸다 — "미도착" 두 건이 서로 다른 이유일 수 있다
+                # (judgment.json 이 없다 vs gate_g2 블록이 없다). 라벨만으로는 못 가른다.
+                f'<td class="{cls}">{"—" if r.gate == NOT_APPLICABLE_TXT else r.gate}'
+                f'{f"<br><span class=\"why\">{r.gate_reason}</span>" if r.gate_reason else ""}</td>'
+                f'<td><a href="/runs/{r.run_id}">상세 →</a></td></tr>'
+            )
+        return rows
+
+    HEAD = ('<tr><th>시각</th><th>종류</th><th>자산 id</th><th>한눈 결과</th>'
+            '<th>게이트</th><th></th></tr>')
+    sections = ""
+    for key, title, note in _TRACKS:
+        rows = _rows_for([r for r in runs if r.track == key])
+        if not rows:
+            continue
+        sections += (f"<h2>{title}</h2>"
+                     + (f'<div class="legend">{note}</div>' if note else "")
+                     + f"<table>{HEAD}{''.join(rows)}</table>")
+    body = sections or '<table><tr><td>스캔된 산출물이 없다</td></tr></table>'
+    return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ai-ar-v3 — 최근 산출물</title><style>{_CSS}
+.mono {{ font-variant-numeric:tabular-nums; }}
+.why {{ color:#6b7688; font-size:11px; }}
+tr.pending td {{ color:#8b96a8; font-style:italic; }}
+tr.voided td {{ color:#6b7688; }}
+.struck {{ text-decoration:line-through; }}
+.void {{ color:#e8b46a; font-size:11px; margin-top:4px; }}
+</style></head><body>
+<h1>최근 산출물 10건</h1>
+<p class="sub"><a href="/">합성 픽스처</a> · <a href="/real">실자산</a> · <a href="/runs">목록</a></p>
+{body}
+<p class="foot">
+게이트 열은 <code>gate_g2()</code> 가 기록한 것을 <b>읽기만</b> 한다 — 이 화면은 문턱을
+다시 계산하지 않는다. 상태는 셋으로 갈린다:
+<b>—(해당 없음)</b> G2 는 편집 게이트라 생성물에는 적용되지 않는다 ·
+<b>미결</b> 판정에 필요한 값이 없다 ·
+<b>미도착</b> judgment.json 이 없거나 <code>gate_g2</code> 블록이 없다.<br>
+한눈 결과는 <b>원시 개수를 비율보다 앞에</b> 둔다 (D37) — halo 계열은 표본이 45~48복셀이라
+비율에 유효숫자가 없다.
+</p></body></html>"""
+
+
+def render_run_detail(r, spec) -> str:
+    """상세. **종류별 정본 그림이 다르다** — `runs.detail_kind()` 가 정한다."""
+    labels = {"front": "정면 실루엣", "side": "옆면 실루엣", "top": "위 실루엣",
+              "depth": "앞면 깊이맵", "depth_side": "옆면 깊이맵",
+              "color": "색 렌더 (편집 전)",
+              "color_after": "색 렌더 (편집 후)"}
+    # A5000 이 렌더해 보낸 그림이 있으면 **그것이 정본**이다 — 깊이 카메라가 그쪽 것이고
+    # 우리가 다시 렌더하면 다른 그림이 된다.
+    delivered = r.delivered
+    # ── 🔴 두 단계 개선을 **한 화면에서** 본다 (①보존 수정 → ②마스크 개선).
+    #    따로 걸면 어느 단계가 무엇을 좋게 했는지 화면에서 안 갈린다. 둘 다 전폭이다 —
+    #    판정 대상이 측면 머리의 주둥이·뿔 실루엣이라 줄이면 애초에 판정을 못 한다.
+    stage = r.stage_pair
+    stage_pane = ""
+    if stage:
+        stage_pane = (
+            '<div class="pane"><h2>두 단계 — 위 ① / 아래 ②</h2>'
+            + "".join(
+                f'<div class="hero"><img src="/runs/{r.run_id}/img/{n}" alt="{lbl}">'
+                f"<span>{lbl}</span></div>"
+                for n, lbl in stage
+            )
+            + '<div class="legend">같은 자산·같은 절단면이다. ① 은 입력 바이트가 이전 웨이브와 '
+            '동일하고 보존 수정만 다르다 — 그래서 둘의 차이는 <b>마스크</b> 차이다.</div></div>'
+        )
+    if delivered:
+        skip = {n for n, _ in stage}
+        canon_name = r.delivered_canonical
+        if canon_name in skip:
+            # 정본을 두 단계 창에서 이미 전폭으로 걸었다. 여기서 또 걸면 같은 그림이
+            # 두 번 나오고, 두 번 나오면 어느 쪽이 정본인지가 흐려진다.
+            canon_name = next((n for n in delivered if n not in skip), None)
+        delivered = {k: v for k, v in delivered.items() if k not in skip}
+    if delivered:
+        # 정본은 **한 줄을 통째로** 쓴다. 나머지와 같은 크기로 늘어놓으면 정본이
+        # 정본 구실을 못 한다 — 사용자가 보려는 그림이 그것이다.
+        # 정본 표시는 **진짜 정본에만** 붙인다. 두 단계 창으로 옮겨 간 뒤 남은 그림에
+        # 그대로 ★ 를 붙이면 화면이 정본을 두 개라고 말하게 된다.
+        star = " ★ 정본" if canon_name == r.delivered_canonical else ""
+        head = (
+            f'<div class="hero"><img src="/runs/{r.run_id}/img/{canon_name}" '
+            f'alt="{delivered[canon_name]}">'
+            f'<span>{delivered[canon_name]}{star}</span></div>' if canon_name else ""
+        )
+        # 🔴 4방향 짝은 **정본과 같은 급**으로 전폭에 둔다. 옆·뒤 뷰가
+        #    "정말 3D 로 바뀌었나" 에 답하는 그림이라 썸네일로 깔면 뜻이 없다.
+        four = "_paired_4dir.png"
+        if four in delivered:
+            head += (
+                f'<div class="hero"><img src="/runs/{r.run_id}/img/{four}" '
+                f'alt="{delivered[four]}"><span>{delivered[four]}</span></div>'
+            )
+        tiles = [head] + [
+            f'<div class="view"><img src="/runs/{r.run_id}/img/{n}" alt="{lbl}">'
+            f"<span>{lbl}</span></div>"
+            for n, lbl in delivered.items() if n not in (canon_name, four)
+        ]
+    else:
+        tiles = []
+        for name in spec["images"]:
+            canon = " ★ 정본" if name == spec["canonical"] else ""
+            tiles.append(
+                f'<div class="view"><img src="/runs/{r.run_id}/img/{name}" alt="{labels[name]}">'
+                f"<span>{labels[name]}{canon}</span></div>"
+            )
+    # ── 3D 뷰어 (model-viewer). 깊이맵은 **투영**이라 "3D 로 정말 바뀌었나" 에
+    #    답하지 못한다 — 돌려 봐야 답이 나온다. CDN 스크립트 한 줄만 쓴다.
+    models = r.models
+    viewer = ""
+    if models:
+        cards = "".join(
+            f'<div class="mv"><model-viewer src="/runs/{r.run_id}/img/{n}" '
+            f'camera-controls touch-action="pan-y" auto-rotate rotation-per-second="20deg" '
+            f'shadow-intensity="0.6" exposure="1.1" alt="{lbl}"></model-viewer>'
+            f"<span>{lbl}</span></div>"
+            for n, lbl in models.items()
+        )
+        only_after = "dragon-c_before.glb" not in models
+        note_m = (
+            '<div class="legend">⚠️ 편집 전 GLB 가 없어 <b>편집 후만</b> 걸었다.</div>'
+            if only_after else
+            '<div class="legend">드래그로 돌려 본다. 편집 전 GLB 는 3090 이 dragon-c 의 '
+            '<code>.cbin</code> 청크를 이어 붙여 만든 것이다 — A5000 에 요청하지 않았고, '
+            '<code>.cbin</code> 은 디코더가 낸 <b>실제 표면 메시</b>라 대용물이 아니다. '
+            '좌표는 <code>frames.VOXEL_TO_GLB</code> 로 GLB 프레임에 맞췄다 — 안 걸면 '
+            '편집 전만 90° 누워 보여 좌우 비교가 뜻을 잃는다 (D9).</div>'
+            # 🔴 안 적으면 "색이 바뀌었다" 로 오독된다 — 이번 편집은 형태 편집이다.
+            '<div class="legend warn">⚠️ 편집 전이 <b>흰색</b>인 것은 편집 결과가 아니다. '
+            '<code>.cbin</code> 은 정점·면만 담고 <b>색 채널이 없다</b> — 여기서 색을 '
+            '비교하지 마라. 이 판정에서 볼 것은 <b>형태</b>뿐이다.</div>'
+        )
+        viewer = (
+            '<div class="pane"><h2>3D 뷰어 — 돌려서 확인</h2>'
+            f'<div class="mvs">{cards}</div>{note_m}</div>'
+        )
+
+    # 🔴 철회된 수치는 화면 **맨 위에서** 철회라고 말한다. 표 밑에 각주로 달면
+    #    숫자를 먼저 읽고 각주는 안 읽는다 — 그 순서가 이 프로젝트가 물린 자리다.
+    void_banner = (
+        f'<div class="warn"><b>⚠️ 이 산출물의 수치는 철회됐다.</b> {r.invalidated}.'
+        ' 아래 숫자를 현행 수치로 인용하지 마라.</div>'
+        if r.invalidated else ""
+    )
+    have = r.chunk_dir is not None or bool(r.delivered)
+    note = "" if have else (
+        '<div class="warn"><b>산출물 청크가 없다.</b> 자리표시를 그린다 — '
+        "빈 그림을 결과처럼 보이게 두지 않는다.</div>"
+    )
+
+    def table(title, d):
+        if not d:
+            return f"<table><tr><th>{title}</th><td>{MISSING_TXT}</td></tr></table>"
+        rows = "".join(
+            f'<tr><td>{k}</td><td class="n">{v}</td></tr>'
+            for k, v in d.items() if not isinstance(v, (dict, list))
+        )
+        return f"<table><tr><th>{title}</th><th>값</th></tr>{rows}</table>"
+
+    # ── 성분 (원시 개수 우선 — D37). 런이 여럿이면 **각각** 낸다: 두 단계에서
+    #    성분이 어떻게 커지고 벌어졌는지가 이번 인계의 요지다.
+    comp_tbl = ""
+    for run_name, comps in r.component_sets:
+        names = {0: "중앙", 1: "우", 2: "좌"}
+        ordered = sorted(comps, key=lambda c: -c.get("size", 0))
+        rows_c = "".join(
+            f'<tr><td>{names.get(i, str(i))}</td><td class="n">{c.get("size")}</td>'
+            f'<td class="n">{c.get("xc")}</td>'
+            f'<td class="n">z[{c.get("z", ["", ""])[0]},{c.get("z", ["", ""])[1]}]</td>'
+            # 상승 = 절단면 **위로** 뻗은 칸수 (z_hi − z_lo). 칸 개수(+1)가 아니다 —
+            # D29-a 가 "머리" 를 절단면 위로 뻗는 성분으로 정의했고, 그 기준이 상승폭이다.
+            f'<td class="n">{c.get("z", [0, 0])[1] - c.get("z", [0, 0])[0]}칸</td></tr>'
+            for i, c in enumerate(ordered)
+        )
+        title = f"성분 · {run_name}" if run_name else "성분 (절단면 위로 뻗은 것)"
+        comp_tbl += (
+            f"<table><tr><th>{title}</th><th>복셀</th><th>x중심</th>"
+            f"<th>z 범위</th><th>상승</th></tr>{rows_c}</table>"
+        )
+
+    # ── NOTE 의 판정 절을 **그대로**. 요약하면 뜻이 바뀐다
+    import html as _html
+    import re as _re
+
+    def _md(t: str) -> str:
+        """**굵게** · `코드` 만 렌더한다. **문구는 한 글자도 안 바꾼다.**"""
+        t = _html.escape(t)
+        t = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+        return _re.sub(r"`(.+?)`", r"<code>\1</code>", t)
+
+    caution = "".join(
+        f'<div class="warn"><b>{_md(head)} (A5000 원문)</b><ul>'
+        + "".join(f"<li>{_md(ln)}</li>" for ln in lines)
+        + "</ul></div>"
+        for head, lines in r.note_sections
+    )
+    # 게이트 옆에 A5000 이 적어 둔 단서. 게이트가 "실패" 로 찍히는데 이게 화면에
+    # 없으면 화면이 사실의 절반만 말하게 된다. **판정은 안 바꾸고 단서만 같이 낸다.**
+    if r.gate_notes:
+        caution += (
+            '<div class="warn"><b>게이트 단서 (judgment.json · A5000 원문)</b><ul>'
+            + "".join(f"<li><b>{_md(k)}</b> — {_md(v)}</li>" for k, v in r.gate_notes.items())
+            + "</ul></div>"
+        )
+
+    met = r.records.get("metrics") or {}
+    man = r.records.get("manifest") or {}
+    def _gate_row(key: str, v) -> str:
+        st = "통과" if v is True else "실패" if v is False else "미결"
+        return (f'<tr><td>{key}</td>'
+                f'<td class="{_GATE_CLS.get(st, "ref")}">{st}</td></tr>')
+
+    def _gate_rows(detail: dict) -> str:
+        """평평한 블록도, **런별로 중첩된 블록도** 받는다.
+
+        W15 인계본은 `judgment["runs"][런]["gate_g2"]` 로 두 런을 한 파일에 담는다.
+        평평한 것만 읽던 판본은 여기서 아무 행도 못 만들고 "판정 기록이 없다" 를
+        내는데, 그건 **기록이 있는데 없다고 말하는 것**이다.
+        """
+        rows = ""
+        for k, v in (detail or {}).items():
+            if isinstance(v, dict):
+                rows += f'<tr><th colspan="2">{k}</th></tr>'
+                # 불리언은 판정, 나머지(new/removed/…)는 근거 수치다. 둘 다 낸다 —
+                # 원시 개수를 판정보다 앞에 두는 규칙(D37)이 여기서도 같다.
+                for kk, vv in v.items():
+                    rows += (_gate_row(kk, vv) if isinstance(vv, bool) or vv is None
+                             else f'<tr><td>{kk}</td><td class="n">{vv}</td></tr>')
+            elif isinstance(v, bool) or v is None:
+                rows += _gate_row(k, v)
+        return rows
+
+    gate_rows = (_gate_rows(r.gate_detail)
+                 or f'<tr><td colspan="2">{MISSING_TXT} — 판정 기록이 없다</td></tr>')
+
+    return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ai-ar-v3 — {r.asset_id or r.rel}</title>
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+<style>{_CSS}
+.mono {{ font-variant-numeric:tabular-nums; }}
+.mvs {{ display:flex; gap:12px; flex-wrap:wrap; }}
+.mv {{ flex:1 1 340px; min-width:0; }}
+.mv model-viewer {{ width:100%; height:420px; background:#0b0e14;
+                    border:1px solid #232a36; border-radius:6px; --poster-color:transparent; }}
+.mv span {{ display:block; color:#8b96a8; font-size:12px; margin-top:6px; }}
+.views .view {{ max-width:320px; }}
+.hero {{ margin:0 0 14px; }}
+.hero img {{ width:100%; height:auto; display:block; border:1px solid #232a36;
+             border-radius:6px; image-rendering:auto; background:#fff; }}
+.hero span {{ display:block; color:#e5e9f0; font-size:12px; margin-top:6px; }}
+.warn ul {{ margin:8px 0 0 18px; }} .warn li {{ margin:4px 0; }}</style></head><body>
+<h1>{_KIND_KO.get(r.kind, r.kind)} · {r.asset_id or r.rel}</h1>
+<p class="sub">{r.when} · <code>{r.rel}</code> · <a href="/runs">← 목록</a></p>
+{void_banner}
+{note}
+{viewer}
+{stage_pane}
+<div class="pane"><h2>{"그 밖의 인계 그림" if stage else "정본 그림"}</h2>{tiles[0] if delivered else ""}
+<div class="views">{"".join(tiles[1:] if delivered else tiles)}</div>
+<div class="legend">{spec["why"]}</div></div>
+{caution}
+{comp_tbl}
+<table><tr><th>게이트 (gate_g2 기록)</th><th>판정</th></tr>{gate_rows}</table>
+{table("지표 (원시 개수 우선)", met)}
+{table("매니페스트", {k: v for k, v in man.items() if k != "chunks"})}
+<p class="foot">
+게이트는 <code>gate_g2()</code> 가 기록한 것을 그대로 표시한다 — 이 화면은 판정하지 않는다.<br>
+실루엣은 진단용 표면 복셀화로 그린다 (D28: 마스크 좌표의 근거가 아니다).
+</p></body></html>"""
