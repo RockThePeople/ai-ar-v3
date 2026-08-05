@@ -311,6 +311,36 @@ class Run:
         return p if p.is_file() else None
 
     @property
+    def contract_version(self) -> Optional[int]:
+        """이 산출물이 **선언한** 계약 판본. 없으면 None — 추정하지 않는다."""
+        c = (self.records.get("manifest") or {}).get("contract") or {}
+        v = c.get("contract_version")
+        return int(v) if isinstance(v, int) else None
+
+    @property
+    def stale_contract(self) -> Optional[str]:
+        """구 계약이면 사유. 🔴 **판본을 손으로 적지 않고 계약 상수에서 읽는다.**
+
+        D75 가 청크 격자를 8³ → 4³ 로 바꾸면서 `CONTRACT_VERSION` 이 3 → 4 가 된다.
+        옛 `"3_1_5"` 와 새 `"3_1_5"` 는 **다른 공간의 다른 자리**라, 구 계약 산출물을
+        새 계약 자산과 나란히 놓으면 청크 키가 같아 보이면서 전혀 다른 곳을 가리킨다.
+        여기 숫자를 박아 두면 계약이 또 올라갈 때 이 표시가 조용히 틀린다 —
+        그래서 `deltacontract.CONTRACT_VERSION` 을 그대로 읽는다.
+
+        판본을 **선언하지 않은** 산출물은 "미기록" 이다. 구 계약으로 단정하지 않는다 —
+        빠뜨린 것과 옛것은 다른 사실이다.
+        """
+        from deltacontract import CONTRACT_VERSION  # type: ignore[import-not-found]
+
+        v = self.contract_version
+        if v is None:
+            return None if not self.chunk_dir else "계약 판본 미기록 — 매니페스트에 없다"
+        if v == CONTRACT_VERSION:
+            return None
+        return (f"구 계약 (v{v}) — 현재는 v{CONTRACT_VERSION} 다. 청크 키가 같아 보여도 "
+                "다른 공간의 다른 자리다 (D75). 재분할 전까지 참고 기록으로만 본다")
+
+    @property
     def track(self) -> str:
         """어느 갈래인가 — `current` | `dragon`.
 

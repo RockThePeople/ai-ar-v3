@@ -620,7 +620,8 @@ def render_runs_index(runs) -> str:
                 # (judgment.json 이 없다 vs gate_g2 블록이 없다). 라벨만으로는 못 가른다.
                 f'<td class="{cls}">{"—" if r.gate == NOT_APPLICABLE_TXT else r.gate}'
                 f'{f"<br><span class=\"why\">{r.gate_reason}</span>" if r.gate_reason else ""}</td>'
-                f'<td>{"3D " + str(len(r.models)) + "개" if r.models else "<span class=\"why\">3D 없음</span>"}</td>'
+                f'<td>{"3D " + str(len(r.models)) + "개" if r.models else "<span class=\"why\">3D 없음</span>"}'
+                f'{f"<div class=\"void\">{r.stale_contract}</div>" if r.stale_contract else ""}</td>'
                 f'<td><a href="/runs/{r.run_id}">상세 →</a></td></tr>'
             )
         return rows
@@ -777,6 +778,9 @@ def render_run_detail(r, spec) -> str:
 
     # 🔴 철회된 수치는 화면 **맨 위에서** 철회라고 말한다. 표 밑에 각주로 달면
     #    숫자를 먼저 읽고 각주는 안 읽는다 — 그 순서가 이 프로젝트가 물린 자리다.
+    stale_banner = (
+        f'<div class="warn"><b>⚠️ {r.stale_contract}</b></div>' if r.stale_contract else ""
+    )
     void_banner = (
         f'<div class="warn"><b>⚠️ 이 산출물의 수치는 철회됐다.</b> {r.invalidated}.'
         ' 아래 숫자를 현행 수치로 인용하지 마라.</div>'
@@ -897,6 +901,7 @@ def render_run_detail(r, spec) -> str:
 <h1>{_KIND_KO.get(r.kind, r.kind)} · {r.asset_id or r.rel}</h1>
 <p class="sub">{r.when} · <code>{r.rel}</code> · <a href="/runs">← 목록</a></p>
 {void_banner}
+{stale_banner}
 {note}
 {viewer}
 {stage_pane}
