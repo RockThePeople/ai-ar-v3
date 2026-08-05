@@ -250,6 +250,11 @@ class Run:
                 return n
         return None
 
+    #: 청크에서 조립해 거는 모델의 가상 파일명. 실제 파일은 `_glbcache/` 에 있고
+    #: 이 이름은 **라우트 파라미터**로만 쓰인다 — 경로를 파라미터로 받지 않는다 (§7).
+    AUTO_BEFORE = "_from_chunks.glb"
+    AUTO_AFTER = "_from_chunks_after.glb"
+
     @property
     def models(self) -> Dict[str, str]:
         """3D 뷰어에 걸 GLB. **깊이맵만으로는 "3D 로 정말 바뀌었나" 에 답이 안 된다.**
@@ -262,7 +267,44 @@ class Run:
            그대로 나란히 걸면 before 만 90° 누워 보이고 좌우 비교가 뜻을 잃는다.
            export 때 `frames.VOXEL_TO_GLB` 를 건다 (매직 회전을 쓰지 않는다).
         """
-        return {n: lbl for n, lbl in MODELS.items() if (self.path / n).is_file()}
+        # ① 인계받은 GLB 가 있으면 그것이 정본이다.
+        out = {p.name: MODELS.get(p.name, p.stem) for p in sorted(self.path.glob("*.glb"))}
+        if out:
+            return out
+        # ② 없으면 `.cbin` 에서 **직접 조립한다** — A5000 에 요청하지 않는다.
+        #    `.cbin` 은 디코더가 낸 실제 표면 메시라 대용물이 아니다 (W12 선례).
+        if self.chunk_dir is not None:
+            out[self.AUTO_BEFORE] = ("청크에서 조립 (편집 전)"
+                                     if self.after_chunk_dir else "청크에서 조립")
+        if self.after_chunk_dir is not None:
+            out[self.AUTO_AFTER] = "청크에서 조립 (편집 후)"
+        return out
+
+    @property
+    def no_3d_reason(self) -> Optional[str]:
+        """3D 를 못 거는 이유. 🔴 **조용히 빼지 않는다** — 게이트 3분류와 같은 논리다.
+
+        빼 버리면 "3D 가 없는 산출물" 과 "3D 를 붙이는 걸 빠뜨린 화면" 이 구분되지
+        않는다. 그 구분이 안 되면 화면을 믿을 수 없다.
+        """
+        if self.models:
+            return None
+        if self.pending_reason:
+            return "산출물이 아직 3090 에 없다"
+        return "GLB 도 `.cbin` 청크 세트도 없다 — 조립할 재료가 없다"
+
+    def model_path(self, name: str) -> Optional[Path]:
+        """가상 이름 → 실제 파일. 화이트리스트 밖이면 None (라우트가 404 를 낸다)."""
+        if name not in self.models:
+            return None
+        if name == self.AUTO_BEFORE and self.chunk_dir is not None:
+            from .glbbuild import cached_glb
+            return cached_glb(self.chunk_dir, f"{self.path.name}-before")
+        if name == self.AUTO_AFTER and self.after_chunk_dir is not None:
+            from .glbbuild import cached_glb
+            return cached_glb(self.after_chunk_dir, f"{self.path.name}-after")
+        p = self.path / name
+        return p if p.is_file() else None
 
     @property
     def track(self) -> str:

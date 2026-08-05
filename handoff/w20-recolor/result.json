@@ -1,0 +1,19 @@
+{
+  "n_chunks_total": 89,
+  "n_chunks_changed": 24,
+  "n_vertices_recolored": 33043,
+  "color": [
+    255,
+    106,
+    0,
+    255
+  ],
+  "delta_bytes": 2896444,
+  "full_bytes": 9763224,
+  "saving": 0.7033311946955227,
+  "inherited_identity": 1.0,
+  "geometry_byte_identity": 1.0,
+  "mask_cells": 1386,
+  "mask_fingerprint": "28b22e0004e68288c21dadb08222e9e8a50006e8905ff9462267f981fa2df7e9",
+  "grid_source": "slat_coords"
+}

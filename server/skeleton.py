@@ -417,8 +417,12 @@ def runs_image(run_id: str, name: str) -> Response:
     r = _find_run(run_id)
     # 3D 뷰어용 GLB. 화이트리스트(runs.Run.models)로만 연다 — 임의 파일이 아니다.
     if name in r.models:
+        # 실제 경로는 Run 이 정한다 — 청크에서 조립한 것은 `_glbcache/` 에 있다.
+        src = r.model_path(name)
+        if src is None:
+            raise HTTPException(status_code=404, detail=f"조립할 재료가 없다: {name}")
         return Response(
-            (r.path / name).read_bytes(), media_type="model/gltf-binary",
+            src.read_bytes(), media_type="model/gltf-binary",
             headers={"Cache-Control": "no-store"},
         )
     # A5000 이 렌더해 보낸 그림이면 **그대로 낸다** — 다시 렌더하지 않는다.
@@ -437,15 +441,21 @@ def runs_image(run_id: str, name: str) -> Response:
     if d is None:
         png = debugview.placeholder_png()
     elif name.startswith("color"):
-        png = debugview.color_front_png(d)
+        from server.realasset import cbin_dir_to_occupancy
+
+        png = debugview.color_front_png(
+            d, view_axis=debugview.informative_axis(cbin_dir_to_occupancy(d))
+        )
     else:
         from server.realasset import cbin_dir_to_occupancy
 
         cells = cbin_dir_to_occupancy(d)   # 그림용 (D28: 진단 전용)
+        # 🔴 시선 축을 **자산이 정한다.** 가장 얇은 방향으로 봐야 최대 단면이 보이고,
+        #    긴 축이 시선과 나란하면 부품이 전부 겹쳐 구조를 못 가른다.
+        axis = debugview.informative_axis(cells)
         if name == "depth":
-            png = debugview.depth_png(cells)
+            png = debugview.depth_png(cells, view_axis=axis)
         elif name == "depth_side":
-            # 시선 = x. 긴 축이 y 인 자산(오토바이)은 이 뷰라야 판정이 된다.
             png = debugview.depth_png(cells, view_axis=0)
         else:
             axis = {"front": 1, "side": 0, "top": 2}[name]
