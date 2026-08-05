@@ -22,6 +22,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -361,3 +362,108 @@ def test_all_goldens_agree_with_the_contract_fingerprint():
     for name in ("body", "wide", "onewheel"):
         g = golden(name)
         assert mask_fingerprint(np.array(g["cells"], dtype=np.int64)) == g["mask_fingerprint"], name
+
+
+# ══════════════ ★★ W19 — 실자산 moto-b. 라쏘가 **뒷바퀴를 뺄 수 있는가**
+MOTO_NPY = REPO / "handoff/lasso/moto-b.slat_coords.npy"
+
+
+@pytest.fixture(scope="module")
+def moto():
+    """실자산. 3090 이 A5000 원본 slat.safetensors 에서 그대로 뽑은 좌표다 (D34)."""
+    if not MOTO_NPY.exists():
+        pytest.fail("moto-b 자산이 리포에 없다 — handoff/lasso/ 를 확인해라")
+    a = np.unique(np.load(MOTO_NPY).astype(np.int64), axis=0)
+    spec = json.loads((MOTO_NPY.with_name("moto-b.slat_coords_spec.json")).read_text())
+    return {"cells": a, "set": set(map(tuple, a.tolist())), "spec": spec}
+
+
+def test_moto_asset_matches_its_spec(moto):
+    """받은 좌표가 spec 과 맞는가. 잘린 목록도 형태는 멀쩡하다."""
+    s = moto["spec"]
+    assert s["grid_source"] == "slat_coords" and s["voxel_res"] == 64
+    assert len(moto["cells"]) == s["n_coords"] == 9150
+    assert moto["cells"].min(0).tolist() == s["bbox_min"]
+    assert moto["cells"].max(0).tolist() == s["bbox_max"]
+
+
+def test_moto_rear_wheel_excludes_the_rider_leg(moto):
+    """★★ **이번 웨이브의 관문.** 뒷바퀴가 실루엣상 다리·스윙암과 붙어 있다.
+
+    합성차의 바퀴는 몸체와 떨어져 있어 쉬운 경우였다. moto-b 는 접촉대
+    (y 40–47 · z 18–26)에서 다리와 바퀴가 **같은 x 범위(28–35)** 를 차지한다 —
+    깊이로도 안 갈린다. 화면에서 경계를 그어야만 갈린다.
+    """
+    g = golden("moto-rear-wheel")
+    c = np.array(g["cells"], dtype=np.int64)
+    picked = set(map(tuple, g["cells"]))
+
+    assert picked <= moto["set"], "점유하지 않은 셀이 마스크에 들어갔다"
+    assert (c[:, 1] >= 46).all(), (
+        f"다리·스윙암 쪽(y<46) 이 {(c[:, 1] < 46).sum()}셀 딸려 들어왔다"
+    )
+    assert g["n_cells"] == 1386
+    assert 0.14 < g["n_cells"] / len(moto["cells"]) < 0.16     # 자산의 15.1%
+    # 바퀴 원판(중심 y50.5 z21.5 · r13.5) 밖은 5% 미만이어야 한다 (펜더·시트 자락)
+    out = ((c[:, 1] - 50.5) ** 2 + (c[:, 2] - 21.5) ** 2 > 13.5 ** 2).sum()
+    assert out / len(c) < 0.05, f"바퀴 밖이 {out}셀이다"
+
+
+def test_moto_full_disc_shows_what_the_cut_bought(moto):
+    """★ 대조 — 왼쪽 호까지 감싸면 **787셀**이 다리 쪽에서 딸려 온다.
+
+    자른 것이 공짜가 아니라는 뜻이기도 하다: 바퀴 왼쪽 호를 포기했다.
+    단일 시점 라쏘의 한계를 수치로 남긴다.
+    """
+    tight = set(map(tuple, golden("moto-rear-wheel")["cells"]))
+    full = set(map(tuple, golden("moto-rear-wheel-full")["cells"]))
+    extra = full - tight
+    assert len(extra) == 924
+    assert sum(1 for c in extra if c[1] < 46) == 787
+
+
+def test_solidify_never_worked_in_any_measured_case():
+    """★★ 압출은 **다섯 경우 전부** 순증 0이었다 (합성 2 · 실자산 정측면 2 · 사면 1).
+
+    🔴 기전: 채움 축이 **시선 축과 같으면** 채워 넣은 셀이 후보와 (거의) 같은
+       화면 위치를 갖는다. 그 셀이 점유돼 있었다면 이미 후보였다. 그래서 교집합이
+       정확히 같은 수를 도로 지운다. 우연이 아니라 구조다.
+
+    ⇒ 압출이 일하려면 채움 범위와 폴리곤 경계 사이에 **시차**가 있어야 한다.
+      25° 사면에서도 안 났다 — 시차(≈48px)가 폴리곤 반경(≈193px)보다 작았다.
+    """
+    for name in ("body", "wide", "onewheel", "moto-rear-wheel",
+                 "moto-rear-wheel-full", "moto-oblique"):
+        g = golden(name)
+        assert g["solidify_added"] == g["intersect_removed"], name
+        assert g["after_solidify"] - g["intersect_removed"] == g["n_cells"], name
+
+
+@pytest.mark.skipif(_dotnet() is None, reason="C# 컴파일러가 없다 — 골든 검사만 돈다")
+@pytest.mark.parametrize("name", ["moto-rear-wheel", "moto-rear-wheel-full", "moto-oblique"])
+def test_moto_probe_reproduces_the_golden(tmp_path, name):
+    """★ 실자산에서도 계약의 LassoVolume.cs 를 그대로 컴파일해 재현한다."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("moto_b_cases", REPO / "tools/moto_b_cases.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["moto_b_cases"] = mod
+    spec.loader.exec_module(mod)
+
+    coords = np.unique(np.load(MOTO_NPY).astype(np.int64), axis=0)
+    inp = tmp_path / "in.json"
+    out = tmp_path / "out.json"
+    inp.write_text(json.dumps({"slat_coords": coords.tolist(),
+                               "polygon": mod.CASES[name],
+                               "camera": mod.CASE_CAMERA.get(name, mod.CAMERA)}))
+
+    dotnet = _dotnet()
+    env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
+    env.setdefault("DOTNET_ROOT", str(pathlib.Path(dotnet).parent))
+    r = subprocess.run(
+        [dotnet, "run", "--project", str(REPO / "unity/Headless"), "-c", "Release",
+         "--", str(inp), str(out)],
+        capture_output=True, text=True, env=env, cwd=str(REPO), timeout=600,
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert json.loads(out.read_text()) == golden(name)
