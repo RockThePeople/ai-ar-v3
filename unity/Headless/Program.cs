@@ -51,10 +51,22 @@ static class Program
         float w = cam.GetProperty("width").GetSingle();
         float h = cam.GetProperty("height").GetSingle();
 
-        // 카메라 기저 (오른손, 전방 = target - eye)
+        // 🔴🔴 카메라 기저 — **Unity 는 왼손 좌표계다.**
+        //
+        // W18 에서 실측으로 잡았다. 여기서 오른손 기저(right = fwd × up)를 쓰면
+        // Unity 의 `transform.LookAt` 이 만드는 기저(right = up × fwd)와 **x 가 반대**가 되고,
+        // 그 결과는:
+        //
+        //     단계별 계수가 **전부 일치한다** (투영 3884 · 폴리곤안 3017 · 압출 +2592 …)
+        //     지문만 다르다 — 같은 개수의 **좌우 뒤집힌** 셀을 고른 것이다
+        //
+        // 즉 개수만 보면 통과한다. 실제로 W18 이전의 골든이 그 상태였고, Unity 결과가
+        // 골든의 **x 미러**(63−x)와 바이트 단위로 일치하는 것으로 확정했다.
+        //
+        // ⇒ **Unity 가 정본이다.** 앱이 도는 곳이 거기다. 여기를 Unity 에 맞춘다.
         var fwd = Norm(Sub(target, eye));
-        var right = Norm(Cross(fwd, up));
-        var trueUp = Cross(right, fwd);
+        var right = Norm(Cross(up, fwd));      // 왼손 — Unity 와 같은 순서
+        var trueUp = Cross(fwd, right);
         float focal = (h * 0.5f) / (float)Math.Tan(fov * Math.PI / 360.0);
 
         Func<Vector3, Vector3> project = local =>
