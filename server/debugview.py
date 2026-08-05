@@ -487,12 +487,15 @@ def depth_png(cells: np.ndarray, *, scale: int = 10, view_axis: int = 1) -> byte
 #
 # 입력은 **`.cbin` 디렉터리**다. recolor 가 무엇을 노출하든 이 시스템의 산출물 모양은
 # 청크 세트 하나뿐이므로(D8), 새 계약을 발명하지 않고 그것만 받는다.
-def color_front_png(chunk_dir, *, scale: int = 8) -> bytes:
-    """`.cbin` 디렉터리 → 정면 컬러 렌더 PNG.
+def color_front_png(chunk_dir, *, scale: int = 8, view_axis: int = 1) -> bytes:
+    """`.cbin` 디렉터리 → 컬러 렌더 PNG. 시선 축을 향해 가장 가까운 정점의 색.
 
-    각 (x,z) 기둥에서 **가장 앞(min y)** 정점의 색을 쓴다. 색이 없는 청크
-    (`FLAG_COLOR` 미설정)는 건너뛴다 — 무채색으로 채우면 "색이 안 바뀌었다" 와
-    "색이 애초에 없다" 가 화면에서 같아 보인다.
+    색이 없는 청크(`FLAG_COLOR` 미설정)는 건너뛴다 — 무채색으로 채우면
+    "색이 안 바뀌었다" 와 "색이 애초에 없다" 가 화면에서 같아 보인다.
+
+    ⚠️ `view_axis` 가 필요한 이유는 `depth_png` 와 같다: 긴 축이 시선과 나란한
+       자산(오토바이)은 정면에서 부품이 전부 겹쳐 **무엇이 칠해졌는지 안 보인다.**
+       moto-b 뒷바퀴가 정확히 그 자리다. 기본값은 종전대로 y 다.
     """
     from pathlib import Path
 
@@ -505,15 +508,37 @@ def color_front_png(chunk_dir, *, scale: int = 8) -> bytes:
         if mesh.colors is None:
             continue
         cells = normalized_to_voxel(mesh.positions)
-        for (x, y, z), c in zip(cells, mesh.colors):
-            k = (int(x), int(z))
-            if k not in best or y < best[k][0]:
-                best[k] = (y, c[:3])
+        # 보고 싶은 축을 깊이 자리로 옮긴다. 좌표계 변환이 아니라 **표시용**이다 (D9).
+        h, d, v = ((0, 1, 2) if view_axis == 1 else
+                   (1, 0, 2) if view_axis == 0 else (0, 2, 1))
+        for cell, c in zip(cells, mesh.colors):
+            k = (int(cell[h]), int(cell[v]))
+            if k not in best or cell[d] < best[k][0]:
+                best[k] = (cell[d], c[:3])
 
     img = _canvas()
     for (x, z), (_, c) in best.items():
         img[VOXEL_RES - 1 - z, x] = c
     return _png(np.repeat(np.repeat(img, scale, axis=0), scale, axis=1))
+
+
+def informative_axis(cells: np.ndarray) -> int:
+    """무엇을 보고 판정할 것인가 — **시선 축을 자산이 정한다.**
+
+    가장 **얇은** 방향으로 보면 가장 큰 단면이 보인다. 반대로 긴 축이 시선과
+    나란하면 부품이 전부 겹쳐 구조를 못 가른다 — moto-b(긴 축 y, 64칸)를 정면(y
+    시선)에서 그리면 오토바이를 앞에서 본 그림이 되고 바퀴 둘이 포개진다.
+
+    자산별 표를 두지 않는 이유: 표는 새 자산이 올 때마다 빠뜨릴 수 있고, 빠뜨리면
+    아무 증상 없이 잘못된 뷰가 정본으로 나간다. 형상에서 유도하면 그 실패가 없다.
+    """
+    c = np.asarray(cells, dtype=np.int64).reshape(-1, 3)
+    if c.size == 0:
+        return 1
+    return int(np.argmin(c.max(axis=0) - c.min(axis=0)))
+
+
+AXIS_KO = {0: "옆면 (시선 X)", 1: "정면 (시선 Y)", 2: "위 (시선 Z)"}
 
 
 def placeholder_png(text_rows: int = 3, *, scale: int = 8) -> bytes:
@@ -570,7 +595,7 @@ def render_runs_index(runs) -> str:
                 rows.append(
                     f'<tr class="pending"><td>—</td><td>{_KIND_KO.get(r.kind, r.kind)}</td>'
                     f'<td colspan="2">{r.rel} — {r.pending_reason}</td>'
-                    f'<td class="ref">{r.gate}</td></tr>'
+                    f'<td class="ref">{r.gate}</td><td>—</td></tr>'
                 )
                 continue
             # 🔴 철회된 수치는 **철회됐다고 적고 낸다.** 지우면 "왜 안 보이지" 가 되고,
@@ -589,12 +614,13 @@ def render_runs_index(runs) -> str:
                 # (judgment.json 이 없다 vs gate_g2 블록이 없다). 라벨만으로는 못 가른다.
                 f'<td class="{cls}">{"—" if r.gate == NOT_APPLICABLE_TXT else r.gate}'
                 f'{f"<br><span class=\"why\">{r.gate_reason}</span>" if r.gate_reason else ""}</td>'
+                f'<td>{"3D " + str(len(r.models)) + "개" if r.models else "<span class=\"why\">3D 없음</span>"}</td>'
                 f'<td><a href="/runs/{r.run_id}">상세 →</a></td></tr>'
             )
         return rows
 
     HEAD = ('<tr><th>시각</th><th>종류</th><th>자산 id</th><th>한눈 결과</th>'
-            '<th>게이트</th><th></th></tr>')
+            '<th>게이트</th><th>3D</th><th></th></tr>')
     sections = ""
     for key, title, note in _TRACKS:
         rows = _rows_for([r for r in runs if r.track == key])
@@ -696,29 +722,39 @@ def render_run_detail(r, spec) -> str:
     # ── 3D 뷰어 (model-viewer). 깊이맵은 **투영**이라 "3D 로 정말 바뀌었나" 에
     #    답하지 못한다 — 돌려 봐야 답이 나온다. CDN 스크립트 한 줄만 쓴다.
     models = r.models
-    viewer = ""
+    # 🔴 3D 를 못 걸면 **못 건다고 적는다.** 조용히 빼면 "3D 가 없는 산출물" 과
+    #    "3D 붙이기를 빠뜨린 화면" 이 구분되지 않는다 (게이트 3분류와 같은 논리).
+    viewer = (
+        '<div class="pane"><h2>3D 뷰어</h2>'
+        f'<div class="warn"><b>3D 없음</b> — {r.no_3d_reason}</div></div>'
+    ) if not models else ""
     if models:
         cards = "".join(
             f'<div class="mv"><model-viewer src="/runs/{r.run_id}/img/{n}" '
+            # 기본 각도를 **옆면**으로 준다. 정면이면 앞뒤 부품이 겹쳐 무엇이 바뀌었는지가
+            # 첫 화면에 안 보인다 (moto-b 뒷바퀴가 앞바퀴에 가린다). 돌리면 다 볼 수 있지만,
+            # 돌려야만 보이는 것은 "보인다" 가 아니다.
             f'camera-controls touch-action="pan-y" auto-rotate rotation-per-second="20deg" '
+            f'camera-orbit="90deg 75deg auto" '
             f'shadow-intensity="0.6" exposure="1.1" alt="{lbl}"></model-viewer>'
             f"<span>{lbl}</span></div>"
             for n, lbl in models.items()
         )
-        only_after = "dragon-c_before.glb" not in models
-        note_m = (
-            '<div class="legend">⚠️ 편집 전 GLB 가 없어 <b>편집 후만</b> 걸었다.</div>'
-            if only_after else
-            '<div class="legend">드래그로 돌려 본다. 편집 전 GLB 는 3090 이 dragon-c 의 '
-            '<code>.cbin</code> 청크를 이어 붙여 만든 것이다 — A5000 에 요청하지 않았고, '
-            '<code>.cbin</code> 은 디코더가 낸 <b>실제 표면 메시</b>라 대용물이 아니다. '
-            '좌표는 <code>frames.VOXEL_TO_GLB</code> 로 GLB 프레임에 맞췄다 — 안 걸면 '
-            '편집 전만 90° 누워 보여 좌우 비교가 뜻을 잃는다 (D9).</div>'
-            # 🔴 안 적으면 "색이 바뀌었다" 로 오독된다 — 이번 편집은 형태 편집이다.
-            '<div class="legend warn">⚠️ 편집 전이 <b>흰색</b>인 것은 편집 결과가 아니다. '
-            '<code>.cbin</code> 은 정점·면만 담고 <b>색 채널이 없다</b> — 여기서 색을 '
-            '비교하지 마라. 이 판정에서 볼 것은 <b>형태</b>뿐이다.</div>'
-        )
+        built = [n for n in models if n.startswith("_from_chunks")]
+        note_m = '<div class="legend">드래그로 돌려 본다.</div>'
+        if built:
+            note_m = (
+                '<div class="legend">드래그로 돌려 본다. 이 모델은 3090 이 '
+                '<code>.cbin</code> 청크를 이어 붙여 만든 것이다 — A5000 에 요청하지 '
+                '않았고, <code>.cbin</code> 은 디코더가 낸 <b>실제 표면 메시</b>라 '
+                '대용물이 아니다. 좌표는 <code>frames.VOXEL_TO_GLB</code> 로 GLB '
+                '프레임에 맞췄다 — 안 걸면 이것만 90° 누워 보여 비교가 뜻을 잃는다 (D9).'
+                '<br>🔴 <b>W12 의 화면 문구를 정정한다.</b> 그때 "<code>.cbin</code> 은 '
+                '색 채널이 없어서 흰색으로 나온다" 고 적었는데 <b>틀렸다</b> — 실측 '
+                'dragon-c 124/124 · moto-b 89/89 청크가 색을 담고 있다. 흰색이었던 것은 '
+                '조립 함수가 색을 버렸기 때문이고, 지금은 <b>정점 색을 그대로 싣는다</b>.'
+                '</div>'
+            )
         viewer = (
             '<div class="pane"><h2>3D 뷰어 — 돌려서 확인</h2>'
             f'<div class="mvs">{cards}</div>{note_m}</div>'
