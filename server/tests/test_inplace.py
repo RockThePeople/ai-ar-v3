@@ -24,6 +24,8 @@ from server.pipeline.frames import GLB_TO_VOXEL, VOXEL_TO_GLB
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 APPLIER = REPO / "unity/Runtime/ChunkSceneApplier.cs"
+#: 🔴 D9 변환의 **유일한 정의**. W23 에서 세 곳으로 갈라지려 해 여기로 모았다.
+FRAME = REPO / "unity/Runtime/VoxelFrame.cs"
 
 
 @pytest.fixture(scope="module")
@@ -84,9 +86,12 @@ def test_csharp_voxel_to_unity_matches_the_canonical_transform():
     정본은 `frames.GLB_TO_VOXEL` (voxel = (x, −z, y)) 이고, C# 은 그 역을 쓴다.
     소스에서 식을 읽어 정본과 **수치로** 대조한다 — 주석 대조가 아니다.
     """
-    src = APPLIER.read_text()
-    m = re.search(r"VoxelToUnity\(Vector3 v\)\s*=>\s*new Vector3\(([^)]+)\)", src)
-    assert m, "VoxelToUnity 를 못 찾았다"
+    src = FRAME.read_text()
+    m = re.search(r"ToUnity\(Vector3 v\)\s*=>\s*new Vector3\(([^)]+)\)", src)
+    assert m, "VoxelFrame.ToUnity 를 못 찾았다"
+    # 다른 파일은 **위임만** 해야 한다 — 복사본이 생기면 다시 갈라진다.
+    assert "new Vector3(v.x, v.z, -v.y)" not in APPLIER.read_text()
+    assert "new Vector3(v.x, v.z, -v.y)" not in (REPO / "unity/Runtime/LassoEditApp.cs").read_text()
     expr = [t.strip() for t in m.group(1).split(",")]
 
     def apply(v):
