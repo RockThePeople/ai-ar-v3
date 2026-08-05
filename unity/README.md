@@ -118,3 +118,43 @@ python3 tools/lasso_export_mask.py out.json handoff/lasso/moto-b.rear-wheel.mask
 지운다. 25° 사면에서도 안 났다: 시차(≈48px)가 폴리곤 반경(≈193px)보다 작았다.
 
 ⇒ 압출이 밥값을 하려면 **시차 > 폴리곤 여유**여야 한다. 그 조건은 아직 안 만들어 봤다.
+
+## W21 — `.cbin` 델타를 **오브젝트를 내리지 않고** 씬에 반영했다 (D70)
+
+```bash
+python3 tools/build_moto_patch.py /tmp/moto-inplace   # 부모 89청크 + recolor 델타 24
+tools/unity_inplace_check.sh /tmp/moto-inplace        # 🔴 정본 게이트
+```
+
+**게이트는 절감률이 아니다.** 무엇이 살아남았는가다.
+
+| 검사 | changed/added/removed | Mesh 실제교체 | EntityId 유지 | 재생성 | apply |
+|---|---|---|---|---|---|
+| ① in-place | 24 / 0 / 0 | **24** | **89/89 (100%)** | 0 | **7.68 ms** |
+| ② 음성 대조 (no-op) | 24 / 0 / 0 | **0** | 89/89 (100%) | 0 | 0.00 ms |
+| ③ removed (§3-E) | 3 / 0 / **1** | 3 | 88/88 | 0 | 1.24 ms |
+| ⑤ 통짜 재생성 대조 | 0 / 89 / **89** | 24 | **0/89** | 89 | 25.21 ms |
+
+🔴 **②가 이 표의 핵심이다.** 아무것도 안 하는 구현이 **EntityId 유지율 100%** 를 받는다.
+유지율만 재면 그게 통과한다 — 그래서 "Mesh 가 실제로 바뀐 GameObject 수" 를 같이 잰다.
+①은 24, ②는 0 이다. 이 짝이 없으면 지표가 거짓말한다 (방법론 3조).
+
+### removed 가 in-place 품질을 가른다 (DESIGN_INTENT §3-E)
+
+파괴 후 **사전에서도 지운다**. 안 지우면 다음 패치가 이미 파괴된 MeshFilter 에
+`ApplyTo` 를 걸고 — Unity 의 가짜 null 때문에 — **예외 없이 아무 일도 안 일어난다.**
+③은 파괴 뒤 그 키를 다시 `changed` 로 보내 본다. 사전에 없으므로 새로 만들고,
+`UnexpectedChanged = 1` 로 **숫자에 남긴다**. 조용히 넘어가지 않는다.
+
+### 좌표 (D9)
+
+`.cbin` 정점은 복셀 프레임(Z-up)이다. `VoxelToUnity(v) = (v.x, v.z, −v.y)` 하나만 쓴다.
+`test_csharp_voxel_to_unity_matches_the_canonical_transform` 이 소스에서 식을 읽어
+`frames.VOXEL_TO_GLB` 와 **수치로** 대조한다 — 주석 대조가 아니다.
+
+⚠️ Unity 6.5 는 `GetInstanceID()` 를 폐기했다. `GetEntityId()` 를 쓰고 **int 로 좁히지
+않는다** — 좁히면 나중에 서로 다른 오브젝트가 같은 값으로 보이고, 그때 "유지됐다" 가
+조용히 거짓이 된다.
+
+⚠️ 기하는 합성 디코더(`occupancy_to_mesh`) 산출이다. **형식·부기·청크 집합은 실물**이고
+(89청크·변경 24 = 3090 의 W20 수치와 일치) 기하만 합성이다.
