@@ -14,6 +14,7 @@
 """
 
 from .coords import (  # noqa: F401
+    DEFAULT_HALO_VOXELS,
     CHUNK_GRID_RES,
     CHUNK_SIZE,
     CONTRACT_CONSTANTS,

@@ -38,17 +38,33 @@ def built(tmp_path_factory):
     return out
 
 
-def test_patch_matches_3090_numbers(built):
-    """★ 89청크 · 변경 24 — 3090 이 실제 파이프라인에서 낸 수치와 같다."""
-    patch = json.loads((built / "patch.json").read_text())
-    assert patch["n_chunks_total"] == 89
-    assert len(patch["changed"]) == 24
-    assert len(list((built / "parent").glob("*.cbin"))) == 89
-    assert len(list((built / "patch").glob("*.cbin"))) == 24
+def test_chunk_regrid_sharpened_the_delta(built):
+    """★★ D75 의 목적 그 자체 — **델타 입자가 편집보다 굵던 것**을 줄였다.
 
+    청크가 8³(512복셀)이면 그 안의 복셀 한 개만 바뀌어도 청크 전체가 델타에 실린다.
+    moto-b recolor 실측으로 그 과대계상을 잰다:
+
+        격자        전체 청크   변경 청크   과대계상 (변경청크% / 실제복셀 15.1%)
+        8³ (v3)        89        24 (27.0%)     1.79배
+        4³ (v4)       375        72 (19.2%)     **1.27배**
+
+    ⚠️ 교환은 명시적이다 — 매니페스트 슬롯이 512 → 4,096 이다.
+    """
+    patch = json.loads((built / "patch.json").read_text())
+    total, changed = patch["n_chunks_total"], len(patch["changed"])
+    assert total == 375
+    assert changed == 72
+    assert len(list((built / "parent").glob("*.cbin"))) == total
+    assert len(list((built / "patch").glob("*.cbin"))) == changed
+
+    # 실제로 바뀐 복셀 비율 — 이게 델타가 이상적으로 도달할 하한이다.
+    voxel_frac = 1386 / 9150
+    now = changed / total
     ref = json.loads((REPO / "handoff/w20-recolor/result.json").read_text())
-    assert patch["n_chunks_total"] == ref["n_chunks_total"]
-    assert len(patch["changed"]) == ref["n_chunks_changed"]
+    before = ref["n_chunks_changed"] / ref["n_chunks_total"]     # v3 격자에서 잰 것
+
+    assert now < before, f"세분화했는데 과대계상이 안 줄었다: {before:.3f} → {now:.3f}"
+    assert now / voxel_frac < 1.4 < before / voxel_frac
 
 
 def test_patch_is_written_as_three_sets_not_two(built):

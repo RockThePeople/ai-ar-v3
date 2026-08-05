@@ -19,14 +19,14 @@
      `torch.argwhere(decoder(z_s) > 0)` 로 내놓는 활성 복셀 인덱스가 여기 산다.
      편집 마스크, 부기(added/removed/modified), 청크 분류가 전부 이 공간을 쓴다.
 
-  3) CHUNK        int [0, 8)^3
-     VOXEL 을 CHUNK_SIZE(=8) 로 나눈 것. 512개 슬롯.
+  3) CHUNK        int [0, 16)^3
+     VOXEL 을 CHUNK_SIZE(=4) 로 나눈 것. 4,096개 슬롯. (contract_version 4)
 
 Unity 월드 좌표는 이 계약에 등장하지 않는다. anchor pose ↔ NORMALIZED 변환은
 전적으로 클라이언트 책임이다 (서버가 앵커를 알면 안 된다).
 
 ────────────────────────────────────────────────────────────────────────
-왜 64³ / CHUNK_SIZE = 8 인가  (contract_version 2 에서 32³/4 에서 변경)
+왜 64³ / CHUNK_SIZE = 8 이었나  (contract_version 2 에서 32³/4 에서 변경)
 ────────────────────────────────────────────────────────────────────────
 v1 은 TRELLIS.2 전제로 occupancy 32³ 위에 청크를 얹었다. TRELLIS.2 를 버리고
 TRELLIS 1 + SLat RePaint 로 가면서 정수 공간을 SLat 그리드(64³)에 맞춘다.
@@ -39,6 +39,29 @@ TRELLIS 1 + SLat RePaint 로 가면서 정수 공간을 SLat 그리드(64³)에 
 결과적으로 FINAL 명세 §8.1 의 원래 숫자(64³, chunk_size 8, 512 슬롯)로 돌아온다.
 슬롯 수(=매니페스트 오버헤드)와 청크당 부피(=국소 편집 1회의 재전송량)의
 트레이드오프는 명세와 동일하다. 튜닝은 §13-2 실측 후.
+
+────────────────────────────────────────────────────────────────────────
+왜 4 로 바꿨는가  (contract_version 4 · D75 · 사용자 결정)
+────────────────────────────────────────────────────────────────────────
+"튜닝은 실측 후" 라고 적어 뒀던 그 실측이 나왔다.
+
+    moto-b recolor 실측 — 실제로 바뀐 것은 **1,386복셀 = 자산의 15%** 인데
+    청크로는 **24 / 89 = 27%** 가 "바뀐 청크" 로 잡혔다.
+
+청크가 8³(=512복셀)이면 그 안의 복셀 **한 개**만 바뀌어도 청크 전체가 델타에
+실린다. 즉 청크 크기가 곧 **델타의 최소 입자**이고, 지금은 그 입자가 편집보다
+훨씬 굵다. 국소 편집의 국소성이 전송 단계에서 뭉개진다.
+
+    CHUNK_SIZE 8 → 4     청크당 복셀 512 → **64**
+    슬롯      512 → **4,096**      (매니페스트가 8배 커진다)
+
+교환은 명시적이다: **매니페스트 오버헤드를 8배 늘려 델타 정밀도를 8배 얻는다.**
+D70 이후 절감률은 문턱이 아니므로(참고값) 이 교환의 비용 쪽은 게이트가 아니다.
+
+⚠️ 이 격자를 바꾸는 것은 **두 번째**다 (v2: 32³/4 → v3: 64³/8 → 지금 64³/4).
+   그래서 `CONTRACT_VERSION` 을 올린다 — 옛 자산을 새 코드에 물리면
+   `assert_contract_compatible` 이 즉시 거부한다. 조용히 어긋나지 않게 하는 것이
+   이 상수들이 매니페스트에 실려 나가는 이유 그 자체다.
 """
 
 from __future__ import annotations
@@ -49,7 +72,11 @@ import numpy as np
 
 # ══════════════════════════════════════════════════════════ 계약 상수
 
-CONTRACT_VERSION = 3
+# 🔴 4 = 청크 격자 세분화 (CHUNK_SIZE 8 → 4). **와이어 호환이 실제로 깨진다** —
+# 청크 키 공간이 [0,8)³ 에서 [0,16)³ 으로 바뀌므로 옛 매니페스트의 "3_1_5" 와
+# 새 것의 "3_1_5" 는 **다른 공간의 다른 자리**다. 판본을 안 올리면 그 둘이
+# 이름만 같은 채로 섞이고, 예외는 안 난다.
+CONTRACT_VERSION = 4
 
 NORMALIZED_MIN = -0.5
 NORMALIZED_MAX = 0.5
@@ -59,8 +86,8 @@ NORMALIZED_SPAN = NORMALIZED_MAX - NORMALIZED_MIN  # 1.0
 #   ss_flow_img_dit_L_16l8.resolution = 16, SparseStructureDecoder 가 UpsampleBlock3d
 #   2개로 ×4 → coords ∈ [0, 64). slat_flow.in_channels = 8, coords shape (N,4)[b,x,y,z].
 VOXEL_RES = 64
-CHUNK_SIZE = 8
-CHUNK_GRID_RES = VOXEL_RES // CHUNK_SIZE  # 8  → 8³ = 512 슬롯
+CHUNK_SIZE = 4                            # D75 — 8 에서 세분화 (위 "왜 4로 바꿨는가")
+CHUNK_GRID_RES = VOXEL_RES // CHUNK_SIZE  # 16 → 16³ = 4,096 슬롯
 
 # SLat 채널 수. RePaint 주입 시 feats shape 검증에 쓴다.
 SLAT_CHANNELS = 8
@@ -72,10 +99,24 @@ SLAT_CHANNELS = 8
 # 하므로 메시 격자가 몇이든 무관하다. 그럼에도 상수로 박아두는 이유는 두 가지다:
 #   1) 정수 정합성 — MESH_RES 가 VOXEL_RES 의 배수가 아니면 "마스크 복셀 1개"가
 #      메시 셀 경계와 어긋나 halo 계산이 흔들린다. 아래 assert 로 강제한다.
-#   2) 해석 — 마스크 복셀 1개 = 메시 셀 4³ 개, 청크 1개 = 메시 셀 32³ 개.
+#   2) 해석 — 마스크 복셀 1개 = 메시 셀 4³ 개, 청크 1개 = 메시 셀 16³ 개.
 #      halo_margin_voxels=1 은 실제로는 메시 셀 4칸짜리 완충대라는 뜻이다.
 MESH_RES = 256
 MESH_CELLS_PER_VOXEL = MESH_RES // VOXEL_RES  # 4
+
+# 🔴 D75 의 딸림 결과 — **halo 기본값이 1 로는 부족해졌다.**
+#
+# 부기는 "움직인 복셀을 halo 만큼 부풀려 청크로 옮긴 것"이다. 청크가 8복셀이던
+# 시절에는 1복셀 부풀림이 경계 넘김을 덮었는데, 4복셀로 잘게 쪼개니 같은 부풀림이
+# 더 적은 청크를 덮는다. conformance 픽스처(토러스 국소 편집) 실측:
+#
+#     halo=1 → 해시가 바뀐 114청크 중 **6개를 놓친다**
+#     halo=2 → 0개.  halo=3,4 도 0개 (부기만 커진다)
+#
+# ⚠️ 이 2 는 **한 픽스처에서 잰 값이다.** 유도한 법칙이 아니다 (D39-a: 점이 모이기
+#    전에 문턱을 정하지 않는다). 자산이 바뀌면 다시 재고, 놓치면 키운다.
+#    놓치는 쪽만 사고다 — 넓게 잡으면 전송량만 손해다.
+DEFAULT_HALO_VOXELS = 2
 
 assert VOXEL_RES % CHUNK_SIZE == 0, "CHUNK_SIZE 는 VOXEL_RES 를 나누어떨어져야 한다"
 assert MESH_RES % VOXEL_RES == 0, "MESH_RES 는 VOXEL_RES 의 배수여야 한다"

@@ -59,8 +59,11 @@ namespace DeltaContract
         public const float NormalizedMin = -0.5f;
         public const float NormalizedMax = 0.5f;
         public const int VoxelRes = 64;
-        public const int ChunkSize = 8;
-        public const int ChunkGridRes = 8;   // VoxelRes / ChunkSize
+        // 🔴 D75 — 8 → 4. **둘 다 리터럴이다** (주석은 나눗셈처럼 보이지만 계산이 아니다).
+        //    하나만 고치면 어긋나고 런타임에만 드러나므로, conformance 의
+        //    `mirror_check` 가 이제 **값까지** 파이썬 CONTRACT_CONSTANTS 와 대조한다.
+        public const int ChunkSize = 4;
+        public const int ChunkGridRes = 16;  // VoxelRes / ChunkSize (계산이 아니라 리터럴)
         public const int PositionQuantBits = 20;
 
         /// <summary>
@@ -230,7 +233,8 @@ namespace DeltaContract
         [JsonProperty("bbox_min", NullValueHandling = NullValueHandling.Ignore)] public float[] BboxMin;
         [JsonProperty("bbox_max", NullValueHandling = NullValueHandling.Ignore)] public float[] BboxMax;
         [JsonProperty("voxels",   NullValueHandling = NullValueHandling.Ignore)] public List<int[]> Voxels;
-        [JsonProperty("halo_margin_voxels")]  public int HaloMarginVoxels = 1;
+        // 🔴 D75 에서 1 → 2 (청크 4복셀). 실측: halo=1 이 바뀐 청크를 놓친다.
+        [JsonProperty("halo_margin_voxels")]  public int HaloMarginVoxels = 2;
 
         /// <summary>🔴 3.26.0 (D28-a) — 이 셀들이 어느 격자에서 나왔는가.
         /// "slat_coords"(정본) 또는 "surface_voxelize"(진단용). <b>mode="voxels" 에서는
@@ -242,7 +246,7 @@ namespace DeltaContract
         /// <param name="gridSource">라쏘(SlatLassoPicker) 산출물이면 "slat_coords".
         /// 기본값을 두지 않는 것이 요점이다 — 부르는 쪽이 매번 답하게 한다.</param>
         public static EditMask FromVoxels(
-            IEnumerable<UnityEngine.Vector3Int> cells, string gridSource, int halo = 1)
+            IEnumerable<UnityEngine.Vector3Int> cells, string gridSource, int halo = 2)
         {
             if (string.IsNullOrEmpty(gridSource))
                 throw new ArgumentException(
