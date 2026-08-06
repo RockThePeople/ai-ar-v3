@@ -60,3 +60,28 @@ def test_no_host_or_port_leaks_into_the_message():
     assert not re.search(r"\d{1,3}(\.\d{1,3}){3}", msg), f"IP 가 샜다: {msg}"
     assert "://" not in msg, f"URL 이 샜다: {msg}"
     assert "<EDIT_HOST>" in msg, "출처 표기가 자리표시여야 한다"
+
+
+def test_connect_error_is_an_upstream_reason_not_internal():
+    """🔴 상대가 내려가 있는 것을 'INTERNAL' 로 내면 화면이 '서버 버그' 라고 말한다.
+
+    고칠 사람이 다르다 (D71). 그리고 httpx 메시지에는 URL 이 들어갈 수 있어
+    **예외 종류만** 쓴다 (§7).
+    """
+    import re
+
+    import httpx
+    import pytest
+
+    from server.upstreamerr import UpstreamError, upstream_call
+
+    def boom():
+        raise httpx.ConnectError("[Errno 111] refused",
+                                 request=httpx.Request("POST", "http://10.1.2.3:9999/x"))
+
+    with pytest.raises(UpstreamError) as e:
+        upstream_call(boom, action="편집 제출")
+    assert e.value.error_code == "UPSTREAM_UNREACHABLE"
+    msg = str(e.value)
+    assert not re.search(r"\d{1,3}(\.\d{1,3}){3}", msg), f"IP 가 샜다: {msg}"
+    assert "://" not in msg
