@@ -22,6 +22,19 @@ if [ ! -d "$PROJ/Assets" ]; then
   cp -R "$V2/Packages" "$PROJ/Packages"
   cp -R "$V2/ProjectSettings" "$PROJ/ProjectSettings"
 fi
+# 🔴 XR 설정(ARCore 로더)이 없으면 AR 세션이 아예 안 뜬다 — 그런데 예외는 안 나고
+#    "평면을 못 찾는다" 로만 보인다. v2 가 이미 구성해 둔 것을 가져온다.
+# ⚠️ 디렉터리 유무로 판단하면 안 된다 — Unity 가 XR 패키지 때문에 **껍데기만** 만들어 두고,
+#    그러면 cp 가 건너뛰어 **ARCore 로더가 빠진 채** 빌드된다. 파일 단위로 채운다.
+mkdir -p "$PROJ/Assets/XR"
+for item in Loaders Settings XRGeneralSettingsPerBuildTarget.asset XRGeneralSettingsPerBuildTarget.asset.meta; do
+  [ -e "$PROJ/Assets/XR/$item" ] || cp -R "$V2/Assets/XR/$item" "$PROJ/Assets/XR/" 2>/dev/null
+done
+if [ -f "$PROJ/Assets/XR/Loaders/ARCoreLoader.asset" ]; then
+  echo "XR ok — ARCore 로더 있음"
+else
+  echo "❌ ARCore 로더가 없다 — AR 세션이 안 뜨고 '평면을 못 찾는다' 로만 보인다" >&2; exit 2
+fi
 
 # 리포 파일은 **심링크**. 복사하면 드리프트한다.
 ln -sf "$REPO/contract/unity/LassoVolume.cs"      "$PROJ/Assets/DeltaContract/LassoVolume.cs"
@@ -32,12 +45,16 @@ ln -sf "$REPO/contract/unity/ChunkBin.cs"         "$PROJ/Assets/DeltaContract/Ch
 ln -sf "$REPO/contract/unity/ChunkContracts.cs"   "$PROJ/Assets/DeltaContract/ChunkContracts.cs"
 ln -sf "$REPO/unity/Runtime/SlatLassoPicker.cs"   "$PROJ/Assets/DeltaContract/SlatLassoPicker.cs"
 ln -sf "$REPO/unity/Runtime/VoxelFrame.cs"        "$PROJ/Assets/DeltaContract/VoxelFrame.cs"
+ln -sf "$REPO/unity/Runtime/AssetScale.cs"       "$PROJ/Assets/DeltaContract/AssetScale.cs"
+ln -sf "$REPO/unity/Runtime/ArPlacement.cs"      "$PROJ/Assets/DeltaContract/ArPlacement.cs"
+ln -sf "$REPO/unity/Runtime/PlaneOutline.cs"     "$PROJ/Assets/DeltaContract/PlaneOutline.cs"
 ln -sf "$REPO/unity/Runtime/LassoCase.cs"         "$PROJ/Assets/DeltaContract/LassoCase.cs"
 ln -sf "$REPO/unity/Runtime/LassoEditApp.cs"       "$PROJ/Assets/DeltaContract/LassoEditApp.cs"
 # ChunkSceneApplier·TouchLassoController 는 **앱에서 걷어냈다** (W23).
 #   in-place 계측 하네스는 unity_inplace_check.sh 쪽에 그대로 남아 있다.
 ln -sf "$REPO/unity/Editor/V3AppBuild.cs"         "$PROJ/Assets/Editor/V3AppBuild.cs"
 ln -sf "$REPO/unity/Runtime/ChunkSurface.shader"  "$PROJ/Assets/DeltaContract/ChunkSurface.shader"
+ln -sf "$REPO/unity/Runtime/PlaneLine.shader"     "$PROJ/Assets/DeltaContract/PlaneLine.shader"
 
 # 🔴 자산 기하 — 이게 없으면 화면에 **아무것도 안 뜬다** (좌표만으로는 안 보인다)
 # 🔴 W25 — 기본값이 **리포 밖**(`$REPO/../.inplace`)을 가리키고 있었다. 그 결과
@@ -67,6 +84,14 @@ CASE_SRC="${V3_CASE_DIR:-${TMPDIR:-/tmp}/lasso-unity/Cases}/$CASE"
 [ -f "$CASE_SRC" ] || { echo "케이스가 없다: $CASE_SRC" >&2; exit 2; }
 cp "$CASE_SRC" "$PROJ/Assets/StreamingAssets/$CASE"
 echo "케이스 $CASE ($(wc -l < "$CASE_SRC") 줄) → StreamingAssets"
+
+# 🔴 clean 빌드 — `ARCoreBuildProcessor` 는 매니페스트 태그를 **추가만** 한다.
+#    그래픽 API·ARCore requirement 를 바꿔도 **낡은 태그가 살아남는다** (§5).
+#    OpenGLES3 전환(W26c) 이후 세 웨이브째 미결이던 항목이다.
+if [ "${V3_CLEAN:-0}" = "1" ]; then
+  echo "clean 빌드 — Library/ · Builds/ 를 지운다"
+  rm -rf "$PROJ/Library" "$PROJ/Builds" "$PROJ/Temp"
+fi
 
 # ── ② 빌드 (V3_SKIP_BUILD=1 이면 기존 APK 를 그대로 쓴다)
 if [ "${V3_SKIP_BUILD:-0}" != "1" ]; then
