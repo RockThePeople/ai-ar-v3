@@ -597,6 +597,35 @@ def test_edit_mask_validation():
 
 
 @needs_schemas
+def test_idempotency_key_is_required_on_work_creating_requests():
+    """🔴 3.27.0 (결정 5) — 연산을 만드는 요청은 멱등 키를 **반드시** 싣는다.
+
+    계약이 Optional 인데 구현이 필수면 어느 쪽이 진실인지 매번 확인해야 한다
+    (`manifest.v99 → 200` 과 같은 계열). 그리고 **서버가 지어내면 안 된다** —
+    이 필드는 연산을 식별하므로(3.7.1), 서버 발급은 같은 요청 두 번이 다른 슬롯을
+    가져가게 만들고 그때 멱등성은 **예외 없이** 사라진다.
+
+    ⚠️ 응답인 `JobStatus.idempotency_key` 는 Optional 그대로다 — 그건 에코이지 입력이 아니다.
+    """
+    from deltacontract.schemas import AssembleRequest, EditMask, EditRequest, JobStatus
+
+    mask = EditMask(mode="voxels", voxels=[(1, 2, 3)], grid_source="slat_coords")
+    with pytest.raises(ValueError, match="idempotency_key"):
+        EditRequest(session_id="s", base_version=1, raw_prompt="x", mask=mask)
+
+    ok = EditRequest(session_id="s", base_version=1, raw_prompt="x", mask=mask,
+                     idempotency_key="deadbeefdeadbeef")
+    assert ok.idempotency_key == "deadbeefdeadbeef"
+
+    # 조립도 연산이다 — 같은 규칙을 받는다.
+    assert "idempotency_key" in AssembleRequest.model_fields
+    assert AssembleRequest.model_fields["idempotency_key"].is_required()
+
+    # 응답은 그대로 Optional (에코).
+    assert not JobStatus.model_fields["idempotency_key"].is_required()
+
+
+@needs_schemas
 def test_slat_coords_response():
     """`GET /v2/assets/{id}/slat_coords.v{n}.json` — 라쏘가 투영할 대상 (3.26.0)."""
     from deltacontract import mask_fingerprint, parse_slat_coords_uri, slat_coords_uri

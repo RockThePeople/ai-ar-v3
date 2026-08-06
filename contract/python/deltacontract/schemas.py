@@ -439,7 +439,20 @@ class EditRequest(BaseModel):
     #
     # 마스크 지문은 `coords.mask_fingerprint()` 를 쓴다 — 직렬화를 손으로 정하면
     # 클라이언트와 서버가 조용히 갈린다 (3.14.0 에서 실제로 갈렸다).
-    idempotency_key: Optional[str] = None
+    #
+    # 🔴 3.27.0 (결정 5) — **Optional 에서 필수로 올린다.**
+    #
+    # 계약은 Optional 인데 구현은 없으면 못 돈다 (슬롯·재생색인·job 기록이 전부 이 키다).
+    # 그 어긋남이 `manifest.v99 → 200` 과 같은 계열이다 — 문서가 허용한 입력을 구현이
+    # 거부하거나 그 반대이면, **어느 쪽이 진실인지 매번 확인해야 한다.**
+    #
+    # 그리고 서버가 지어내면 안 된다: 이 필드는 **연산을 식별한다**(3.7.1).
+    # 서버가 발급하면 같은 요청 두 번이 **다른 슬롯**을 가져가고, 그때 멱등성은
+    # 예외 없이 사라진다 — 재시도가 GPU 재계산이 되고 아무도 모른다.
+    #
+    # ⚠️ 필수로 올리면서 **함수를 같이 준다**: `server.editreq.derive_idempotency_key()`.
+    #    규칙만 적고 함수를 안 주면 그 규칙은 안 지켜진다 (이 리포에서 세 번 반복됐다).
+    idempotency_key: str
 
 
 JobState = Literal["queued", "running", "succeeded", "failed"]
@@ -470,7 +483,8 @@ class AssembleRequest(BaseModel):
     offset: Optional[Tuple[int, int, int]] = None
     # 대상에서 **비울** 영역. 기증자 위치를 정하는 것이 아니다 (§53).
     mask: EditMask
-    idempotency_key: Optional[str] = None
+    # 🔴 3.27.0 — EditRequest 와 같은 이유로 필수다 (결정 5). 조립도 연산이다.
+    idempotency_key: str
 
 
 class JobStatus(BaseModel):
