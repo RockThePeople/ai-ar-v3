@@ -40,15 +40,18 @@ from .contractguard import UpstreamContractMismatch  # noqa: F401  (라우트가
 
 
 # ══════════════════════════════════════════════════════════ ① 생성
-def _source_png(req: GenerateRequest) -> bytes:
-    """prompt → RGBA. t2i 체인은 리포 밖 conda 환경이라 아직 배선하지 않았다.
+def _source_png(req: GenerateRequest, progress) -> bytes:
+    """prompt → RGBA. `server/t2i.py` 가 conda 경계를 subprocess 로 넘는다.
 
-    ⚠️ 없는 것을 있는 척하지 않는다. 이번 웨이브의 대상은 **가드**이고, 가드는
-       `server/generate.py` 에 서 있어 이미지가 들어오는 순간부터 동작한다.
+    ⚠️ 실패하면 **자리표시를 내지 않는다.** 빈 이미지를 넘기면 그 뒤 파이프라인이
+       전부 정상 동작하면서 다른 물체를 만든다 — 예외가 안 나는 실패다.
     """
-    raise NotImplementedError(
-        "t2i 배선이 아직 없다 (Z-Image·BiRefNet 은 리포 밖 conda 환경이다). "
-        "계약 가드는 이미 산출 바이트 검증으로 서 있다")
+    from .t2i import render_rgba
+
+    progress(0.02, "t2i", "prompt → RGBA")
+    data, timing = render_rgba(req.raw_prompt, seed=req.seed)
+    progress(0.12, "t2i", f"RGBA {len(data):,}B · {timing}")
+    return data
 
 
 @router.post("/v2/assets", response_model=JobStatus)
@@ -60,8 +63,8 @@ def create_asset(req: GenerateRequest) -> JobStatus:
 
         # 🔴 사전 점검(헬스 조회)을 하지 않는다. 선언은 증거가 아니다 —
         #    받은 바이트를 **저장 직전에** 검증한다 (server/generate.py).
-        return run_generate(job.asset_id or f"v3-{job.job_id}",
-                            _source_png(req), req.seed, progress)
+        asset_id = f"v3-{job.job_id}"
+        return run_generate(asset_id, _source_png(req, progress), req.seed, progress)
 
     JOBS.run(job.job_id, work)
     return job
