@@ -26,6 +26,10 @@ fi
 # 리포 파일은 **심링크**. 복사하면 드리프트한다.
 ln -sf "$REPO/contract/unity/LassoVolume.cs"      "$PROJ/Assets/DeltaContract/LassoVolume.cs"
 ln -sf "$REPO/contract/unity/ChunkBin.cs"         "$PROJ/Assets/DeltaContract/ChunkBin.cs"
+# 🔴 계약 상수(DeltaConstants)는 **복제하지 않는다.** 미러 파일을 그대로 링크한다 —
+#    v4 에서 CHUNK_SIZE 가 8 → 4 로 바뀌었고, 앱이 제 값을 들고 있으면 조용히 어긋난다.
+#    (Newtonsoft 는 프로젝트 매니페스트에 이미 있다)
+ln -sf "$REPO/contract/unity/ChunkContracts.cs"   "$PROJ/Assets/DeltaContract/ChunkContracts.cs"
 ln -sf "$REPO/unity/Runtime/SlatLassoPicker.cs"   "$PROJ/Assets/DeltaContract/SlatLassoPicker.cs"
 ln -sf "$REPO/unity/Runtime/VoxelFrame.cs"        "$PROJ/Assets/DeltaContract/VoxelFrame.cs"
 ln -sf "$REPO/unity/Runtime/LassoCase.cs"         "$PROJ/Assets/DeltaContract/LassoCase.cs"
