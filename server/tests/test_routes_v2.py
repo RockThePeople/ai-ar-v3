@@ -29,6 +29,20 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 ASSET = "v3-moto-b"
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _no_execution():
+    """라우트 접수만 잰다 — 잡 실행은 GPU·LLM 을 태운다."""
+    import os
+
+    old = os.environ.get("JOBS_EXECUTE")
+    os.environ["JOBS_EXECUTE"] = "0"
+    yield
+    if old is None:
+        os.environ.pop("JOBS_EXECUTE", None)
+    else:
+        os.environ["JOBS_EXECUTE"] = old
+
+
 @pytest.fixture(scope="module")
 def client():
     from server.skeleton import app
@@ -112,23 +126,30 @@ def test_edit_without_grid_source_is_422(client, mask_body):
 
 
 @needs_assets
-def test_edit_with_surface_grid_source_is_422(client, mask_body):
-    """진단용 격자(surface_voxelize)로 만든 마스크는 편집에 못 쓴다 (D28)."""
+def test_surface_grid_source_is_refused_before_any_edit_runs(client, mask_body):
+    """진단용 격자(surface_voxelize)로 만든 마스크는 편집에 못 쓴다 (D28).
+
+    ⚠️ 잡을 돌려서 확인하지 않는다 — 그러면 GPU·LLM 을 태우고, 비동기라 타이밍에
+       기대게 된다. 방어가 **동기 지점**에 있는지를 직접 잰다: 스키마가 막거나,
+       `build_mask(...).require_slat_grid()` 가 막거나 둘 중 하나여야 한다.
+    """
+    import numpy as np
+
+    from server.pipeline.frames import assert_slat_grid
+    from server.pipeline.mask import build_mask
+
     r = client.post(f"/v2/assets/{ASSET}/edits", json={
         "session_id": "t", "base_version": 1, "raw_prompt": "뒷바퀴를 파랑으로",
         "mask": {**mask_body, "grid_source": "surface_voxelize"}})
-    # 스키마가 통과시키면 `require_slat_grid()` 가 잡는다 — 둘 중 하나는 막아야 한다.
-    assert r.status_code in (200, 422)
-    if r.status_code == 200:
-        job = client.get(f"/v2/jobs/{r.json()['job_id']}").json()
-        for _ in range(40):
-            if job["state"] in ("succeeded", "failed"):
-                break
-            import time
+    if r.status_code == 422:
+        return                                    # 스키마가 막았다
 
-            time.sleep(0.25)
-            job = client.get(f"/v2/jobs/{r.json()['job_id']}").json()
-        assert job["state"] == "failed", "진단용 격자가 편집을 통과했다"
+    # 스키마가 통과시켰다면 편집 경로의 방어가 반드시 막아야 한다.
+    m = build_mask(np.asarray(mask_body["voxels"], dtype=np.int64),
+                   halo=1, grid_source="surface_voxelize")
+    with pytest.raises(Exception) as e:
+        m.require_slat_grid("테스트")
+    assert "slat" in str(e.value).lower()
 
 
 @needs_assets
