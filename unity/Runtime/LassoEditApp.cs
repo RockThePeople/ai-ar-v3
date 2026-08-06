@@ -56,8 +56,21 @@ namespace DeltaContract
         // ── 보기
         float _orbit = 180f, _pitch = 12f, _dist = 4.0f;   // 측면 시작 (골든과 같은 방향)
         Vector2 _lastDrag; bool _dragging;
-        MaterialPropertyBlock _mpb;
-        static readonly int TintId = Shader.PropertyToID("_Tint");
+        // 🔴 선택 표시는 **Texture3D 마스크**다 (64³ R8). 청크 틴트도 큐브도 아니다 —
+        //    사용자 확정: "평소엔 복셀이 안 보이고, 선택하면 그 볼륨이 하이라이트로".
+        //    셰이더가 복셀 격자와 1:1 로 샘플링하므로 경계가 복셀 단위로 선다.
+        Texture3D _selMask;
+        byte[] _maskBytes;
+        bool _maskDirty;
+        static readonly int SelMaskId = Shader.PropertyToID("_SelMask");
+        static readonly int SelMaskOnId = Shader.PropertyToID("_SelMaskOn");
+
+        // 되돌리기 — 라쏘 **한 획씩**과 전체 초기화 둘 다 둔다 (명세에 없는 항목).
+        //   지우개로만 되돌리게 하면 크게 잘못 잡았을 때 손해가 너무 크다.
+        readonly List<List<Vector3Int>> _undo = new List<List<Vector3Int>>();
+
+        TouchScreenKeyboard _kb;      // 🔴 IMGUI TextField 는 안드로이드에서 키보드를 안 띄운다
+        int _kbTarget;                // 1 = 생성 프롬프트, 2 = 편집 프롬프트
 
         // 🔴 D9 변환은 `VoxelFrame` 하나뿐이다. 판정용 slat 좌표도 표시용 `.cbin`
         //    정점도 같은 함수를 탄다 — 다르면 화면과 판정이 갈리고 예외가 안 난다 (W22).
@@ -66,8 +79,8 @@ namespace DeltaContract
 
         void Start()
         {
-            _mpb = new MaterialPropertyBlock();
             _root = new GameObject("asset").transform;
+            InitMask();
             LoadCoords();
             LoadChunks();
             AimCamera();
@@ -149,6 +162,7 @@ namespace DeltaContract
         // ══════════════════════════ 입력
         void Update()
         {
+            PumpKeyboard();
             if (Input.touchCount == 0) { _dragging = false; return; }
             var t = Input.GetTouch(0);
             if (t.position.y > Screen.height - 300f || t.position.y < 260f) return;  // UI 영역
@@ -198,13 +212,16 @@ namespace DeltaContract
 
             var r = SlatLassoPicker.Pick(_coords, _stroke, project, viewDir);
             int before = _selected.Count;
-            foreach (var c in r.Cells) _selected.Add(c);      // 다시 그리면 **더한다**
+            var addedNow = new List<Vector3Int>();
+            foreach (var c in r.Cells)
+                if (_selected.Add(c)) addedNow.Add(c);        // 다시 그리면 **더한다**
+            if (addedNow.Count > 0) _undo.Add(addedNow);      // 한 획 = 되돌리기 한 단계
 
             _dev = $"라쏘 +{_selected.Count - before} · 폴리곤안 {r.InPolygon} · " +
                    $"압출 +{r.SolidifyAdded}/-{r.IntersectRemoved} · 축 {r.DominantAxis}\n" +
                    $"지문 {SlatLassoPicker.MaskFingerprint(SelectedList())}";
             Debug.Log($"{Tag} 라쏘 +{_selected.Count - before} → 선택 {_selected.Count}");
-            Retint();
+            RebuildMask();
         }
 
         // ══════════════════════════ 지우개 — **궤적**을 지운다 (영역이 아니다)
@@ -224,28 +241,86 @@ namespace DeltaContract
                 if (dx * dx + dy * dy <= r2) doomed.Add(c);
             }
             foreach (var c in doomed) { _selected.Remove(c); removed++; }
-            if (removed > 0) { Debug.Log($"{Tag} 지우개 −{removed} → 선택 {_selected.Count}"); Retint(); }
+            if (removed > 0) { Debug.Log($"{Tag} 지우개 −{removed} → 선택 {_selected.Count}"); RebuildMask(); }
         }
 
-        // ══════════════════════════ 청크 틴트 — 복셀 → 청크는 voxel/8
-        void Retint()
+        // ══════════════════════════ 선택 마스크 (Texture3D)
+        void InitMask()
         {
-            var hit = new HashSet<string>();
-            // 🔴 청크 크기를 손으로 적지 않는다 — D75 에서 8 → 4 로 바뀌었고,
-            //    여기 8 이 남아 있었으면 **틴트만 조용히 엉뚱한 청크를 칠했다.**
-            int cs = DeltaConstants.ChunkSize;
-            foreach (var c in _selected) hit.Add($"{c.x / cs}_{c.y / cs}_{c.z / cs}");
-            foreach (var kv in _chunkRenderers)
+            int res = DeltaConstants.VoxelRes;
+            _selMask = new Texture3D(res, res, res, TextureFormat.R8, false)
             {
-                _mpb.Clear();
-                _mpb.SetColor(TintId, hit.Contains(kv.Key)
-                    ? new Color(1.0f, 0.45f, 0.1f, 1f)        // 선택된 청크
-                    : Color.white);
-                kv.Value.SetPropertyBlock(_mpb);
+                filterMode = FilterMode.Point,    // 복셀 경계를 뭉개지 않는다
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            _maskBytes = new byte[res * res * res];
+            PushMask();
+            Shader.SetGlobalFloat(SelMaskOnId, 1f);
+        }
+
+        void PushMask()
+        {
+            _selMask.SetPixelData(_maskBytes, 0);
+            _selMask.Apply(false, false);
+            Shader.SetGlobalTexture(SelMaskId, _selMask);
+        }
+
+        /// <summary>선택 집합 → 마스크 바이트. 바뀐 프레임에만 올린다.</summary>
+        void RebuildMask()
+        {
+            int res = DeltaConstants.VoxelRes;
+            System.Array.Clear(_maskBytes, 0, _maskBytes.Length);
+            foreach (var c in _selected)
+            {
+                if (c.x < 0 || c.y < 0 || c.z < 0) continue;
+                if (c.x >= res || c.y >= res || c.z >= res) continue;
+                _maskBytes[c.x + res * (c.y + res * c.z)] = 255;
             }
+            _maskDirty = true;
+            RecountChunks();
+        }
+
+        /// <summary>선택이 걸친 청크 수 — 사람이 오염을 판단할 근거로 계속 보여 준다.</summary>
+        void RecountChunks()
+        {
+            // 🔴 청크 크기를 손으로 적지 않는다. v4 에서 8 → 4 로 바뀌었다 (D75).
+            int cs = DeltaConstants.ChunkSize;
+            var hit = new HashSet<int>();
+            int g = DeltaConstants.ChunkGridRes;
+            foreach (var c in _selected)
+                hit.Add((c.x / cs) + g * ((c.y / cs) + g * (c.z / cs)));
             _tintedChunks = hit.Count;
         }
+
+        void LateUpdate()
+        {
+            if (!_maskDirty) return;
+            PushMask();
+            _maskDirty = false;
+        }
+
+        // ══════════════════════════ (옛 청크 틴트는 걷어냈다 — 표면 하이라이트가 대신한다)
         int _tintedChunks;
+
+        /// <summary>라쏘 **한 획**을 되돌린다. 지우개로 이미 빠진 셀은 건너뛴다.</summary>
+        void UndoStroke()
+        {
+            if (_undo.Count == 0) return;
+            var last = _undo[_undo.Count - 1];
+            _undo.RemoveAt(_undo.Count - 1);
+            int n = 0;
+            foreach (var c in last) if (_selected.Remove(c)) n++;
+            Debug.Log($"{Tag} 되돌리기 −{n} → 선택 {_selected.Count} (남은 획 {_undo.Count})");
+            RebuildMask();
+        }
+
+        void ClearSelection()
+        {
+            Debug.Log($"{Tag} 전체 해제 −{_selected.Count}");
+            _selected.Clear();
+            _undo.Clear();
+            RebuildMask();
+        }
 
         List<Vector3Int> SelectedList()
         {
@@ -253,6 +328,31 @@ namespace DeltaContract
         }
 
         // ══════════════════════════ UI
+        /// <summary>🔴 IMGUI `TextField` 는 안드로이드에서 **소프트 키보드를 안 띄운다.**
+        /// 창은 열리는데 글자가 안 들어가고 **예외는 안 난다** — W23 에서 실기로 확인했다.
+        /// 그래서 키보드를 직접 열고, 그 결과를 매 프레임 받아 적는다.</summary>
+        void OpenKeyboard(int target, string initial, string placeholder)
+        {
+            _kbTarget = target;
+            _kb = TouchScreenKeyboard.Open(initial ?? "", TouchScreenKeyboardType.Default,
+                                           false, false, false, false, placeholder);
+        }
+
+        void PumpKeyboard()
+        {
+            if (_kb == null) return;
+            if (_kbTarget == 1) _genPrompt = _kb.text;
+            else if (_kbTarget == 2) _editPrompt = _kb.text;
+
+            if (_kb.status == TouchScreenKeyboard.Status.Done
+                || _kb.status == TouchScreenKeyboard.Status.Canceled
+                || !TouchScreenKeyboard.visible)
+            {
+                Debug.Log($"{Tag} 키보드 닫힘 status={_kb.status} 길이={_kb.text.Length}");
+                _kb = null;
+            }
+        }
+
         void OnGUI()
         {
             float W = Screen.width, H = Screen.height;
@@ -262,7 +362,10 @@ namespace DeltaContract
             // ── 상단: 자연어 생성
             GUI.Box(new Rect(0, 0, W, 210), GUIContent.none);
             GUI.Label(new Rect(24, 12, W - 48, 40), "만들고 싶은 오브젝트를 말해라");
-            _genPrompt = GUI.TextField(new Rect(24, 56, W - 250, 76), _genPrompt);
+            if (GUI.Button(new Rect(24, 56, W - 250, 76),
+                           string.IsNullOrEmpty(_genPrompt) ? "  (탭해서 입력)" : "  " + _genPrompt,
+                           GUI.skin.textField))
+                OpenKeyboard(1, _genPrompt, "예: 빨간 오토바이");
             if (GUI.Button(new Rect(W - 214, 56, 190, 76), "생성"))
                 _notice = "생성 호출은 다음 웨이브다. 지금은 moto-b 를 이미 생성된 것으로 띄운다";
             GUI.Label(new Rect(24, 142, W - 48, 60),
@@ -289,8 +392,17 @@ namespace DeltaContract
                 {
                     _askEdit = _selected.Count > 0;
                     _notice = _selected.Count == 0 ? "먼저 라쏘로 범위를 잡아라" : "";
+                    if (_askEdit) OpenKeyboard(2, _editPrompt, "예: 이 바퀴를 주황색으로");
                 }
             }
+
+            // ── 되돌리기 (명세엔 없다. 지우개로만 되돌리면 크게 잘못 잡았을 때 손해가 크다)
+            using (new GUIEnabled(_editOn && _undo.Count > 0))
+                if (GUI.Button(new Rect(24, y - 100, 250, 84), $"되돌리기 ({_undo.Count})"))
+                    UndoStroke();
+            using (new GUIEnabled(_editOn && _selected.Count > 0))
+                if (GUI.Button(new Rect(290, y - 100, 250, 84), "전체 해제"))
+                    ClearSelection();
 
             GUI.Label(new Rect(24, H - 140, W - 260, 40),
                 _editOn ? (_eraserOn ? "지나간 궤적의 마스킹이 지워진다"
@@ -305,7 +417,10 @@ namespace DeltaContract
                 GUI.Box(box, GUIContent.none);
                 GUI.Label(new Rect(box.x + 24, box.y + 20, box.width - 48, 44),
                           $"선택 {_selected.Count} 셀 · 어떻게 수정할까");
-                _editPrompt = GUI.TextField(new Rect(box.x + 24, box.y + 82, box.width - 48, 90), _editPrompt);
+                if (GUI.Button(new Rect(box.x + 24, box.y + 82, box.width - 48, 90),
+                               string.IsNullOrEmpty(_editPrompt) ? "  (탭해서 입력)" : "  " + _editPrompt,
+                               GUI.skin.textField))
+                    OpenKeyboard(2, _editPrompt, "예: 이 바퀴를 주황색으로");
                 if (GUI.Button(new Rect(box.x + 24, box.y + 200, (box.width - 72) / 2, 90), "확인"))
                 {
                     _notice = $"“{_editPrompt}” — 전송은 다음 웨이브다";
