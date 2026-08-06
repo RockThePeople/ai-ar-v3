@@ -187,23 +187,56 @@ namespace DeltaContract
             var mat = new Material(Shader.Find("DeltaContract/ChunkSurface"));
             int verts = 0, got = 0, fail = 0; long bytes = 0;
             float t1 = Time.realtimeSinceStartup;
+
+            // 🔴 **병렬 수신.** 직렬이면 청크당 RTT 가 그대로 쌓인다 — 맥북 실측:
+            //      직렬 33.7ms/청크 (12.67s) → 병렬 8 이면 5.0ms/청크 (**1.86s · 6.8배**)
+            //    연결 수립 10ms · RTT+전송 16.5ms 로 갈렸던 그 값이 병렬에서 겹쳐 사라진다.
+            //    ⚠️ 한 번에 8을 넘기지 않는다 — 처음 잰 날 8 동시에서 타임아웃이 났다.
+            //       (서버가 병목을 없앤 뒤엔 재시도 0 이지만, 상한은 남겨 둔다)
+            const int Par = 8;
+            var pending = new List<UnityEngine.Networking.UnityWebRequest>(Par);
+            var pendKeys = new List<string>(Par);
+            var all = new List<string>(_manifest.Chunks.Keys);
+            var uriOf = new Dictionary<string, string>(all.Count);
             foreach (var kv in _manifest.Chunks)
-            {
-                string uri = (kv.Value != null && !string.IsNullOrEmpty(kv.Value.Uri))
+                uriOf[kv.Key] = (kv.Value != null && !string.IsNullOrEmpty(kv.Value.Uri))
                     ? ServerUrl + kv.Value.Uri
                     : $"{ServerUrl}/v2/assets/{AssetId}/chunks/{kv.Key}.v{AssetVersion}.cbin";
-                using (var req = UnityEngine.Networking.UnityWebRequest.Get(uri))
+
+            int next = 0;
+            while (next < all.Count || pending.Count > 0)
+            {
+                while (pending.Count < Par && next < all.Count)
                 {
-                    yield return req.SendWebRequest();
-                    if (req.result != UnityEngine.Networking.UnityWebRequest.Result.Success)
-                    { fail++; if (fail <= 3) Debug.LogError($"{Tag} 청크 실패 {kv.Key} {req.responseCode}"); continue; }
-                    var blob = req.downloadHandler.data; bytes += blob.Length;
-                    verts += SpawnChunk(kv.Key, blob, mat); got++;
+                    var k = all[next++];
+                    var rq = UnityEngine.Networking.UnityWebRequest.Get(uriOf[k]);
+                    rq.SendWebRequest();
+                    pending.Add(rq); pendKeys.Add(k);
+                }
+                yield return null;                       // 한 프레임 — 요청들이 동시에 난다
+                for (int i = pending.Count - 1; i >= 0; i--)
+                {
+                    if (!pending[i].isDone) continue;
+                    var rq = pending[i]; var key = pendKeys[i];
+                    if (rq.result == UnityEngine.Networking.UnityWebRequest.Result.Success)
+                    {
+                        var blob = rq.downloadHandler.data;
+                        bytes += blob.Length;
+                        verts += SpawnChunk(key, blob, mat);   // 메시 생성은 메인 스레드다
+                        got++;
+                    }
+                    else
+                    {
+                        fail++;
+                        if (fail <= 3) Debug.LogError($"{Tag} 청크 실패 {key} {rq.responseCode}");
+                    }
+                    rq.Dispose();
+                    pending.RemoveAt(i); pendKeys.RemoveAt(i);
                 }
             }
             float dt = Time.realtimeSinceStartup - t1;
             Debug.Log($"{Tag} HTTP 수신 {got}/{_manifest.Chunks.Count}청크 · 실패 {fail} · " +
-                      $"{bytes:N0}바이트 · {dt:F2}s · 정점 {verts:N0}");
+                      $"{bytes:N0}바이트 · {dt:F2}s · 병렬 {Par} · 청크당 {dt/System.Math.Max(1,got)*1000f:F1}ms · 정점 {verts:N0}");
             _notice = $"HTTP {got}청크 {dt:F1}s";
         }
 
