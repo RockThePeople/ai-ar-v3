@@ -74,7 +74,11 @@ Unity 가 서버를 부른 적이 **0회**다. 코드 전에 계약을 확정한
 
 ## 3. 폴링
 
-`JobStatus.state` ∈ `queued` · `running` · `succeeded` · `failed` · `cancelled`
+`JobStatus.state` ∈ `queued` · `running` · `succeeded` · `failed` — **넷이다.**
+
+🔴 **정정.** 이 문서는 처음에 `cancelled` 를 넣어 다섯이라 적었다. **틀렸다** — 계약을 안 열고 기억으로 썼다. `deltacontract.schemas.JobStatus` 의 Literal 은 넷이고, `server/tests/test_routes_v2.py::test_job_states_are_contract_literals` 가 그것을 계약에서 직접 읽어 잠근다.
+
+⚠️ **클라이언트가 `cancelled` 를 기다리면 영원히 안 온다.** 취소는 지금 계약에 없는 개념이다 — 필요하면 계약 변경으로 올려야 한다 (contract/ 는 맥북 담당).
 (+ `progress` 0..1 · `stage` · `stage_detail` · `error` · `error_code`).
 생성·편집 **같은 규약**이다.
 
