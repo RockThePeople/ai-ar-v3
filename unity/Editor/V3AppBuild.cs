@@ -14,6 +14,10 @@ using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEditor.XR.Management;
+using UnityEditor.XR.Management.Metadata;
+using UnityEngine.XR.Management;
+using ARCoreSettings = UnityEditor.XR.ARCore.ARCoreSettings;
 
 namespace DeltaContract.EditorTools
 {
@@ -28,6 +32,7 @@ namespace DeltaContract.EditorTools
 
             BuildScene(caseFile);
             ConfigurePlayer();
+            ConfigureXr();
 
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(apk)));
             var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
@@ -59,6 +64,7 @@ namespace DeltaContract.EditorTools
             // 🔴 런타임에 만드는 머티리얼의 셰이더는 씬이 참조하지 않아 **IL2CPP 에서
             //    스트립된다** — 그러면 메시가 shader=NULL 로 **안 보인다** (v2 실기 경험).
             IncludeShader("DeltaContract/ChunkSurface");
+            IncludeShader("DeltaContract/PlaneLine");   // 안 넣으면 선이 조용히 사라진다
 
             var go = new GameObject("LassoEditApp");
             var app = go.AddComponent<LassoEditApp>();
@@ -84,6 +90,62 @@ namespace DeltaContract.EditorTools
             arr.GetArrayElementAtIndex(arr.arraySize - 1).objectReferenceValue = shader;
             so.ApplyModifiedProperties();
             Debug.Log($"[V3AppBuild] Always Included 에 추가: {name}");
+        }
+
+        /// <summary>🔴 XR 로더를 **붙인다.** 이게 없으면 실기에서
+        ///
+        ///     "No active UnityEngine.XR.XRInputSubsystem ... valid loader configuration"
+        ///
+        /// 만 뜨고 **카메라 영상이 안 나온다.** 게다가 ARCore 매니페스트 병합이 안 돌아
+        /// **CAMERA 권한도 APK 에 안 들어간다** — 앱은 뜨는데 화면만 검다.
+        /// `Assets/XR` 애셋을 복사하는 것만으로는 부족하다. 로더 할당은 별개다.
+        /// (ai-ar-v2 의 ConfigureXrManagement 와 같은 원리. 필요한 것만 가져왔다)</summary>
+        static void ConfigureXr()
+        {
+            const string arCoreLoader = "UnityEngine.XR.ARCore.ARCoreLoader";
+            const string folder = "Assets/XR";
+            const string path = folder + "/XRGeneralSettingsPerBuildTarget.asset";
+
+            EditorBuildSettings.TryGetConfigObject(XRGeneralSettings.k_SettingsKey,
+                                                   out XRGeneralSettingsPerBuildTarget perTarget);
+            if (perTarget == null)
+            {
+                if (!AssetDatabase.IsValidFolder(folder)) AssetDatabase.CreateFolder("Assets", "XR");
+                perTarget = ScriptableObject.CreateInstance<XRGeneralSettingsPerBuildTarget>();
+                AssetDatabase.CreateAsset(perTarget, path);
+                AssetDatabase.SaveAssets();
+                EditorBuildSettings.AddConfigObject(XRGeneralSettings.k_SettingsKey, perTarget, true);
+            }
+
+            if (!perTarget.HasSettingsForBuildTarget(BuildTargetGroup.Android))
+                perTarget.CreateDefaultSettingsForBuildTarget(BuildTargetGroup.Android);
+            if (!perTarget.HasManagerSettingsForBuildTarget(BuildTargetGroup.Android))
+                perTarget.CreateDefaultManagerSettingsForBuildTarget(BuildTargetGroup.Android);
+
+            var settings = perTarget.SettingsForBuildTarget(BuildTargetGroup.Android);
+            var manager = perTarget.ManagerSettingsForBuildTarget(BuildTargetGroup.Android);
+            if (settings == null || manager == null)
+            {
+                Debug.LogError("[V3AppBuild] Android XR 설정을 만들지 못했다");
+                EditorApplication.Exit(1); return;
+            }
+
+            settings.InitManagerOnStart = true;        // 앱 시작 시 ARCore 초기화
+            if (!XRPackageMetadataStore.IsLoaderAssigned(arCoreLoader, BuildTargetGroup.Android))
+                if (!XRPackageMetadataStore.AssignLoader(manager, arCoreLoader, BuildTargetGroup.Android))
+                    Debug.LogError("[V3AppBuild] ARCore 로더 할당 실패");
+
+            EditorUtility.SetDirty(settings);
+            EditorUtility.SetDirty(manager);
+
+            var arcore = ARCoreSettings.GetOrCreateSettings();
+            arcore.requirement = ARCoreSettings.Requirement.Required;
+            EditorUtility.SetDirty(arcore);
+            AssetDatabase.SaveAssets();
+
+            bool ok = XRPackageMetadataStore.IsLoaderAssigned(arCoreLoader, BuildTargetGroup.Android);
+            Debug.Log($"[V3AppBuild] XR: ARCore 로더 할당={ok} · InitOnStart={settings.InitManagerOnStart}");
+            if (!ok) EditorApplication.Exit(1);
         }
 
         static void ConfigurePlayer()

@@ -72,6 +72,12 @@ namespace DeltaContract
         TouchScreenKeyboard _kb;      // 🔴 IMGUI TextField 는 안드로이드에서 키보드를 안 띄운다
         int _kbTarget;                // 1 = 생성 프롬프트, 2 = 편집 프롬프트
 
+        // 🔴 AR 배치. 라쏘(상시 드래그)와 배치 탭이 **같은 입력을 두고 싸운다** —
+        //    ai-ar-v2 가 "EDIT_ON 에서 빈 공간 탭 시 재배치" 로 물린 자리다.
+        //    모드를 배타적으로 나눈다: 배치 중에는 편집 입력을 아예 안 받는다.
+        ArPlacement _ar;
+        string _poseLog = "";
+
         // 🔴 D9 변환은 `VoxelFrame` 하나뿐이다. 판정용 slat 좌표도 표시용 `.cbin`
         //    정점도 같은 함수를 탄다 — 다르면 화면과 판정이 갈리고 예외가 안 난다 (W22).
         static Vector3 ToUnity(Vector3 v) => VoxelFrame.ToUnity(v);
@@ -81,6 +87,10 @@ namespace DeltaContract
         {
             _root = new GameObject("asset").transform;
             InitMask();
+
+            _ar = gameObject.AddComponent<ArPlacement>();
+            _ar.Initialize(Cam());
+            if (_ar.Content != null) _root.SetParent(_ar.Content, false);
             LoadCoords();
             LoadChunks();
             AimCamera();
@@ -140,6 +150,8 @@ namespace DeltaContract
 
         void AimCamera()
         {
+            // 🔴 AR 이면 카메라를 **우리가 옮기지 않는다.** 세션이 자세를 넣는다.
+            if (_ar != null && _ar.ArActive) return;
             var cam = Cam(); if (cam == null) return;
             cam.clearFlags = CameraClearFlags.SolidColor;
             cam.backgroundColor = Color.white;
@@ -167,19 +179,12 @@ namespace DeltaContract
             var t = Input.GetTouch(0);
             if (t.position.y > Screen.height - 300f || t.position.y < 260f) return;  // UI 영역
 
-            // ✏️ off → 보기만. 손가락은 **시점 회전**에 쓴다.
-            if (!_editOn)
-            {
-                if (t.phase == TouchPhase.Began) { _lastDrag = t.position; _dragging = true; }
-                else if (t.phase == TouchPhase.Moved && _dragging)
-                {
-                    var d = t.position - _lastDrag; _lastDrag = t.position;
-                    _orbit -= d.x * 0.25f;
-                    _pitch = Mathf.Clamp(_pitch + d.y * 0.15f, -70f, 70f);
-                    PlaceCamera();
-                }
-                return;
-            }
+            // 🔴 **손가락 회전을 뺐다** (사용자 지시 · W26b).
+            //    "실제로 사람이 움직이며 봐야 함. 즉 Anchoring 할 것."
+            //    이건 기능 삭제가 아니라 **검증 장치**다 — 손가락으로 돌릴 수 있으면
+            //    앵커링이 진짜인지 화면에서 구분이 안 된다.
+            //    **회전이 없는데도 걸어가면 반대편이 보인다** 가 (D) 의 증명이다.
+            if (!_editOn) return;
 
             switch (t.phase)
             {
@@ -372,6 +377,17 @@ namespace DeltaContract
                 $"선택 {_selected.Count} 셀 · 청크 {_tintedChunks}" +
                 (string.IsNullOrEmpty(_notice) ? "" : "   " + _notice));
 
+            // 🔴 AR 상태를 **항상** 보인다. 폴백인 줄 모르고 "AR 됐다" 고 하지 않게.
+            if (_ar != null)
+            {
+                var prev = GUI.color;
+                GUI.color = _ar.ArActive ? Color.white : new Color(1f, 0.55f, 0.2f);
+                GUI.Label(new Rect(24, 198, W - 48, 46), _ar.Status);
+                GUI.color = prev;
+                if (!string.IsNullOrEmpty(_poseLog))
+                    GUI.Label(new Rect(24, 244, W - 48, 46), _poseLog);
+            }
+
             // ── 하단 도구
             float y = H - 250;
             bool edit = GUI.Toggle(new Rect(24, y, 250, 90), _editOn,
@@ -407,8 +423,16 @@ namespace DeltaContract
             GUI.Label(new Rect(24, H - 140, W - 260, 40),
                 _editOn ? (_eraserOn ? "지나간 궤적의 마스킹이 지워진다"
                                      : "라쏘로 감싸면 볼륨이 선택된다 (다시 그리면 더해진다)")
-                        : "손가락으로 돌려 본다. [편집] 을 켜면 라쏘");
+                        : "걸어서 둘러봐라 — 화면을 돌리지 않는다. [편집] 을 켜면 라쏘");
             _devOn = GUI.Toggle(new Rect(W - 230, H - 150, 210, 60), _devOn, " 개발자");
+
+            // 재배치는 **명시적 버튼으로만** 연다 (라쏘 드래그가 배치를 건드리지 않게)
+            if (_ar != null && _ar.CurrentMode == ArPlacement.Mode.Placed)
+                if (GUI.Button(new Rect(W - 470, H - 152, 230, 66), "재배치"))
+                {
+                    _editOn = false; _eraserOn = false;      // 편집을 끄고 배치로 넘어간다
+                    _ar.BeginRelocate();
+                }
 
             // ── 편집 자연어 입력창
             if (_askEdit)
@@ -425,6 +449,13 @@ namespace DeltaContract
                 {
                     _notice = $"“{_editPrompt}” — 전송은 다음 웨이브다";
                     Debug.Log($"{Tag} 편집 지시 «{_editPrompt}» · 선택 {_selected.Count}셀");
+                    // ★ (C) in-place 의 AR 쪽 절반 — 편집을 거친 뒤 앵커가 그대로인가.
+                    if (_ar != null)
+                    {
+                        var (dp, dr) = _ar.PoseDelta();
+                        _poseLog = $"앵커 델타 {dp * 1000f:F2}mm / {dr:F3}°";
+                        Debug.Log($"{Tag} POSE-DELTA {_poseLog} · {_ar.AnchorInfo()}");
+                    }
                     _askEdit = false;
                 }
                 if (GUI.Button(new Rect(box.x + 48 + (box.width - 72) / 2, box.y + 200, (box.width - 72) / 2, 90), "취소"))
@@ -432,8 +463,10 @@ namespace DeltaContract
             }
 
             if (_devOn)
-                GUI.Label(new Rect(24, 220, W - 48, 200),
-                          $"복셀 {_coords.Count} · 청크 {_chunkRenderers.Count}\n{_dev}");
+                GUI.Label(new Rect(24, 296, W - 48, 220),
+                          $"복셀 {_coords.Count} · 청크 {_chunkRenderers.Count} · " +
+                          $"스케일 {AssetScale.FootprintMeters}m · 평면 {(_ar != null ? _ar.PlaneCount : 0)}\n" +
+                          $"{(_ar != null ? _ar.AnchorInfo() : "")}\n{_dev}");
 
             DrawStroke();
         }
