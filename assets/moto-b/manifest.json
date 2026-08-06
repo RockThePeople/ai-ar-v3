@@ -2653,5 +2653,6 @@
       "vertex_count": 140,
       "voxel_count": 7
     }
-  ]
+  ],
+  "asset_id_note": "🔴 `v3-` 접두사는 **자산 계보**이지 계약 판본이 아니다. 이 자산의 contract_version 은 4 다 (아래 contract 참조). A5000 디스크에는 실제로 v3 계약 자산이 따로 있고 `.CONTRACT_V3_STALE` 마커가 붙어 있다 — 그것과 혼동하지 마라. 판본 판정은 접두사가 아니라 contract.contract_version 과 .cbin 헤더로 한다."
 }

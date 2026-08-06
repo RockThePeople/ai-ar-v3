@@ -111,9 +111,16 @@ class AssetStore:
         return sorted(self._slots())
 
     def _dir(self, asset_id: str) -> Path:
-        d = self._slots().get(asset_id)
+        slots = self._slots()
+        d = slots.get(asset_id)
         if d is None:
-            raise AssetNotFound(f"모르는 자산이다: {asset_id!r}. 아는 것: {self.asset_ids()}")
+            # 🔴 비슷한 이름을 응답에 담는다. 맥북이 `moto-b` 로 치고 404 를 받아
+            #    한 번 헤맸다 — 접두사 `v3-` 는 **자산 계보**이지 계약 판본이 아니다
+            #    (이 자산들의 contract_version 은 4 다).
+            near = [a for a in slots if asset_id in a or a.endswith(asset_id)]
+            hint = f" — {near[0]!r} 를 찾는가?" if near else ""
+            raise AssetNotFound(
+                f"모르는 자산이다: {asset_id!r}{hint} 아는 것: {sorted(slots)}")
         return d
 
     def versions(self, asset_id: str) -> Dict[int, Path]:
