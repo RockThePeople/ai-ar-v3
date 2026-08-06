@@ -295,7 +295,15 @@ namespace DeltaContract
                     var o = Newtonsoft.Json.Linq.JObject.Parse(req.downloadHandler.text);
                     if ((string)o["state"] == "failed")
                     {
-                        _editStatus = $"{(string)o["error_code"]} — {(string)o["error"]}";
+                        // 🔴 상류 사유를 **그대로** 보인다. "실패" 로 뭉뚱그리면 사용자가
+                        //    재시도만 한다. UPSTREAM_EDIT_FAILED 처럼 사유가 비어 오면
+                        //    비어 있다는 사실까지 화면에 남긴다 — 어디서 끊겼는지 갈리게.
+                        var code = (string)o["error_code"];
+                        var why = (string)o["error"];
+                        var stage = (string)o["stage"];
+                        _editStatus = string.IsNullOrEmpty(why)
+                            ? $"{code} (상류 사유 없음, stage={stage})"
+                            : $"{code} — {why}";
                         Debug.LogError($"{Tag} EDIT 실패 {_editStatus}"); _editBusy = false; yield break;
                     }
                     var pt = o["patch"] as Newtonsoft.Json.Linq.JObject;
