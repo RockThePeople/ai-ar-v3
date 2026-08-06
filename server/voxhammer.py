@@ -30,7 +30,7 @@ from deltacontract.uris import staging_chunk_uri  # type: ignore[import-not-foun
 
 from .assetstore import STORE
 from .contractguard import verify_blobs
-from .upstreamerr import parse_upstream_error
+from .upstreamerr import parse_upstream_error, upstream_call
 
 __all__ = ["run_voxhammer_edit", "UpstreamEditFailed"]
 
@@ -59,9 +59,52 @@ CONDITION_TEMPLATE = os.environ.get(
     "entire subject fully visible with margin, no text, no watermark")
 
 
+def _local_asset_dir(asset_id: str):
+    """3090 쪽 자산 원본 디렉터리 (slat·input 이 있는 곳). 없으면 None."""
+    from pathlib import Path as _P
+
+    root = _P(os.environ.get("ASSET_SOURCE_ROOT",
+                             str(_P.home() / "ai-ar-v3-assets")))
+    for d in (root / asset_id, root / asset_id.replace("v3-", "")):
+        if (d / "slat.safetensors").is_file():
+            return d
+    return None
+
+
 def _condition_prompt(spec, req) -> str:
     """편집 지시 → 조건 이미지 프롬프트. **바뀐 뒤 전체**를 묘사해야 한다."""
     return CONDITION_TEMPLATE.replace("{subject}", spec.target_prompt or req.raw_prompt)
+
+
+def _explain_version_conflict(asset_id: str, base_version: int, detail: str) -> str:
+    """409 를 받은 **뒤에** 무엇이 필요한지 알려 준다.
+
+    🔴 사전 조회로 판단하지 않는다. 전 판본은 `committed.json` 을 GET 해서 404 면
+    "커밋 안 됨" 으로 읽었는데, **그 엔드포인트가 없어서** 404 였다 — 실제로는
+    커밋돼 있었고 편집도 성공한 자산이었다. 없는 것을 근거로 추측하면 멀쩡한
+    경로를 막는다. 그래서 **상류가 실제로 409 를 준 뒤에만** 이 경로를 탄다.
+
+    ⚠️ `recolor` 는 3090 로컬이라 그 결과 판본이 상류에 **아예 없다.** 그 위에 형태
+       편집을 걸면 여기로 온다 — 그때는 재료 검사 결과가 "무엇을 밀어야 하는가" 다.
+    """
+    from .versionsync import RequiredFilesMissing, check_v1_payload
+
+    src = _local_asset_dir(asset_id)
+    if src is None:
+        return (f"{detail} · 3090 에도 밀어 넣을 재료가 없다 — 이 판본은 로컬 편집"
+                f"(recolor)으로 만든 것일 수 있고, 그때 상류는 그 기하를 본 적이 없다")
+    try:
+        n = len(STORE.blobs(asset_id, base_version))
+    except Exception:                                    # noqa: BLE001
+        n = 0
+    try:
+        # 🔴 밀기 **전에** 검사한다. 없는 채로 밀면 라우트는 202 를 주고 워커에서 죽고
+        #    ("요청은 성공, 결과는 없음"), 상류에 **막다른 판본**이 남는다.
+        info = check_v1_payload(src, n_chunks=n)
+    except RequiredFilesMissing as e:
+        return f"{detail} · 밀어 넣을 재료가 불완전하다: {e}"
+    return (f"{detail} · 3090 재료는 갖췄다 (청크 {info['n_chunks']} · "
+            f"{info['slat']} · {info['image']}) — 상류가 이 판본을 받아 커밋해야 한다")
 
 
 def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
@@ -112,15 +155,24 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
             # multipart — `meta`(BEditRequest JSON) + `image`. generate 와 같은 관례다.
             import json as _json
 
-            r = c.post("/v2/trellis/edit",
-                       data={"meta": _json.dumps(body)},
-                       files={"image": ("condition.png", cond_png, "image/png")})
+            r = upstream_call(lambda: c.post(
+                "/v2/trellis/edit", data={"meta": _json.dumps(body)},
+                files={"image": ("condition.png", cond_png, "image/png")}),
+                action="편집 제출")
         else:
-            r = c.post("/v2/trellis/edit", json=body)
+            r = upstream_call(lambda: c.post("/v2/trellis/edit", json=body),
+                              action="편집 제출")
         if r.status_code >= 400:
             # 🔴 상류 사유를 **그대로** 올린다. "실패" 로 뭉뚱그리면 사용자가 재시도만
-            #    하고, 재시도로는 절대 안 고쳐지는 오류가 많다 (VERSION_CONFLICT 등).
-            raise parse_upstream_error(r.status_code, r.text, action="편집 제출")
+            #    하고, 재시도로는 절대 안 고쳐지는 오류가 많다.
+            err = parse_upstream_error(r.status_code, r.text, action="편집 제출")
+            if "VERSION_CONFLICT" in err.error_code:
+                # 판본 동기화가 필요한 자리다. **무엇을 밀어야 하는지**까지 적는다 —
+                # "커밋을 잊어서 409" 는 사유만으로는 고칠 수 없다.
+                raise UpstreamEditFailed(
+                    _explain_version_conflict(asset_id, int(req.base_version), str(err))
+                ) from err
+            raise err
         job_id = r.json().get("job_id")
         if not job_id:
             raise UpstreamEditFailed(f"job_id 가 없다: {r.text[:200]}")
