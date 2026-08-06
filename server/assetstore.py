@@ -54,17 +54,49 @@ class _Version:
 
 class AssetStore:
     def __init__(self, root: Optional[Path] = None) -> None:
-        self.root = Path(root or os.environ.get(
-            "ASSET_STORE_ROOT", str(Path(__file__).resolve().parent.parent / "assets")))
+        """🔴 **읽기는 여러 루트, 쓰기는 하나.**
+
+        리포의 `assets/` 에는 손으로 골라 커밋한 실물이 있고(moto-b · dragon-c),
+        생성물은 한 건에 989청크라 리포에 쌓으면 안 된다. 그렇다고 루트를 하나로
+        바꾸면 **리포 자산이 통째로 안 보인다** — W26f 에서 실제로 그렇게 됐다
+        (`모르는 자산이다: 'v3-moto-b'`).
+
+        그래서 읽기 루트는 목록이고, **쓰기는 런타임 루트 하나**다. 리포에는
+        아무것도 안 쓴다 — 산출물이 리포를 오염시키는 경로를 아예 없앤다.
+        """
+        repo_assets = Path(__file__).resolve().parent.parent / "assets"
+        # 런타임(쓰기) 루트. 없으면 리포 밖 기본값 — 리포에 쓰지 않는다.
+        self.write_root = Path(root or os.environ.get(
+            "ASSET_STORE_ROOT", str(Path.home() / "ai-ar-v3-assets" / "_store")))
+        extra = [Path(x).expanduser() for x in
+                 os.environ.get("ASSET_READ_ROOTS", "").split(":") if x.strip()]
+        # 읽기 루트: 런타임 → 리포 → 추가. 앞선 루트가 이긴다.
+        seen, self.read_roots = set(), []
+        for r in [self.write_root, repo_assets, *extra]:
+            if r not in seen:
+                seen.add(r)
+                self.read_roots.append(r)
         self._lock = threading.Lock()
         self._extra: Dict[str, Dict[int, Path]] = {}   # 런타임 판본 (편집 결과)
+
+    @property
+    def root(self) -> Path:
+        """쓰기 루트. 옛 이름을 남겨 둔다 — 부르는 쪽이 있다."""
+        return self.write_root
 
     # ── 조회 ────────────────────────────────────────────────────────
     def _slots(self) -> Dict[str, Path]:
         out: Dict[str, Path] = {}
-        if not self.root.is_dir():
+        for root in reversed(self.read_roots):   # 앞선 루트가 이기도록 역순으로 덮는다
+            out.update(self._slots_in(root))
+        return out
+
+    @staticmethod
+    def _slots_in(root: Path) -> Dict[str, Path]:
+        out: Dict[str, Path] = {}
+        if not root.is_dir():
             return out
-        for d in sorted(self.root.iterdir()):
+        for d in sorted(root.iterdir()):
             m = d / "manifest.json"
             if m.is_file():
                 try:
@@ -121,7 +153,13 @@ class AssetStore:
         return p.read_bytes()
 
     def blobs(self, asset_id: str, version: int) -> Dict[str, bytes]:
-        """그 판본의 **전체 세트** (승계분 포함)."""
+        """그 판본의 **전체 세트** (승계분 포함).
+
+        🔴 없는 판본은 **거부한다.** 전에는 `v <= version` 으로 훑기만 해서
+        `v99` 를 물으면 v1 을 조용히 돌려줬다 — docstring 에는 "옛 판본으로 대신
+        답하지 않는다" 고 적어 놓고 구현이 없었다. `test_routes_v2` 가 잡았다.
+        """
+        self._vdir(asset_id, version)          # 없으면 VersionNotFound
         out: Dict[str, bytes] = {}
         for v in sorted(v for v in self.versions(asset_id) if v <= version):
             for p in sorted(self._vdir(asset_id, v).glob("*.cbin")):
@@ -173,7 +211,7 @@ class AssetStore:
             existing = self._slots().get(asset_id)
             if existing is not None:
                 return existing
-            d = self.root / self._slug(asset_id)
+            d = self.write_root / self._slug(asset_id)
             d.mkdir(parents=True, exist_ok=True)
             (d / "manifest.json").write_text(
                 json.dumps({"asset_id": asset_id}, ensure_ascii=False), encoding="utf-8")
