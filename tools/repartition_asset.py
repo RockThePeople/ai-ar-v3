@@ -41,7 +41,7 @@ from deltacontract import CONTRACT_CONSTANTS, CONTRACT_VERSION, encode  # noqa: 
 from deltacontract.partition import partition_mesh  # noqa: E402
 
 def repartition(src: pathlib.Path, out: pathlib.Path,
-                slat: pathlib.Path | None = None) -> dict:
+                slat: pathlib.Path | None = None, asset_id: str = "") -> dict:
     z = np.load(src)
     verts, faces = z["vertices"], z["faces"]
     colors = z["colors"] if "colors" in z.files else None
@@ -66,6 +66,8 @@ def repartition(src: pathlib.Path, out: pathlib.Path,
         total += len(blob)
 
     return {
+        # 🔴 저장소가 자산을 찾는 **유일한 키**다. 없으면 라우트가 자산을 못 연다.
+        "asset_id": asset_id,
         "chunk_count": len(entries),
         "cbin_bytes_total": total,
         "vertex_count_total": int(len(verts)),
@@ -86,7 +88,8 @@ def main() -> int:
     if "--slat" in sys.argv:
         slat = pathlib.Path(sys.argv[sys.argv.index("--slat") + 1])
 
-    man = repartition(src, out, slat)
+    aid = sys.argv[sys.argv.index("--asset-id")+1] if "--asset-id" in sys.argv else ""
+    man = repartition(src, out, slat, aid)
     (out / "manifest.json").write_text(
         json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
     # 앱은 디렉터리를 훑을 수 없다 (Android StreamingAssets 는 APK 안이다).
