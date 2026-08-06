@@ -22,6 +22,19 @@ if [ ! -d "$PROJ/Assets" ]; then
   cp -R "$V2/Packages" "$PROJ/Packages"
   cp -R "$V2/ProjectSettings" "$PROJ/ProjectSettings"
 fi
+# 🔴 XR 설정(ARCore 로더)이 없으면 AR 세션이 아예 안 뜬다 — 그런데 예외는 안 나고
+#    "평면을 못 찾는다" 로만 보인다. v2 가 이미 구성해 둔 것을 가져온다.
+# ⚠️ 디렉터리 유무로 판단하면 안 된다 — Unity 가 XR 패키지 때문에 **껍데기만** 만들어 두고,
+#    그러면 cp 가 건너뛰어 **ARCore 로더가 빠진 채** 빌드된다. 파일 단위로 채운다.
+mkdir -p "$PROJ/Assets/XR"
+for item in Loaders Settings XRGeneralSettingsPerBuildTarget.asset XRGeneralSettingsPerBuildTarget.asset.meta; do
+  [ -e "$PROJ/Assets/XR/$item" ] || cp -R "$V2/Assets/XR/$item" "$PROJ/Assets/XR/" 2>/dev/null
+done
+if [ -f "$PROJ/Assets/XR/Loaders/ARCoreLoader.asset" ]; then
+  echo "XR ok — ARCore 로더 있음"
+else
+  echo "❌ ARCore 로더가 없다 — AR 세션이 안 뜨고 '평면을 못 찾는다' 로만 보인다" >&2; exit 2
+fi
 
 # 리포 파일은 **심링크**. 복사하면 드리프트한다.
 ln -sf "$REPO/contract/unity/LassoVolume.cs"      "$PROJ/Assets/DeltaContract/LassoVolume.cs"
@@ -32,6 +45,8 @@ ln -sf "$REPO/contract/unity/ChunkBin.cs"         "$PROJ/Assets/DeltaContract/Ch
 ln -sf "$REPO/contract/unity/ChunkContracts.cs"   "$PROJ/Assets/DeltaContract/ChunkContracts.cs"
 ln -sf "$REPO/unity/Runtime/SlatLassoPicker.cs"   "$PROJ/Assets/DeltaContract/SlatLassoPicker.cs"
 ln -sf "$REPO/unity/Runtime/VoxelFrame.cs"        "$PROJ/Assets/DeltaContract/VoxelFrame.cs"
+ln -sf "$REPO/unity/Runtime/AssetScale.cs"       "$PROJ/Assets/DeltaContract/AssetScale.cs"
+ln -sf "$REPO/unity/Runtime/ArPlacement.cs"      "$PROJ/Assets/DeltaContract/ArPlacement.cs"
 ln -sf "$REPO/unity/Runtime/LassoCase.cs"         "$PROJ/Assets/DeltaContract/LassoCase.cs"
 ln -sf "$REPO/unity/Runtime/LassoEditApp.cs"       "$PROJ/Assets/DeltaContract/LassoEditApp.cs"
 # ChunkSceneApplier·TouchLassoController 는 **앱에서 걷어냈다** (W23).
