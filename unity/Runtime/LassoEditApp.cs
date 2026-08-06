@@ -377,16 +377,7 @@ namespace DeltaContract
                 $"선택 {_selected.Count} 셀 · 청크 {_tintedChunks}" +
                 (string.IsNullOrEmpty(_notice) ? "" : "   " + _notice));
 
-            // 배치 모드 — 화면 중앙 조준점 + [여기 놓기]. 탭이 어려운 자리를 위한 확실한 경로다.
-            if (_ar != null && _ar.CurrentMode == ArPlacement.Mode.Placing)
-            {
-                float cx = W * 0.5f, cy = H * 0.5f;
-                Line(new Vector2(cx - 46, cy), new Vector2(cx + 46, cy), new Color(0.15f, 0.85f, 1f), 4f);
-                Line(new Vector2(cx, cy - 46), new Vector2(cx, cy + 46), new Color(0.15f, 0.85f, 1f), 4f);
-                if (GUI.Button(new Rect(W * 0.5f - 220, H - 420, 440, 110), "여기 놓기 (조준점)"))
-                    _ar.TryPlace(new Vector2(Screen.width * 0.5f, Screen.height * 0.5f));
-            }
-
+            // 조준점·[여기 놓기] 버튼은 뺐다 (사용자 지시) — **평면을 직접 탭**한다.
             // 🔴 AR 상태를 **항상** 보인다. 폴백인 줄 모르고 "AR 됐다" 고 하지 않게.
             if (_ar != null)
             {
