@@ -24,23 +24,28 @@ from deltacontract import CONTRACT_CONSTANTS, chunk_uri  # type: ignore[import-n
 
 from .assetstore import STORE
 from .dispatch import UnsupportedOp, check_supported
-from .llm import EditSpec
+from .llm import EditSpec, LLMError, MaskSummary, plan_edit
 from .pipeline.mask import build_mask
 from .pipeline.recolor import recolor_asset
 
 __all__ = ["run_edit"]
 
-#: 자연어에서 색을 못 뽑았을 때 쓰는 값이 **없다.** 못 뽑으면 거부한다 —
-#: 기본색을 칠하면 "무엇을 요청했든 주황이 되는" 서버가 된다.
+#: 색 어휘. **한국어는 활용한다** — "빨강 / 빨간 / 빨갛게 / 붉은" 이 다 같은 색이다.
+#: 어간만 넣으면 "빨갛게" 를 놓친다 (W26f 실측에서 실제로 놓쳤다).
+#:
+#: ⚠️ 이건 **어휘표지 이해가 아니다.** 여기 없는 표현은 못 읽고, 그때는 거부한다.
+#:    표를 넓히는 것으로 "자연어를 이해한다" 고 말하지 않는다.
+#: ⚠️ 기본색이 **없다.** 못 읽으면 거부다 — 기본색을 칠하면 무엇을 요청하든 같은
+#:    색이 되는 서버가 되고, 그 서버는 언제나 "성공" 을 보고한다.
 _COLORS = {
-    "빨강": (220, 38, 38), "red": (220, 38, 38),
-    "주황": (255, 106, 0), "orange": (255, 106, 0),
-    "노랑": (250, 204, 21), "yellow": (250, 204, 21),
-    "초록": (34, 197, 94), "green": (34, 197, 94),
-    "파랑": (37, 99, 235), "blue": (37, 99, 235),
-    "보라": (147, 51, 234), "purple": (147, 51, 234),
-    "검정": (20, 20, 20), "black": (20, 20, 20),
-    "흰색": (240, 240, 240), "white": (240, 240, 240),
+    (220, 38, 38): ("빨강", "빨간", "빨갛", "붉은", "붉게", "적색", "red"),
+    (255, 106, 0): ("주황", "주홍", "오렌지", "orange"),
+    (250, 204, 21): ("노랑", "노란", "노랗", "누런", "황색", "yellow"),
+    (34, 197, 94): ("초록", "녹색", "푸른색", "green"),
+    (37, 99, 235): ("파랑", "파란", "파랗", "청색", "blue"),
+    (147, 51, 234): ("보라", "자주", "purple", "violet"),
+    (20, 20, 20): ("검정", "검은", "까만", "까맣", "흑색", "black"),
+    (240, 240, 240): ("흰색", "하얀", "하얗", "백색", "white"),
 }
 
 
@@ -49,13 +54,20 @@ class ColorNotUnderstood(ValueError):
 
 
 def _color_of(prompt: str):
+    """프롬프트 → RGBA. 못 읽으면 **거부한다.**
+
+    가장 **뒤에** 나온 색을 쓴다 — "빨간 차의 바퀴를 파랑으로" 에서 요청된 색은
+    뒤쪽이다. 앞을 쓰면 배경 묘사에 끌려간다.
+    """
     low = prompt.lower()
-    for word, rgb in _COLORS.items():
-        if word in low:
-            return (*rgb, 255)
-    raise ColorNotUnderstood(
-        f"프롬프트에서 색을 못 읽었다: {prompt!r}. 아는 것: {sorted(set(_COLORS))}. "
-        "기본색으로 칠하지 않는다 — 요청과 다른 결과를 성공으로 보고하게 된다")
+    hits = [(low.rfind(w), rgb) for rgb, words in _COLORS.items()
+            for w in words if w in low]
+    if not hits:
+        raise ColorNotUnderstood(
+            f"프롬프트에서 색을 못 읽었다: {prompt!r}. "
+            f"아는 표현: {sorted(w for ws in _COLORS.values() for w in ws)}. "
+            "기본색으로 칠하지 않는다 — 요청과 다른 결과를 성공으로 보고하게 된다")
+    return (*max(hits)[1], 255)
 
 
 def run_edit(asset_id: str, req: EditRequest, progress) -> dict:
@@ -70,10 +82,21 @@ def run_edit(asset_id: str, req: EditRequest, progress) -> dict:
     mask.require_slat_grid("편집 요청")
 
     progress(0.25, "op", "자연어 → op")
-    spec = EditSpec(op="recolor", target_prompt=req.raw_prompt,
-                    source="server", raw=req.raw_prompt)
+    # 🔴 op 를 여기서 **찍지 않는다.** `llm.py` 가 정본이고, 못 하는 op 는
+    #    `dispatch.py` 가 거부한다 (D26). 자동 강등(add → recolor)은 특히 안 한다 —
+    #    그러면 게이트가 "형태를 바꿨다" 고 적으면서 색만 바꾼 결과를 재게 된다.
+    #
+    #    이 배선이 진단을 **가른다**: "이 부분을 뾰족하게" 는 색을 못 읽은 것이
+    #    아니라 이 소비자가 못 하는 op 다. 전에는 둘 다 COLOR_NOT_UNDERSTOOD 였다.
+    try:
+        # 마스크는 **요약만** 넘어간다 (셀 좌표는 안 넘긴다 — llm.py 의 규약).
+        spec = plan_edit(req.raw_prompt, mask=MaskSummary.from_mask(mask))
+    except LLMError:
+        raise
     check_supported(spec, "recolor")          # 못 하는 op 는 여기서 **거부**된다
-    color = _color_of(req.raw_prompt)
+
+    progress(0.35, "color", "색 해석")
+    color = _color_of(spec.target_prompt or req.raw_prompt)
 
     progress(0.45, "recolor", "정점 색 교체")
     parent = STORE.blobs(asset_id, req.base_version)

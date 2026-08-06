@@ -56,6 +56,10 @@ class UnsupportedOp(RuntimeError):
     구조화해서 실을 수 있어야 하기 때문이다.
     """
 
+    #: 잡 상태에 그대로 실린다. `INTERNAL` 로 나가면 클라이언트가 "서버 버그" 와
+    #: "이 경로로는 못 하는 요청" 을 구분하지 못한다 — 후자는 사용자가 고칠 수 있다.
+    error_code = "UNSUPPORTED_OP"
+
     def __init__(self, op: str, consumer: str, reason: str, remedy: str) -> None:
         super().__init__(
             f"소비자 {consumer!r} 는 op={op!r} 를 처리할 수 없다. {reason} → {remedy}"

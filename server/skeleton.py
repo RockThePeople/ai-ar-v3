@@ -87,13 +87,18 @@ def _build() -> dict[str, object]:
 
 BUILD = _build()
 
-app = FastAPI(title="ai-ar-v3 skeleton", docs_url=None, redoc_url=None, openapi_url=None)
+# 🔴 `openapi_url=None` 이었다 — 클라이언트가 **계약을 조회할 수단이 없었다.**
+# 계약은 `models.py`/`openapi.json` 이 단일 진실이라고 적혀 있는데 그걸 안 서빙했다.
+# `docs_url`(사람용 HTML)은 계속 닫는다: 공개 URL 이고 §7 상 표면을 넓힐 이유가 없다.
+app = FastAPI(title="ai-ar-v3 orchestrator", docs_url=None, redoc_url=None,
+              openapi_url="/openapi.json")
 
 # ── Unity 가 부를 /v2 라우트 넷 (W26b). 계약 스키마를 그대로 쓴다.
 from server.routes_v2 import router as _v2_router  # noqa: E402
 app.include_router(_v2_router)
 
 
+@app.get("/v2/health")
 @app.get("/healthz")
 def healthz() -> dict[str, object]:
     """이 스켈레톤이 반환하는 **유일한** 것.
