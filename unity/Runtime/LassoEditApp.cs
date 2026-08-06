@@ -36,6 +36,9 @@ namespace DeltaContract
         public string AssetId = "v3-moto-b";
         public int AssetVersion = 1;
         ChunkManifest _manifest;
+        readonly Dictionary<string, Mesh> _chunkMeshes = new Dictionary<string, Mesh>();
+        bool _editBusy;
+        string _editStatus = "";
         public Camera ViewCamera;
 
         const string Tag = "[LassoApp]";
@@ -222,7 +225,153 @@ namespace DeltaContract
             var mr = go.AddComponent<MeshRenderer>();
             mr.sharedMaterial = mat;
             _chunkRenderers[key] = mr;
+            _chunkMeshes[key] = mesh;          // in-place 교체 때 **같은 Mesh 인스턴스**에 덮어쓴다
             return data.Positions.Length;
+        }
+
+        /// <summary>🔴 W27② — 라쏘 선택 + 자연어 → 서버 편집 → **changed 만 교체**.
+        ///
+        /// ★ 완료 판정은 `state` 가 아니라 **응답 모양**이다. 다만 모양은 최상위가 아니라
+        ///   `patch.to_version` 이다 — 맥북에서 최상위 `chunks` 를 찾다가 130초를 헛돌았다.
+        /// ★ GameObject 를 다시 만들지 않는다. **같은 Mesh 인스턴스에 덮어쓴다** (C).
+        /// ★ AR 앵커는 건드리지 않는다 — 적용 직전/직후 델타를 잰다 (D).
+        /// </summary>
+        System.Collections.IEnumerator RunEdit(string prompt)
+        {
+            _editBusy = true;
+            var (dp0, dr0) = _ar != null ? _ar.PoseDelta() : (-1f, -1f);
+            float t0 = Time.realtimeSinceStartup;
+
+            // 마스크는 **복셀 좌표 목록**이다 (청크 목록도 지문도 아니다).
+            // grid_source 는 생략 불가 — 서버가 안 채운다 (D28-a).
+            var sb = new StringBuilder();
+            sb.Append("{\"session_id\":\"w27b\",\"base_version\":").Append(AssetVersion)
+              .Append(",\"raw_prompt\":").Append(Newtonsoft.Json.JsonConvert.ToString(prompt))
+              .Append(",\"seed\":42,\"mask\":{\"mode\":\"voxels\",\"halo_margin_voxels\":2,")
+              .Append("\"grid_source\":\"slat_coords\",\"voxels\":[");
+            bool first = true;
+            foreach (var c in _selected)
+            {
+                if (!first) sb.Append(',');
+                sb.Append('[').Append(c.x).Append(',').Append(c.y).Append(',').Append(c.z).Append(']');
+                first = false;
+            }
+            sb.Append("]}}");
+
+            string jobId = null, errCode = null;
+            using (var req = new UnityEngine.Networking.UnityWebRequest(
+                       $"{ServerUrl}/v2/assets/{AssetId}/edits", "POST"))
+            {
+                req.uploadHandler = new UnityEngine.Networking.UploadHandlerRaw(
+                    System.Text.Encoding.UTF8.GetBytes(sb.ToString()));
+                req.downloadHandler = new UnityEngine.Networking.DownloadHandlerBuffer();
+                req.SetRequestHeader("Content-Type", "application/json");
+                yield return req.SendWebRequest();
+                var body = req.downloadHandler.text;
+                if (req.result != UnityEngine.Networking.UnityWebRequest.Result.Success)
+                {
+                    // 🔴 서버가 못 하는 op 는 UNSUPPORTED_OP 로 거부한다. **버그가 아니다** —
+                    //    "실패" 로 뭉뚱그리면 사용자가 재시도만 한다. error_code 를 그대로 보인다.
+                    errCode = ExtractString(body, "error_code");
+                    _editStatus = string.IsNullOrEmpty(errCode)
+                        ? $"편집 실패 {req.responseCode}"
+                        : $"{errCode} — {ExtractString(body, "error")}";
+                    Debug.LogError($"{Tag} EDIT 거부 {req.responseCode} code={errCode} {body.Substring(0, System.Math.Min(200, body.Length))}");
+                    _editBusy = false; yield break;
+                }
+                jobId = ExtractString(body, "job_id");
+            }
+            Debug.Log($"{Tag} EDIT job={jobId}");
+            _editStatus = "서버 처리 중…";
+
+            Newtonsoft.Json.Linq.JObject patch = null;
+            for (int i = 0; i < 180 && patch == null; i++)
+            {
+                yield return new WaitForSeconds(1f);
+                using (var req = UnityEngine.Networking.UnityWebRequest.Get($"{ServerUrl}/v2/jobs/{jobId}"))
+                {
+                    yield return req.SendWebRequest();
+                    if (req.result != UnityEngine.Networking.UnityWebRequest.Result.Success) continue;
+                    var o = Newtonsoft.Json.Linq.JObject.Parse(req.downloadHandler.text);
+                    if ((string)o["state"] == "failed")
+                    {
+                        _editStatus = $"{(string)o["error_code"]} — {(string)o["error"]}";
+                        Debug.LogError($"{Tag} EDIT 실패 {_editStatus}"); _editBusy = false; yield break;
+                    }
+                    var pt = o["patch"] as Newtonsoft.Json.Linq.JObject;
+                    if (pt != null && pt["to_version"] != null && pt["to_version"].Type != Newtonsoft.Json.Linq.JTokenType.Null)
+                        patch = pt;                       // ★ 응답 **모양**으로 판정한다
+                }
+            }
+            if (patch == null) { _editStatus = "폴링 시간 초과"; _editBusy = false; yield break; }
+
+            float tJob = Time.realtimeSinceStartup - t0;
+            int toV = (int)patch["to_version"];
+            var changed = patch["changed_chunks"] as Newtonsoft.Json.Linq.JObject;
+            var removed = patch["removed_chunk_ids"] as Newtonsoft.Json.Linq.JArray;
+            Debug.Log($"{Tag} PATCH v{patch["from_version"]}→v{toV} · changed {changed?.Count ?? 0} · " +
+                      $"removed {removed?.Count ?? 0} · {tJob:F1}s");
+
+            // ── 적용: **changed 만** 교체한다. GameObject 를 다시 만들지 않는다.
+            int replaced = 0, created = 0, destroyed = 0, failed = 0;
+            float t1 = Time.realtimeSinceStartup;
+            if (removed != null)
+                foreach (var rk in removed)
+                {
+                    var key = (string)rk;
+                    if (_chunkRenderers.TryGetValue(key, out var r0) && r0 != null) Destroy(r0.gameObject);
+                    _chunkRenderers.Remove(key); _chunkMeshes.Remove(key); destroyed++;
+                }
+            if (changed != null)
+                foreach (var kv in changed)
+                {
+                    string uri = (string)kv.Value["uri"];
+                    using (var req = UnityEngine.Networking.UnityWebRequest.Get(ServerUrl + uri))
+                    {
+                        yield return req.SendWebRequest();
+                        if (req.result != UnityEngine.Networking.UnityWebRequest.Result.Success) { failed++; continue; }
+                        var data = ChunkBin.Decode(req.downloadHandler.data);
+                        for (int i = 0; i < data.Positions.Length; i++)
+                            data.Positions[i] = ToUnity(data.Positions[i]);
+                        if (data.Normals != null)
+                            for (int i = 0; i < data.Normals.Length; i++)
+                                data.Normals[i] = ToUnity(data.Normals[i]);
+
+                        if (_chunkMeshes.TryGetValue(kv.Key, out var mesh) && mesh != null)
+                        {
+                            ChunkBin.ApplyTo(mesh, data);        // ★ 같은 Mesh — GameObject 유지
+                            if (data.Normals == null) mesh.RecalculateNormals();
+                            replaced++;
+                        }
+                        else
+                        {
+                            SpawnChunk(kv.Key, req.downloadHandler.data,
+                                       new Material(Shader.Find("DeltaContract/ChunkSurface")));
+                            created++;
+                        }
+                    }
+                }
+            float tApply = Time.realtimeSinceStartup - t1;
+            AssetVersion = toV;
+
+            var (dp1, dr1) = _ar != null ? _ar.PoseDelta() : (-1f, -1f);
+            Debug.Log($"{Tag} APPLY 교체 {replaced} · 생성 {created} · 파괴 {destroyed} · 실패 {failed} · " +
+                      $"{tApply*1000f:F0}ms · 노드 {_chunkRenderers.Count}");
+            Debug.Log($"{Tag} POSE-DELTA 적용 전 {dp0*1000f:F2}mm/{dr0:F3}° → 후 {dp1*1000f:F2}mm/{dr1:F3}° " +
+                      $"(순수 변화 {(dp1-dp0)*1000f:F2}mm/{dr1-dr0:F3}°)");
+            _editStatus = $"v{toV} 적용 · 교체 {replaced} · {tApply*1000f:F0}ms";
+            _selected.Clear(); _undo.Clear(); RebuildMask();
+            _editBusy = false;
+        }
+
+        static string ExtractString(string json, string key)
+        {
+            try
+            {
+                var o = Newtonsoft.Json.Linq.JObject.Parse(json);
+                return (string)o[key];
+            }
+            catch { return ""; }
         }
 
         void AimCamera()
@@ -496,7 +645,9 @@ namespace DeltaContract
                 GUI.color = _ar.ArActive ? Color.white : new Color(1f, 0.55f, 0.2f);
                 GUI.Label(new Rect(24, 198, W - 48, 46), _ar.Status);
                 GUI.color = prev;
-                if (!string.IsNullOrEmpty(_poseLog))
+                if (!string.IsNullOrEmpty(_editStatus))
+                    GUI.Label(new Rect(24, 244, W - 48, 46), _editStatus);
+                else if (!string.IsNullOrEmpty(_poseLog))
                     GUI.Label(new Rect(24, 244, W - 48, 46), _poseLog);
             }
 
@@ -565,7 +716,11 @@ namespace DeltaContract
                     OpenKeyboard(2, _editPrompt, "예: 이 바퀴를 주황색으로");
                 if (GUI.Button(new Rect(box.x + 24, box.y + 200, (box.width - 72) / 2, 90), "확인"))
                 {
-                    _notice = $"“{_editPrompt}” — 전송은 다음 웨이브다";
+                    if (!string.IsNullOrEmpty(ServerUrl) && !_editBusy && _selected.Count > 0)
+                        StartCoroutine(RunEdit(_editPrompt));
+                    _notice = string.IsNullOrEmpty(ServerUrl)
+                        ? $"“{_editPrompt}” — 서버 미설정"
+                        : $"“{_editPrompt}” 전송";
                     Debug.Log($"{Tag} 편집 지시 «{_editPrompt}» · 선택 {_selected.Count}셀");
                     // ★ (C) in-place 의 AR 쪽 절반 — 편집을 거친 뒤 앵커가 그대로인가.
                     if (_ar != null)
