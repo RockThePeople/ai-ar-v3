@@ -22,6 +22,22 @@ if ss -ltn "sport = :$PORT" | grep -q LISTEN; then
   echo "이미 :$PORT 를 누가 쓰고 있다. 먼저 내려라:"; ss -ltnp "sport = :$PORT"; exit 1
 fi
 
+# ── 서비스 환경 — **파일에서 읽는다** (§7: 값은 리포에 없다).
+#
+# 🔴 전에는 기동 명령줄에만 실었다. 그러면 누가 그냥 `./run-8083.sh` 로 재시작하는
+#    순간 자산 저장소 루트가 사라지고 **리포 자산이 통째로 안 보인다** —
+#    `모르는 자산이다: 'v3-moto-b'` 가 그 증상이다. W27 이 그 자산에 걸려 있어
+#    한 번의 재시작으로 남의 웨이브가 멈춘다.
+#
+# 없으면 없는 대로 뜬다(생성·편집이 막힐 뿐 화면은 산다). 있는지 화면에 적는다.
+ENV_FILE="${V3_SERVER_ENV:-$HOME/.ai-ar-v3-server.env}"
+if [ -f "$ENV_FILE" ]; then
+  set -a; . "$ENV_FILE"; set +a
+  echo "환경 파일 적용: $(basename "$ENV_FILE")  키 $(grep -cE '^[A-Z_]+=' "$ENV_FILE")개"
+else
+  echo "⚠️ 환경 파일이 없다 ($(basename "$ENV_FILE")) — 자산 저장소·상류·t2i 가 기본값이다"
+fi
+
 echo "기동: :$PORT  log=$LOG"
 DEBUGVIEW_PORT="$PORT" setsid --fork "$PY" "$HERE/skeleton.py" >> "$LOG" 2>&1
 
