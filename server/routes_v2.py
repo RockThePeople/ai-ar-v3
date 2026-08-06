@@ -5,15 +5,15 @@
 URI 조립은 `uris.py` 가 한다. 여기서 손으로 만드는 문자열은 없다.
 
 ────────────────────────────────────────────────────────────────────────
-🔴 생성 경로는 **세워 두고 켜지 않는다**
+🔴 생성 가드는 **산출 바이트**를 본다 (W26d)
 ────────────────────────────────────────────────────────────────────────
-A5000 `:8082` 가 아직 계약 v3 를 낸다 (W26 실측: `contract_version 3 · chunk_size 8`,
-v4 클라이언트가 `ChunkBinError: file=3, local=4` 로 거부). 그대로 연결하면 앱 화면이
-**통째로 빈다** — 맥북이 앱에서 겪은 그 예외와 같은 것이다.
+전 판본은 상류의 `/v2/trellis/health` 선언을 봤는데, 그 선언이 거짓일 수 있다는 걸
+실제로 겪었다 — W26 시점에 `<EDIT_HOST>` 헬스는 `contract_version 4` 를 답했고
+같은 시점의 산출물은 **v3** 였다. 선언은 증거가 아니다 (D28).
 
-그래서 생성 잡은 상류 계약을 **먼저 확인하고**, v3 면 `failed` +
-`error_code=UPSTREAM_CONTRACT_MISMATCH` 로 멈춘다. 조용히 v3 청크를 내려보내지 않는다.
-A5000 이 v4 로 올라가면 이 검사는 **저절로 통과한다** — 판본을 코드에 안 박았다.
+지금은 `server/generate.py` 가 받은 `.cbin` **헤더를 직접 읽어** 저장 직전에 판정한다.
+상류가 무엇을 선언하든 결과가 같다. `server/contractguard.py` 가 그 판정이고
+`server/tests/test_contractguard.py` 가 "헬스 v4 · 산출 v3" 를 합성으로 재현해 잠근다.
 """
 
 from __future__ import annotations
@@ -36,47 +36,35 @@ from .jobs import JOBS
 router = APIRouter()
 
 
-class UpstreamContractMismatch(RuntimeError):
-    error_code = "UPSTREAM_CONTRACT_MISMATCH"
-
-
-def _upstream_contract_version() -> Optional[int]:
-    """A5000 이 지금 내는 계약 판본. 모르면 None — **추측하지 않는다.**"""
-    url, key = os.environ.get("BLOCKEDIT_B_URL"), os.environ.get("BLOCKEDIT_B_KEY")
-    if not url or not key:
-        return None
-    try:
-        import httpx
-
-        r = httpx.get(f"{url.rstrip('/')}/v2/trellis/health",
-                      headers={"X-Blockedit-Key": key}, timeout=10.0)
-        r.raise_for_status()
-        c = r.json().get("contract") or {}
-        v = c.get("contract_version")
-        return int(v) if isinstance(v, int) else None
-    except Exception:                                    # noqa: BLE001
-        return None
+from .contractguard import UpstreamContractMismatch  # noqa: F401  (라우트가 잡아 보고한다)
 
 
 # ══════════════════════════════════════════════════════════ ① 생성
+def _source_png(req: GenerateRequest, progress) -> bytes:
+    """prompt → RGBA. `server/t2i.py` 가 conda 경계를 subprocess 로 넘는다.
+
+    ⚠️ 실패하면 **자리표시를 내지 않는다.** 빈 이미지를 넘기면 그 뒤 파이프라인이
+       전부 정상 동작하면서 다른 물체를 만든다 — 예외가 안 나는 실패다.
+    """
+    from .t2i import render_rgba
+
+    progress(0.02, "t2i", "prompt → RGBA")
+    data, timing = render_rgba(req.raw_prompt, seed=req.seed)
+    progress(0.12, "t2i", f"RGBA {len(data):,}B · {timing}")
+    return data
+
+
 @router.post("/v2/assets", response_model=JobStatus)
 def create_asset(req: GenerateRequest) -> JobStatus:
     job = JOBS.new()
 
     def work(progress) -> dict:
-        progress(0.05, "contract", "상류 계약 판본 확인")
-        up = _upstream_contract_version()
-        if up is None:
-            raise UpstreamContractMismatch(
-                "상류(생성 백엔드) 계약 판본을 확인할 수 없다. 자격증명이 없거나 "
-                "응답하지 않는다 — 추측해서 진행하지 않는다")
-        if up != CONTRACT_VERSION:
-            raise UpstreamContractMismatch(
-                f"상류가 계약 v{up} 를 낸다. 이 서버·클라이언트는 v{CONTRACT_VERSION} 다. "
-                f"그대로 내려보내면 클라이언트가 청크를 거부해 화면이 빈다 — 멈춘다")
-        # v4 가 되면 여기서 실제 생성으로 이어진다. 지금은 도달하지 않는다.
-        raise UpstreamContractMismatch(
-            "상류 계약은 맞는데 생성 배선이 아직 없다 — 다음 웨이브다")
+        from .generate import run_generate
+
+        # 🔴 사전 점검(헬스 조회)을 하지 않는다. 선언은 증거가 아니다 —
+        #    받은 바이트를 **저장 직전에** 검증한다 (server/generate.py).
+        asset_id = f"v3-{job.job_id}"
+        return run_generate(asset_id, _source_png(req, progress), req.seed, progress)
 
     JOBS.run(job.job_id, work)
     return job

@@ -86,7 +86,9 @@ class AssetStore:
 
     def versions(self, asset_id: str) -> Dict[int, Path]:
         base = self._dir(asset_id)
-        out = {1: base / "parent"}
+        out: Dict[int, Path] = {}
+        if (base / "parent").is_dir():
+            out[1] = base / "parent"
         for d in sorted(base.glob("v*")):
             if d.is_dir() and d.name[1:].isdigit():
                 out[int(d.name[1:])] = d
@@ -155,11 +157,40 @@ class AssetStore:
         )
 
     # ── 쓰기 ────────────────────────────────────────────────────────
+    @staticmethod
+    def _slug(asset_id: str) -> str:
+        """asset_id → 디렉터리명. **경로가 되지 않게** 걸러 낸다 (§6).
+
+        생성 자산의 id 는 상류/잡에서 오므로 그대로 경로에 붙이면 `..` 이나 `/` 가
+        섞여 들어올 수 있다. 허용 문자만 남긴다.
+        """
+        safe = "".join(ch if (ch.isalnum() or ch in "-_") else "-" for ch in asset_id)
+        return safe.strip("-") or "asset"
+
+    def create(self, asset_id: str) -> Path:
+        """새 자산 슬롯. 이미 있으면 그대로 돌려준다."""
+        with self._lock:
+            existing = self._slots().get(asset_id)
+            if existing is not None:
+                return existing
+            d = self.root / self._slug(asset_id)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "manifest.json").write_text(
+                json.dumps({"asset_id": asset_id}, ensure_ascii=False), encoding="utf-8")
+            return d
+
     def put_version(self, asset_id: str, version: int,
                     blobs: Dict[str, bytes]) -> Path:
-        """편집 결과를 새 판본으로 쓴다. **바뀐 청크만** 넣는다 (나머지는 승계)."""
+        """판본을 쓴다. 편집이면 **바뀐 청크만** 넣는다 (나머지는 승계).
+
+        모르는 자산이면 슬롯을 만든다 — 생성 경로가 처음 쓰는 자리다.
+        """
+        try:
+            base = self._dir(asset_id)
+        except AssetNotFound:
+            base = self.create(asset_id)
         with self._lock:
-            d = self._dir(asset_id) / f"v{version}"
+            d = base / f"v{version}"
             d.mkdir(parents=True, exist_ok=True)
             for f in d.glob("*.cbin"):
                 f.unlink()
