@@ -47,6 +47,7 @@ ln -sf "$REPO/unity/Runtime/SlatLassoPicker.cs"   "$PROJ/Assets/DeltaContract/Sl
 ln -sf "$REPO/unity/Runtime/VoxelFrame.cs"        "$PROJ/Assets/DeltaContract/VoxelFrame.cs"
 ln -sf "$REPO/unity/Runtime/AssetScale.cs"       "$PROJ/Assets/DeltaContract/AssetScale.cs"
 ln -sf "$REPO/unity/Runtime/ArPlacement.cs"      "$PROJ/Assets/DeltaContract/ArPlacement.cs"
+ln -sf "$REPO/unity/Runtime/PlaneOutline.cs"     "$PROJ/Assets/DeltaContract/PlaneOutline.cs"
 ln -sf "$REPO/unity/Runtime/LassoCase.cs"         "$PROJ/Assets/DeltaContract/LassoCase.cs"
 ln -sf "$REPO/unity/Runtime/LassoEditApp.cs"       "$PROJ/Assets/DeltaContract/LassoEditApp.cs"
 # ChunkSceneApplier·TouchLassoController 는 **앱에서 걷어냈다** (W23).

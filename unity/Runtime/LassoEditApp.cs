@@ -179,21 +179,12 @@ namespace DeltaContract
             var t = Input.GetTouch(0);
             if (t.position.y > Screen.height - 300f || t.position.y < 260f) return;  // UI 영역
 
-            // ✏️ off → 보기만. 손가락은 **시점 회전**에 쓴다.
-            if (!_editOn)
-            {
-                // AR 이면 시점은 **사람이 몸을 움직여** 바꾼다. 드래그로 돌리지 않는다.
-                if (_ar != null && _ar.ArActive) return;
-                if (t.phase == TouchPhase.Began) { _lastDrag = t.position; _dragging = true; }
-                else if (t.phase == TouchPhase.Moved && _dragging)
-                {
-                    var d = t.position - _lastDrag; _lastDrag = t.position;
-                    _orbit -= d.x * 0.25f;
-                    _pitch = Mathf.Clamp(_pitch + d.y * 0.15f, -70f, 70f);
-                    PlaceCamera();
-                }
-                return;
-            }
+            // 🔴 **손가락 회전을 뺐다** (사용자 지시 · W26b).
+            //    "실제로 사람이 움직이며 봐야 함. 즉 Anchoring 할 것."
+            //    이건 기능 삭제가 아니라 **검증 장치**다 — 손가락으로 돌릴 수 있으면
+            //    앵커링이 진짜인지 화면에서 구분이 안 된다.
+            //    **회전이 없는데도 걸어가면 반대편이 보인다** 가 (D) 의 증명이다.
+            if (!_editOn) return;
 
             switch (t.phase)
             {
@@ -432,7 +423,7 @@ namespace DeltaContract
             GUI.Label(new Rect(24, H - 140, W - 260, 40),
                 _editOn ? (_eraserOn ? "지나간 궤적의 마스킹이 지워진다"
                                      : "라쏘로 감싸면 볼륨이 선택된다 (다시 그리면 더해진다)")
-                        : "손가락으로 돌려 본다. [편집] 을 켜면 라쏘");
+                        : "걸어서 둘러봐라 — 화면을 돌리지 않는다. [편집] 을 켜면 라쏘");
             _devOn = GUI.Toggle(new Rect(W - 230, H - 150, 210, 60), _devOn, " 개발자");
 
             // 재배치는 **명시적 버튼으로만** 연다 (라쏘 드래그가 배치를 건드리지 않게)

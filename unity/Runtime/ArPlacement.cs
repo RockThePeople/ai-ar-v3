@@ -99,12 +99,29 @@ namespace DeltaContract
             }
 
             _planes = originGo.AddComponent<ARPlaneManager>();
+            _planes.planePrefab = BuildOutlinePrefab();
             _raycasts = originGo.AddComponent<ARRaycastManager>();
             originGo.AddComponent<ARAnchorManager>();
 
             Content = new GameObject("ArContent").transform;
             Content.gameObject.SetActive(false);   // 배치 전에는 안 보인다
             return true;
+        }
+
+        /// <summary>평면 프리팹 — **윤곽선만**. MeshRenderer 를 안 붙이는 것이 요점이다
+        /// (붙이는 순간 면이 찬다. 사용자가 면 채우기를 명시적으로 배제했다).</summary>
+        static GameObject BuildOutlinePrefab()
+        {
+            var go = new GameObject("PlaneOutline");
+            var line = go.AddComponent<LineRenderer>();
+            var sh = Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default");
+            var mat = new Material(sh);
+            mat.color = new Color(0.15f, 0.85f, 1f, 1f);     // 청록 — 자산 하이라이트(주황)와 안 겹친다
+            line.material = mat;
+            line.startColor = line.endColor = mat.color;
+            go.AddComponent<PlaneOutline>();
+            go.SetActive(false);                              // 프리팹은 꺼 둔다
+            return go;
         }
 
         void Update()
@@ -159,8 +176,10 @@ namespace DeltaContract
             Content.localPosition = Vector3.zero;
             Content.localRotation = Quaternion.identity;
             Content.localScale = AssetScale.RootScale;       // 🔴 스케일의 유일한 출처
-            // 자산은 원점 중심이라 절반을 띄워 바닥에 앉힌다.
-            Content.localPosition = new Vector3(0f, 0.5f, 0f);
+            // 자산은 원점 중심이라 **절반만큼** 띄워야 바닥에 앉는다.
+            // ⚠️ 앵커 로컬은 스케일 1(미터)이다 — 여기에 0.5 를 넣으면 50cm 떠오른다.
+            //    절반은 NORMALIZED 0.5 가 아니라 `0.5 × footprint` 다.
+            Content.localPosition = new Vector3(0f, AssetScale.FootprintMeters * 0.5f, 0f);
             Content.gameObject.SetActive(true);
 
             _poseAtPlacement = new Pose(anchorGo.transform.position, anchorGo.transform.rotation);
