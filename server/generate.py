@@ -25,6 +25,7 @@ from deltacontract.uris import staging_chunk_uri  # type: ignore[import-not-foun
 
 from .assetstore import STORE
 from .contractguard import UpstreamContractMismatch, verify_blobs
+from .upstreamerr import parse_upstream_error
 
 __all__ = ["run_generate", "UpstreamUnavailable"]
 
@@ -60,7 +61,7 @@ def run_generate(asset_id: str, rgba_png: bytes, seed: int, progress) -> dict:
                    data={"meta": _json.dumps(meta)},
                    files={"image": ("image.png", rgba_png, "image/png")})
         if r.status_code >= 400:
-            raise UpstreamUnavailable(f"생성 제출 실패 {r.status_code}: {r.text[:200]}")
+            raise parse_upstream_error(r.status_code, r.text, action="생성 제출")
         job_id = r.json()["job_id"]
 
         progress(0.15, "structure", f"상류 잡 {job_id}")

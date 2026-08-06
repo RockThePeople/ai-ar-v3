@@ -30,6 +30,7 @@ from deltacontract.uris import staging_chunk_uri  # type: ignore[import-not-foun
 
 from .assetstore import STORE
 from .contractguard import verify_blobs
+from .upstreamerr import parse_upstream_error
 
 __all__ = ["run_voxhammer_edit", "UpstreamEditFailed"]
 
@@ -69,8 +70,9 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
         progress(0.2, "submit", f"<EDIT_HOST> 편집 제출 (op={spec.op})")
         r = c.post("/v2/trellis/edit", json=body)
         if r.status_code >= 400:
-            raise UpstreamEditFailed(
-                f"편집 제출 실패 {r.status_code}: {r.text[:300]}")
+            # 🔴 상류 사유를 **그대로** 올린다. "실패" 로 뭉뚱그리면 사용자가 재시도만
+            #    하고, 재시도로는 절대 안 고쳐지는 오류가 많다 (VERSION_CONFLICT 등).
+            raise parse_upstream_error(r.status_code, r.text, action="편집 제출")
         job_id = r.json().get("job_id")
         if not job_id:
             raise UpstreamEditFailed(f"job_id 가 없다: {r.text[:200]}")
