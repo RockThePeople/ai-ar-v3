@@ -53,6 +53,7 @@ namespace DeltaContract
         Vector3 _lastCamPos;
         bool _hasLastCam;
         float _diagAt;
+        float _relocateAt = -99f;
 
         // ★ 앵커 pose 기록 — 편집 전후 델타를 재려고 남긴다.
         Pose _poseAtPlacement;
@@ -236,6 +237,13 @@ namespace DeltaContract
         public bool TryPlace(Vector2 screenPos)
         {
             if (CurrentMode != Mode.Placing) return false;
+            // 🔴 재배치를 켠 **그 탭**이 배치로 흘러들어 눈앞에 아무렇게나 놓이던 문제.
+            //    토글 직후 짧게 무시한다 — 사용자는 켠 뒤 **표면을 다시 탭**해야 한다.
+            if (Time.unscaledTime - _relocateAt < 0.45f)
+            {
+                Debug.Log($"{Tag} 재배치 직후 탭 무시 ({Time.unscaledTime - _relocateAt:F2}s)");
+                return false;
+            }
 
             Pose pose;
             ARPlane hitPlane = null;
@@ -327,12 +335,24 @@ namespace DeltaContract
                       $"scale={AssetScale.FootprintMeters}m ar={ArActive} planes={PlaneCount}");
         }
 
-        /// <summary>재배치 — **명시적으로만** 연다.</summary>
+        public bool HasAnchor => _anchor != null;
+
+        /// <summary>재배치 — **명시적으로만** 연다 (토글 ON).</summary>
         public void BeginRelocate()
         {
+            _relocateAt = Time.unscaledTime;
             CurrentMode = Mode.Placing;
-            Status = "재배치 — 새 자리를 탭하라";
-            Debug.Log($"{Tag} 재배치 모드");
+            Status = "재배치 — 평면 위를 탭하라";
+            Debug.Log($"{Tag} 재배치 모드 ON");
+        }
+
+        /// <summary>재배치 취소 (토글 OFF). 이미 놓인 것이 있으면 그대로 둔다.</summary>
+        public void CancelRelocate()
+        {
+            if (_anchor == null) return;          // 아직 한 번도 안 놓였으면 배치 모드를 유지한다
+            CurrentMode = Mode.Placed;
+            Status = "배치 유지 — 편집을 켜고 라쏘로 골라라";
+            Debug.Log($"{Tag} 재배치 모드 OFF (기존 배치 유지)");
         }
 
         /// <summary>★ 앵커 pose 델타. 편집 전후로 불러 0 인지 본다.</summary>

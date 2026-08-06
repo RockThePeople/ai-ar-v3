@@ -162,6 +162,16 @@ namespace DeltaContract
 
         Camera Cam() => ViewCamera != null ? ViewCamera : Camera.main;
 
+        /// <summary>재배치 토글의 **터치 좌표계**(좌하단 원점) 사각형.
+        /// GUI 는 좌상단 원점이라 여기서 한 번 뒤집는다 — 두 좌표계를 섞으면
+        /// 버튼이 눈에 보이는 자리와 다른 곳에서 먹힌다.</summary>
+        Rect RelocateToggleRect()
+        {
+            float W = Screen.width, H = Screen.height;
+            float guiX = W - 470f, guiY = H - 152f, w = 230f, h = 66f;
+            return new Rect(guiX - 12f, H - (guiY + h) - 12f, w + 24f, h + 24f);   // 여유 12px
+        }
+
         void PlaceCamera()
         {
             var cam = Cam(); if (cam == null) return;
@@ -187,8 +197,13 @@ namespace DeltaContract
                     var tp = Input.GetTouch(0);
                     if (tp.phase == TouchPhase.Began)
                         Debug.Log($"{Tag} 배치모드 터치 ({tp.position.x:F0},{tp.position.y:F0})");
-                    // 배치 중에는 아래 버튼이 전부 비활성이다 — 상단 패널만 피한다.
-                    if (tp.phase == TouchPhase.Ended && tp.position.y < Screen.height - 300f)
+                    // 상단 패널과 **재배치 토글 사각형**을 피한다.
+                    // ⚠️ 토글은 배치 모드에서도 살아 있어야 하므로(취소용) 그 탭이
+                    //    TryPlace 로도 흘러 들어가면 **누르자마자 그 자리에 재배치**된다 —
+                    //    실기 로그 TAP (765,103) 이 그 증상이었다.
+                    if (tp.phase == TouchPhase.Ended
+                        && tp.position.y < Screen.height - 300f
+                        && !RelocateToggleRect().Contains(tp.position))
                         _ar.TryPlace(tp.position);
                 }
                 return;
@@ -446,13 +461,19 @@ namespace DeltaContract
                         : "걸어서 둘러봐라 — 화면을 돌리지 않는다. [편집] 을 켜면 라쏘");
             _devOn = GUI.Toggle(new Rect(W - 230, H - 150, 210, 60), _devOn, " 개발자");
 
-            // 재배치는 **명시적 버튼으로만** 연다 (라쏘 드래그가 배치를 건드리지 않게)
-            if (_ar != null && _ar.CurrentMode == ArPlacement.Mode.Placed)
-                if (GUI.Button(new Rect(W - 470, H - 152, 230, 66), "재배치"))
+            // 재배치는 **토글**이다 (사용자 지시). 켜면 평면 탭으로 다시 놓고, 끄면 취소.
+            // 라쏘 드래그가 배치를 건드리지 않게 하려면 이 상태가 명시적이어야 한다.
+            if (_ar != null && _ar.HasAnchor)
+            {
+                bool relocating = _ar.CurrentMode == ArPlacement.Mode.Placing;
+                bool want = GUI.Toggle(new Rect(W - 470, H - 152, 230, 66), relocating,
+                                       relocating ? "재배치 ON" : "재배치", GUI.skin.button);
+                if (want != relocating)
                 {
-                    _editOn = false; _eraserOn = false;      // 편집을 끄고 배치로 넘어간다
-                    _ar.BeginRelocate();
+                    if (want) { _editOn = false; _eraserOn = false; _ar.BeginRelocate(); }
+                    else _ar.CancelRelocate();
                 }
+            }
 
             // ── 편집 자연어 입력창
             if (_askEdit)
