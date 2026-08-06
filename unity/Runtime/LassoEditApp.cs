@@ -175,6 +175,25 @@ namespace DeltaContract
         void Update()
         {
             PumpKeyboard();
+
+            // ── 🔴 배치 모드가 입력을 **독점**한다. 편집 입력은 그동안 멈춘다.
+            //    ⚠️ 이 분기가 한 번 통째로 사라져서 탭 배치가 아예 안 먹었다 (W26c).
+            //       조준점 UI 를 걷어낼 때 같이 날아갔고, **예외는 안 났다** —
+            //       "탭해도 아무 일도 안 일어난다" 로만 보였다.
+            if (_ar != null && _ar.CurrentMode == ArPlacement.Mode.Placing)
+            {
+                if (Input.touchCount > 0)
+                {
+                    var tp = Input.GetTouch(0);
+                    if (tp.phase == TouchPhase.Began)
+                        Debug.Log($"{Tag} 배치모드 터치 ({tp.position.x:F0},{tp.position.y:F0})");
+                    // 배치 중에는 아래 버튼이 전부 비활성이다 — 상단 패널만 피한다.
+                    if (tp.phase == TouchPhase.Ended && tp.position.y < Screen.height - 300f)
+                        _ar.TryPlace(tp.position);
+                }
+                return;
+            }
+
             if (Input.touchCount == 0) { _dragging = false; return; }
             var t = Input.GetTouch(0);
             if (t.position.y > Screen.height - 300f || t.position.y < 260f) return;  // UI 영역

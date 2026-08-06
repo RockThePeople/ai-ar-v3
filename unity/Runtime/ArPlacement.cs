@@ -239,8 +239,16 @@ namespace DeltaContract
 
             Pose pose;
             ARPlane hitPlane = null;
-            if (ArActive && _raycasts != null &&
-                _raycasts.Raycast(screenPos, _hits, TrackableType.PlaneWithinPolygon) && _hits.Count > 0)
+            // 🔴 PlaneWithinPolygon 만 쓰면 경계 다각형 안쪽만 맞는다 — 감지 초기의 작은
+            //    평면에서는 사람이 "평면 위" 를 눌러도 빗나간다. 폴리곤 → 경계 → 추정 순으로 넓힌다.
+            bool hitOk = ArActive && _raycasts != null &&
+                (_raycasts.Raycast(screenPos, _hits, TrackableType.PlaneWithinPolygon)
+                 || _raycasts.Raycast(screenPos, _hits, TrackableType.PlaneWithinBounds)
+                 || _raycasts.Raycast(screenPos, _hits, TrackableType.PlaneEstimated))
+                && _hits.Count > 0;
+            Debug.Log($"{Tag} TAP ({screenPos.x:F0},{screenPos.y:F0}) ar={ArActive} " +
+                      $"planes={PlaneCount} hits={_hits.Count} ok={hitOk}");
+            if (hitOk)
             {
                 // 🔴 원인 3 — 히트 pose 의 **회전을 그대로 쓰지 않는다.** 기울어진 평면에
                 //    붙으면 오브젝트가 기울어 서고 "놓였다" 는 감각이 깨진다.
