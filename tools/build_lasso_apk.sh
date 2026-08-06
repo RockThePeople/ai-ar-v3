@@ -83,6 +83,9 @@ fi
 CASE_SRC="${V3_CASE_DIR:-${TMPDIR:-/tmp}/lasso-unity/Cases}/$CASE"
 [ -f "$CASE_SRC" ] || { echo "케이스가 없다: $CASE_SRC" >&2; exit 2; }
 cp "$CASE_SRC" "$PROJ/Assets/StreamingAssets/$CASE"
+# 저장된 PatchPackage — removed ≠ 0 에서 (C) 를 재려고 싣는다 (서버 편집 없이 적용)
+[ -f "$REPO/handoff/w27f-ironman-result/patch.json" ] && \
+  cp "$REPO/handoff/w27f-ironman-result/patch.json" "$PROJ/Assets/StreamingAssets/stored-patch.json"
 echo "케이스 $CASE ($(wc -l < "$CASE_SRC") 줄) → StreamingAssets"
 
 # 🔴 clean 빌드 — `ARCoreBuildProcessor` 는 매니페스트 태그를 **추가만** 한다.
