@@ -89,6 +89,10 @@ BUILD = _build()
 
 app = FastAPI(title="ai-ar-v3 skeleton", docs_url=None, redoc_url=None, openapi_url=None)
 
+# ── Unity 가 부를 /v2 라우트 넷 (W26b). 계약 스키마를 그대로 쓴다.
+from server.routes_v2 import router as _v2_router  # noqa: E402
+app.include_router(_v2_router)
+
 
 @app.get("/healthz")
 def healthz() -> dict[str, object]:
