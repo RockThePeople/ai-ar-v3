@@ -1,0 +1,20 @@
+{
+  "load_s": 22.144713878631592,
+  "features_s": 23.465389013290405,
+  "edit_s": 72.715096950531,
+  "total_s": 118.32531833648682,
+  "peak_mib": 12426.845703125,
+  "capture_calls": 1,
+  "slat_shape": {
+    "coords": [
+      7811,
+      4
+    ],
+    "feats": [
+      7811,
+      8
+    ]
+  },
+  "source_prompt": "a black motorcycle with a rider, the rider wearing a plain helmet",
+  "target_prompt": "a black motorcycle with a rider, the rider wearing an Iron Man helmet, red and gold armored faceplate with glowing eye slits"
+}
