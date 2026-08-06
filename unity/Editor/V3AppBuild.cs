@@ -33,6 +33,8 @@ namespace DeltaContract.EditorTools
             BuildScene(caseFile);
             ConfigurePlayer();
             ConfigureXr();
+            ConfigureInputHandler();
+            ConfigureGraphicsApi();
 
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(apk)));
             var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
@@ -146,6 +148,43 @@ namespace DeltaContract.EditorTools
             bool ok = XRPackageMetadataStore.IsLoaderAssigned(arCoreLoader, BuildTargetGroup.Android);
             Debug.Log($"[V3AppBuild] XR: ARCore 로더 할당={ok} · InitOnStart={settings.InitManagerOnStart}");
             if (!ok) EditorApplication.Exit(1);
+        }
+
+        /// <summary>🔴 원인 1 의 둘째 겹 — `activeInputHandler = 2 (Both)`.
+        ///
+        /// **패키지를 설치해도 안 바뀌고 public API 도 없다.** 그런데 이게 Input System 이
+        /// 아니면 `TrackedPoseDriver` 가 값을 못 받아 **카메라가 원점에 고정**된다.
+        /// ai-ar-prototype 이 ProjectSettings.asset 직렬화 속성을 직접 고쳤고
+        /// (ProjectConfigurator.cs:347-359), v3 에는 이 설정 자체가 없었다.</summary>
+        static void ConfigureInputHandler()
+        {
+            var assets = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/ProjectSettings.asset");
+            if (assets == null || assets.Length == 0)
+            {
+                Debug.LogError("[V3AppBuild] ProjectSettings.asset 을 못 읽었다"); return;
+            }
+            var so = new SerializedObject(assets[0]);
+            var prop = so.FindProperty("activeInputHandler");
+            if (prop == null) { Debug.LogError("[V3AppBuild] activeInputHandler 속성이 없다"); return; }
+            int before = prop.intValue;
+            if (before != 2)
+            {
+                prop.intValue = 2;                       // 0=Old, 1=New, 2=Both
+                so.ApplyModifiedProperties();
+                AssetDatabase.SaveAssets();
+            }
+            Debug.Log($"[V3AppBuild] activeInputHandler {before} → {prop.intValue} (2=Both)");
+        }
+
+        /// <summary>그래픽 API 를 **고정**한다. v2 는 OpenGLES3("ARCore 는 이 경로가 가장 안전"),
+        /// prototype 은 Vulkan 전용 — **둘 다 자동 API 를 껐다.** v3 는 미확인이었다.
+        /// 여기서는 v2 쪽(OpenGLES3)을 따른다. ARCore 와의 조합 실적이 이 리포 계열에 있다.</summary>
+        static void ConfigureGraphicsApi()
+        {
+            PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+            PlayerSettings.SetGraphicsAPIs(BuildTarget.Android,
+                new[] { UnityEngine.Rendering.GraphicsDeviceType.OpenGLES3 });
+            Debug.Log("[V3AppBuild] 그래픽 API 고정: OpenGLES3 (자동 꺼짐)");
         }
 
         static void ConfigurePlayer()
