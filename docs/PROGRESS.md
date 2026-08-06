@@ -1,4 +1,4 @@
-# PROGRESS — 국소 3D 편집 시스템 (ai-ar-v3) · **rev53**
+# PROGRESS — 국소 3D 편집 시스템 (ai-ar-v3) · **rev54**
 
 > **이 파일이 계획의 단일 진실이다.** 매 세션의 첫 동작은 이것을 읽는 것, 마지막은 §6 에 결과를 적는 것.
 > 결정 원문·웨이브 기록·종결 갈래는 `DECISIONS_ARCHIVE.md` 에 있다. 여기는 얇게 유지한다.
@@ -324,6 +324,94 @@ AR 앵커 위에서라야 완전해진다** — 앵커가 리셋되면 사용자
   ⇒ A5000 의 deltacontract 를 v4 로 올리는 것이 W27 의 선행 조건
 ```
 
+### 🔴🔴 W26c — AR 이 처참한 이유.  선행 프로젝트 3개를 뜯어 대조했다
+
+> 사용자 지적: **"AR 성능(Spatial Aware)이 너무 처참하다."**
+> `ai-ar-v2` · `ai-ar-prototype` · `ai-ar`(빌드 산출물 역분석) 전수 대조 결과.
+
+```
+★★★ 원인 1 — `TrackedPoseDriver` 가 **리포 전체에 0건**이다 (grep 확인)
+   AF6 에서 XROrigin 은 카메라를 스스로 움직이지 않는다.  카메라 자세는
+   TrackedPoseDriver 가 InputSystem 에서 받아 넣는다.  그게 없으면
+   **카메라가 Camera Offset 원점에 영원히 고정된다.**
+   ⇒ 영상은 나온다(ARCameraBackground 는 무관) · 평면도 감지된다 ·
+     그런데 **오브젝트가 화면에 붙어 있다.**  예외도 경고도 없다
+
+   ⚠️ 이것이 ai-ar-prototype 이 한 사이클을 태워 문서로 남긴 **"누끼"** 실패다
+      (contract/UNITY_CLIENT.md §12 · §12-1).  원문:
+      "이 절의 첫 판은 'M1 열림' 이라고 적었다. 성급했다.  자산이 보인 것은 맞지만
+       **화면에 붙어 있었다**.  로그는 전부 초록이었고 사용자가 눈으로 보고서야 드러났다.
+       ★ **AR 판정은 로그로 하지 마라.**"
+
+   ★ prototype 이 밝힌 원인은 **세 겹**이고, 우리는 그중 1·3 을 미확인 상태로 두고 있다
+     ① AddComponent<TrackedPoseDriver>() 는 **입력 액션이 빈 채로** 붙는다
+        → 바인딩을 코드로 직접 써야 한다:
+          <XRHMD>/centerEyePosition + <HandheldARInputDevice>/devicePosition
+          <XRHMD>/centerEyeRotation + <HandheldARInputDevice>/deviceRotation
+     ② `activeInputHandler = 2 (Both)` 여야 한다.  **패키지 설치로는 안 바뀐다.**
+        public API 가 없어 prototype 은 ProjectSettings.asset 직렬화 속성을 직접 고쳤다
+        (ProjectConfigurator.cs:347-359).  ⇒ v3 에 이 설정이 **없다** (grep 0건)
+     ③ ARInputManager.OnEnable 이 **그 시점의** activeLoader 에서 XRInputSubsystem 을 찾는다
+        늦게 켜면 controls=0 · 값이 영원히 (0,0,0)
+   ★★ prototype 의 한 줄 진단법 — **AR 씬을 만들면 이것부터 찍어라**
+        InputSystem.devices  20개 — XR 장치 0개   ← 세 겹 전체가 이 한 줄에 드러난다
+                     수정 후 21개 — HandheldARInputDevice(ARCore) 추가
+                     TrackedPoseDriver pos: controls=0 → 1
+
+★ 원인 2 — `requestedDetectionMode` 를 안 정한다 (grep 0건)
+   prototype 은 씬 빌더와 런타임 **두 곳에서** Horizontal|Vertical 을 못박고 로그를 찍는다
+
+★ 원인 3 — 평면 히트의 **회전을 그대로 쓴다** (ArPlacement.cs:155 `pose = _hits[0].pose`)
+   v2 와 prototype 은 **둘 다 법선을 버리고 yaw-toward-camera 만** 쓴다.  원문:
+   "기울어진 평면에 붙으면 눈사람이 기울어 서고, 그러면 놓였다는 감각이 깨진다"
+   ⇒ 살짝 기운 평면에서 자산이 비스듬히 선다.  지금 증상과 일치한다
+
+★ 원인 4 — 앵커 생성 방식이 AF6 이 명시적으로 경고하는 형태다
+   v3: `anchorGo.AddComponent<ARAnchor>()` (ArPlacement.cs:179)
+   AF6 프레임워크 경고 문자열(ai-ar 바이너리에서 실제로 발견):
+     "has failed to add itself to the anchor subsystem …
+      you should use **ARAnchorManager.TryAddAnchorAsync** instead of adding the
+      AR Anchor component to GameObjects at runtime"
+   ⇒ 앵커가 서브시스템에 등록 안 되면 **재로컬라이즈 보정을 못 받는다** = 드리프트
+
+★ 원인 5 — targetFrameRate 미설정.  prototype 은 60 을 명시 (ARSceneDriver.cs:98)
+
+────────── 선행 프로젝트가 이미 답을 낸 것들 (재발명 금지) ──────────
+평면 표시   ★ **MeshRenderer 를 끄지 말고 아예 안 붙인다** (prototype ARSceneBuilder.cs:164-206)
+            ARPlaneMeshVisualizer.SetVisible 이 매번 SetRendererEnabled<MeshRenderer>(true) 로
+            **되켠다**(:137).  그 함수가 `if (component)` 로 null 을 건너뛰므로,
+            컴포넌트를 안 붙이면 면이 영원히 안 그려지고 LineRenderer 만 남는다
+            ⇒ 사용자의 "면 채우지 마라" 요구와 정확히 일치하는 검증된 방법이다
+            MeshFilter 는 **남긴다** — 레이캐스트가 그 메시를 친다
+평면 0개    버그가 아니다.  ARCore 는 **시차로 얻은 점군**을 요구한다.  폰이 고정돼 있으면
+            점군이 안 쌓이고 평면도 안 나온다.  ⚠️ 코드 문제로 오해하고 고치기 시작하면
+            멀쩡한 코드를 망친다.  대기 예산 240초 · HUD 4Hz(GC 때문)
+평면 선택   `ARPlane.extents` 는 **half-dimension** 이다.  실제 크기는 `ARPlane.size`.
+            extents 를 크기로 읽으면 길이 절반·면적 1/4 로 조용히 틀린다
+AF6 API     planesChanged ❌ 폐기 → trackablesChanged (또는 trackables.count 폴링)
+            ARAnchorManager.AddAnchor(Pose) ❌ 없다 → TryAddAnchorAsync
+            반환은 Task 가 아니라 Awaitable<Result<>> — GetAwaiter() 로 코루틴 폴링
+드리프트     ★ **상태 플래그로는 안 잡힌다.**  prototype 실측: 카메라가 20초에 80.9m 이동했는데
+            loss_events=0 · anchor_state=Tracking.  ARCore 는 "정상 추적" 이라고 보고한다
+            ⇒ ARDivergenceMonitor: **물리적 타당성**으로 판정 (5 m/s · 30 m 상한)
+            ⇒ 그리고 **구간 단위 주석**이지 세션 차단이 아니다 — 초기 재로컬라이즈 점프는
+              거의 매 세션 일어난다
+드리프트 계측 앵커를 **배치에 쓰지 말고 계측에 쓴다** — 고정 배치 pose 와 앵커 위치의
+            벌어짐이 곧 세션 drift (prototype ARSceneDriver.cs:496-514)
+전제 검사   "카메라가 안 움직이면 세션 공간 전체가 정지하므로 앵커도 안 움직인다.
+            **'안정적이다' 가 아니라 잴 대상이 없었다.**"  ⇒ cam_travel ≥ 1.0m 를 전제로 검사
+            ★ world 와 camRel 을 **나란히** 찍어라 — 둘이 45초 내내 동일하면 그게 누끼다
+ARCore 설정  requirement/depth 를 Optional 로.  안 내리면 매니페스트에
+            `com.google.ar.core.depth required="true"` 가 박힌다.
+            ⚠️ ARCoreBuildProcessor 는 매니페스트 태그를 **추가만** 한다 —
+              바꿨으면 `--clean` 빌드가 필요하다(낡은 태그가 살아남는다)
+그래픽      v2 는 OpenGLES3 고정("ARCore 는 이 경로가 가장 안전") · prototype 은 Vulkan 전용.
+            둘 다 자동 API 를 껐다.  v3 는 미확인
+멀티유저     `ai-ar` 는 **이미지 마커(marker_A) + Photon PUN2**, 모든 pose 를 앵커 상대로 저장.
+            클라우드 앵커 없음.  ⚠️ 다만 그 앵커도 **맨 GameObject** 라 보정을 못 받는다
+            ⇒ W28 에서 재사용하되 ARAnchor 로 승격해야 한다
+```
+
 ## 4. Plan
 
 ```
@@ -334,7 +422,8 @@ W24 ★ 청크 8³ → 16³ (D75)
 W25 ☑ **PR #9·#10 머지 → 빌드 경로 수정 → 실기에서 곡면 확인**  ✅ 성립 (PR #11)
 W26 ☑ ① [맥북] AR 살아남 (카메라·평면감지·앵커 코드).  ★ 탭 배치 실기 미완
     ☑ ② [3090] 계약 확정 · removed/halo 실측 · 🔴 A5000 v3 블로커 발견
-W26b ▶ 병렬 세 갈래
+W26c ▶ 🔴 **AR 정상화** — 원인 5개 확정(§3).  TrackedPoseDriver 부재가 1번
+     그 다음 병렬 세 갈래
     ① [맥북] 🔴 **평면 테두리 하이라이트 · 손가락 회전 제거 · 실기 탭 배치**  ← 사용자 지시
     ② [A5000] 🔴 **deltacontract v4 승급** — W27 의 선행 조건.  안 하면 화면이 빈다
     ③ [3090] 서버 라우트 구현 (생성/편집/폴링/청크) — 계약은 확정됐다
