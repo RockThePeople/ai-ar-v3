@@ -1,0 +1,92 @@
+{
+  "asset_id": "v3-moto-b",
+  "op": "recolor",
+  "format": "D72",
+  "gate_level1": {
+    "efficacy": null,
+    "preservation": true,
+    "in_place": true
+  },
+  "efficacy_detail": {
+    "hue_shift_deg": 3.6,
+    "hue_threshold_deg": 30.0,
+    "hue_ok": null,
+    "is_achromatic": true,
+    "before": {
+      "mean_rgb": [
+        43.1,
+        38.5,
+        36.0
+      ],
+      "mean_hue_deg": 21.3,
+      "mean_sat": 0.028,
+      "n_vertices": 33043
+    },
+    "after": {
+      "mean_rgb": [
+        255.0,
+        106.0,
+        0.0
+      ],
+      "mean_hue_deg": 24.9,
+      "mean_sat": 1.0,
+      "n_vertices": 33043
+    },
+    "rgb_distance": 225.3,
+    "sat_delta": 0.972,
+    "visual_confirmed": null,
+    "color_renders": {
+      "before": "color",
+      "after": "color_after"
+    }
+  },
+  "preservation_detail": {
+    "geometry_byte_identity": 1.0,
+    "geometry_chunks_same": 89,
+    "geometry_chunks_total": 89,
+    "inherited_byte_identity": 1.0
+  },
+  "in_place_detail": {
+    "changed": 24,
+    "added": 0,
+    "removed": 0,
+    "changed_keys": [
+      "3_5_1",
+      "3_5_2",
+      "3_5_3",
+      "3_5_4",
+      "3_6_1",
+      "3_6_2",
+      "3_6_3",
+      "3_6_4",
+      "3_7_1",
+      "3_7_2",
+      "3_7_3",
+      "3_7_4",
+      "4_5_1",
+      "4_5_2",
+      "4_5_3",
+      "4_5_4",
+      "4_6_1",
+      "4_6_2",
+      "4_6_3",
+      "4_6_4",
+      "4_7_1",
+      "4_7_2",
+      "4_7_3",
+      "4_7_4"
+    ]
+  },
+  "reference": {
+    "transfer_saving": 0.7033311946955227,
+    "note": "참고값 — 게이트 문턱이 아니다 (D70)"
+  },
+  "mask": {
+    "n_cells": 1386,
+    "fingerprint": "28b22e0004e68288c21dadb08222e9e8a50006e8905ff9462267f981fa2df7e9",
+    "grid_source": "slat_coords"
+  },
+  "gate_notes": {
+    "note": "뒷바퀴 — 다리·스윙암 접촉부를 y=46 에서 잘라 오염 0셀"
+  }
+}

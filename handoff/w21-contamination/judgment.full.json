@@ -1,0 +1,98 @@
+{
+  "asset_id": "v3-moto-b",
+  "op": "recolor",
+  "format": "D72",
+  "gate_level1": {
+    "efficacy": null,
+    "preservation": true,
+    "in_place": true
+  },
+  "efficacy_detail": {
+    "hue_shift_deg": 3.4,
+    "hue_threshold_deg": 30.0,
+    "hue_ok": null,
+    "is_achromatic": true,
+    "before": {
+      "mean_rgb": [
+        35.4,
+        31.9,
+        29.9
+      ],
+      "mean_hue_deg": 21.6,
+      "mean_sat": 0.022,
+      "n_vertices": 52215
+    },
+    "after": {
+      "mean_rgb": [
+        255.0,
+        106.0,
+        0.0
+      ],
+      "mean_hue_deg": 24.9,
+      "mean_sat": 1.0,
+      "n_vertices": 52215
+    },
+    "rgb_distance": 233.7,
+    "sat_delta": 0.978,
+    "visual_confirmed": null,
+    "color_renders": {
+      "before": "color",
+      "after": "color_after"
+    }
+  },
+  "preservation_detail": {
+    "geometry_byte_identity": 1.0,
+    "geometry_chunks_same": 89,
+    "geometry_chunks_total": 89,
+    "inherited_byte_identity": 1.0
+  },
+  "in_place_detail": {
+    "changed": 30,
+    "added": 0,
+    "removed": 0,
+    "changed_keys": [
+      "2_4_2",
+      "3_4_2",
+      "3_4_3",
+      "3_5_1",
+      "3_5_2",
+      "3_5_3",
+      "3_5_4",
+      "3_6_1",
+      "3_6_2",
+      "3_6_3",
+      "3_6_4",
+      "3_7_1",
+      "3_7_2",
+      "3_7_3",
+      "3_7_4",
+      "4_4_2",
+      "4_4_3",
+      "4_5_1",
+      "4_5_2",
+      "4_5_3",
+      "4_5_4",
+      "4_6_1",
+      "4_6_2",
+      "4_6_3",
+      "4_6_4",
+      "4_7_1",
+      "4_7_2",
+      "4_7_3",
+      "4_7_4",
+      "5_4_2"
+    ]
+  },
+  "reference": {
+    "transfer_saving": 0.5880160078269228,
+    "note": "참고값 — 게이트 문턱이 아니다 (D70)"
+  },
+  "mask": {
+    "n_cells": 2310,
+    "fingerprint": "88270814e8607011597f7c25f47991749088e35fbb1ffae1f4a55ca1e314a088",
+    "grid_source": "slat_coords"
+  },
+  "gate_notes": {
+    "note": "★ 대조군 — 바퀴 원판 전체. 왼쪽 호가 다리와 겹쳐 787셀이 딸려 온다"
+  }
+}

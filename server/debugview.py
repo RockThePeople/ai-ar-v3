@@ -487,8 +487,8 @@ def depth_png(cells: np.ndarray, *, scale: int = 10, view_axis: int = 1) -> byte
 #
 # 입력은 **`.cbin` 디렉터리**다. recolor 가 무엇을 노출하든 이 시스템의 산출물 모양은
 # 청크 세트 하나뿐이므로(D8), 새 계약을 발명하지 않고 그것만 받는다.
-def color_front_png(chunk_dir, *, scale: int = 8, view_axis: int = 1) -> bytes:
-    """`.cbin` 디렉터리 → 컬러 렌더 PNG. 시선 축을 향해 가장 가까운 정점의 색.
+def color_front_arr(chunk_dir, *, view_axis: int = 1) -> np.ndarray:
+    """`.cbin` 디렉터리 → 컬러 렌더 (H,W,3) 배열. 시선 축을 향해 가장 가까운 정점의 색.
 
     색이 없는 청크(`FLAG_COLOR` 미설정)는 건너뛴다 — 무채색으로 채우면
     "색이 안 바뀌었다" 와 "색이 애초에 없다" 가 화면에서 같아 보인다.
@@ -519,6 +519,12 @@ def color_front_png(chunk_dir, *, scale: int = 8, view_axis: int = 1) -> bytes:
     img = _canvas()
     for (x, z), (_, c) in best.items():
         img[VOXEL_RES - 1 - z, x] = c
+    return img
+
+
+def color_front_png(chunk_dir, *, scale: int = 8, view_axis: int = 1) -> bytes:
+    """`color_front_arr` 를 PNG 로. 배열이 따로 필요한 곳(대조 합성)이 있어서 갈랐다."""
+    img = color_front_arr(chunk_dir, view_axis=view_axis)
     return _png(np.repeat(np.repeat(img, scale, axis=0), scale, axis=1))
 
 
@@ -614,7 +620,8 @@ def render_runs_index(runs) -> str:
                 # (judgment.json 이 없다 vs gate_g2 블록이 없다). 라벨만으로는 못 가른다.
                 f'<td class="{cls}">{"—" if r.gate == NOT_APPLICABLE_TXT else r.gate}'
                 f'{f"<br><span class=\"why\">{r.gate_reason}</span>" if r.gate_reason else ""}</td>'
-                f'<td>{"3D " + str(len(r.models)) + "개" if r.models else "<span class=\"why\">3D 없음</span>"}</td>'
+                f'<td>{"3D " + str(len(r.models)) + "개" if r.models else "<span class=\"why\">3D 없음</span>"}'
+                f'{f"<div class=\"void\">{r.stale_contract}</div>" if r.stale_contract else ""}</td>'
                 f'<td><a href="/runs/{r.run_id}">상세 →</a></td></tr>'
             )
         return rows
@@ -755,6 +762,15 @@ def render_run_detail(r, spec) -> str:
                 '조립 함수가 색을 버렸기 때문이고, 지금은 <b>정점 색을 그대로 싣는다</b>.'
                 '</div>'
             )
+        # 🔴 뷰어 색으로 색상값을 판정하지 마라. 정점 색은 (255,106,0) 주황인데
+        #    model-viewer 의 조명·톤매핑을 거치면 노랑에 가깝게 보인다. 데이터가
+        #    아니라 렌더러의 성질이다 — 색상값은 **색 렌더 PNG** 로 본다 (D19-a).
+        note_m += (
+            '<div class="legend warn">⚠️ <b>뷰어 색으로 색상값을 판정하지 마라.</b> '
+            '조명·톤매핑을 거치므로 실제보다 밝고 노랗게 보인다 — moto-b 뒷바퀴의 '
+            '정점 색은 <code>(255,106,0)</code> 주황이다. 색상값은 아래 '
+            '<b>색 렌더</b>로 본다.</div>'
+        )
         viewer = (
             '<div class="pane"><h2>3D 뷰어 — 돌려서 확인</h2>'
             f'<div class="mvs">{cards}</div>{note_m}</div>'
@@ -762,6 +778,9 @@ def render_run_detail(r, spec) -> str:
 
     # 🔴 철회된 수치는 화면 **맨 위에서** 철회라고 말한다. 표 밑에 각주로 달면
     #    숫자를 먼저 읽고 각주는 안 읽는다 — 그 순서가 이 프로젝트가 물린 자리다.
+    stale_banner = (
+        f'<div class="warn"><b>⚠️ {r.stale_contract}</b></div>' if r.stale_contract else ""
+    )
     void_banner = (
         f'<div class="warn"><b>⚠️ 이 산출물의 수치는 철회됐다.</b> {r.invalidated}.'
         ' 아래 숫자를 현행 수치로 인용하지 마라.</div>'
@@ -814,7 +833,7 @@ def render_run_detail(r, spec) -> str:
         return _re.sub(r"`(.+?)`", r"<code>\1</code>", t)
 
     caution = "".join(
-        f'<div class="warn"><b>{_md(head)} (A5000 원문)</b><ul>'
+        f'<div class="warn"><b>{_md(head)} (NOTE 원문)</b><ul>'
         + "".join(f"<li>{_md(ln)}</li>" for ln in lines)
         + "</ul></div>"
         for head, lines in r.note_sections
@@ -823,7 +842,8 @@ def render_run_detail(r, spec) -> str:
     # 없으면 화면이 사실의 절반만 말하게 된다. **판정은 안 바꾸고 단서만 같이 낸다.**
     if r.gate_notes:
         caution += (
-            '<div class="warn"><b>게이트 단서 (judgment.json · A5000 원문)</b><ul>'
+            '<div class="warn"><b>게이트 단서 (judgment.json 원문 — 그 판정 파일을 '
+            '만든 쪽이 적은 것이다)</b><ul>'
             + "".join(f"<li><b>{_md(k)}</b> — {_md(v)}</li>" for k, v in r.gate_notes.items())
             + "</ul></div>"
         )
@@ -855,6 +875,9 @@ def render_run_detail(r, spec) -> str:
                 rows += _gate_row(k, v)
         return rows
 
+    j_all = r.records.get("judgment") or {}
+    gate_block = ("gate_level1" if "gate_level1" in j_all
+                  else "gate_g2" if "gate_g2" in j_all else "gate_g2 · gate_level1")
     gate_rows = (_gate_rows(r.gate_detail)
                  or f'<tr><td colspan="2">{MISSING_TXT} — 판정 기록이 없다</td></tr>')
 
@@ -878,6 +901,7 @@ def render_run_detail(r, spec) -> str:
 <h1>{_KIND_KO.get(r.kind, r.kind)} · {r.asset_id or r.rel}</h1>
 <p class="sub">{r.when} · <code>{r.rel}</code> · <a href="/runs">← 목록</a></p>
 {void_banner}
+{stale_banner}
 {note}
 {viewer}
 {stage_pane}
@@ -886,7 +910,7 @@ def render_run_detail(r, spec) -> str:
 <div class="legend">{spec["why"]}</div></div>
 {caution}
 {comp_tbl}
-<table><tr><th>게이트 (gate_g2 기록)</th><th>판정</th></tr>{gate_rows}</table>
+<table><tr><th>게이트 ({gate_block} 기록)</th><th>판정</th></tr>{gate_rows}</table>
 {table("지표 (원시 개수 우선)", met)}
 {table("매니페스트", {k: v for k, v in man.items() if k != "chunks"})}
 <p class="foot">
