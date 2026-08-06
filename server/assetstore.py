@@ -78,6 +78,7 @@ class AssetStore:
                 self.read_roots.append(r)
         self._lock = threading.Lock()
         self._extra: Dict[str, Dict[int, Path]] = {}   # 런타임 판본 (편집 결과)
+        self._slots_cache = None                      # (mtime 지문, 슬롯)
 
     @property
     def root(self) -> Path:
@@ -86,9 +87,26 @@ class AssetStore:
 
     # ── 조회 ────────────────────────────────────────────────────────
     def _slots(self) -> Dict[str, Path]:
+        """asset_id → 슬롯 디렉터리. **캐시한다.**
+
+        🔴 전에는 요청마다 읽기 루트를 전부 훑고 `manifest.json` 을 파싱했다.
+        실측: 순수 파일 읽기 0.012ms 인데 `STORE.chunk()` 가 0.698ms — **56배**이고
+        그중 89%가 이 함수였다. 게다가 **O(자산)** 이라 자산이 늘수록 나빠진다.
+        청크 하나 내주는 데 디스크를 수십 번 건드릴 이유가 없다.
+
+        무효화는 **루트 디렉터리의 mtime** 으로 한다. 슬롯이 생기거나 사라지면
+        부모 mtime 이 바뀐다. TTL 을 안 쓰는 이유: 만료 전에는 새 자산이 안 보이고,
+        그 사이 404 가 나면 원인을 못 찾는다.
+        """
+        stamp = tuple(
+            (str(r), r.stat().st_mtime_ns if r.is_dir() else 0) for r in self.read_roots)
+        cached = self._slots_cache
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
         out: Dict[str, Path] = {}
         for root in reversed(self.read_roots):   # 앞선 루트가 이기도록 역순으로 덮는다
             out.update(self._slots_in(root))
+        self._slots_cache = (stamp, out)
         return out
 
     @staticmethod
@@ -222,6 +240,7 @@ class AssetStore:
             d.mkdir(parents=True, exist_ok=True)
             (d / "manifest.json").write_text(
                 json.dumps({"asset_id": asset_id}, ensure_ascii=False), encoding="utf-8")
+            self._slots_cache = None      # mtime 해상도에 기대지 않는다
             return d
 
     def put_version(self, asset_id: str, version: int,
