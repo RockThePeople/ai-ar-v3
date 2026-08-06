@@ -1,4 +1,4 @@
-# PROGRESS — 국소 3D 편집 시스템 (ai-ar-v3) · **rev52**
+# PROGRESS — 국소 3D 편집 시스템 (ai-ar-v3) · **rev53**
 
 > **이 파일이 계획의 단일 진실이다.** 매 세션의 첫 동작은 이것을 읽는 것, 마지막은 §6 에 결과를 적는 것.
 > 결정 원문·웨이브 기록·종결 갈래는 `DECISIONS_ARCHIVE.md` 에 있다. 여기는 얇게 유지한다.
@@ -179,6 +179,21 @@ AR 앵커 위에서라야 완전해진다** — 앵커가 리셋되면 사용자
 ⚠️ 셰이더는 IL2CPP 에서 스트립된다 → Always Included
 ```
 
+### 🔴 AR 표시·조작 (사용자 확정 · W26 추가)
+
+```
+① 감지된 평면을 **테두리(윤곽선)로 하이라이트**한다
+   ⚠️ "평면 2개 감지" 라는 글자만으로는 안 된다 — 사용자가 어디를 탭해야 할지 모른다
+   ⚠️ **면을 색으로 채우지 마라.** ai-ar-v2 의 접지 평면 색 채우기는 참조 대상이 아니다
+      (v2 의 나머지는 좋은 선례다 — 그 부분만 빼라)
+
+② 🔴 **손가락으로 오브젝트를 돌리는 기능을 제거한다**
+   오브젝트는 앵커에 고정되고, **사람이 움직여서 다른 각도를 본다.**  그것이 AR 이다
+   손가락 회전이 있으면 앵커링이 됐는지 안 됐는지 화면에서 구분이 안 된다 —
+   회전을 없애는 것 자체가 (D)의 검증 장치다
+   ⇒ 회전이 없어도 반대편이 보이면 앵커링이 진짜다
+```
+
 ### D75. 청크 격자 8³ → 16³ (완료 · main v4)
 
 ```
@@ -248,6 +263,67 @@ AR 앵커 위에서라야 완전해진다** — 앵커가 리셋되면 사용자
    사라지지 않는다.  **43.2% 가 정본 격자에 서는 것이지 값이 좋아진다는 뜻이 아니다**
 ```
 
+### W26 — AR 이 살아났다 · 서버 계약이 확정됐다
+
+```
+[맥북] 🔴 카메라가 검던 원인 — 예외 없는 실패였다
+  `Assets/XR` 을 복사해도 **XR 로더 할당은 별개**다
+    "No active XRInputSubsystem … valid loader configuration"
+    → 화면 검음 + ARCore 매니페스트 병합 미실행 → **APK 에 CAMERA 권한 자체가 없음**
+  V3AppBuild.ConfigureXr() 로 ARCore 로더 할당 · InitManagerOnStart
+  ⇒ 로더 True · CAMERA granted · **평면 2개 감지 · 카메라 영상 정상**
+  ★ 부수 발견: `Assets/XR` 을 **디렉터리 유무로 판단하면 안 된다** —
+    Unity 가 껍데기만 만들어 두면 cp 가 건너뛰어 로더가 빠진 채 빌드된다.  파일 단위로 확인·중단
+  월드 스케일 = AssetScale.FootprintMeters 0.24m (v2 실측).  RootScale·VoxelMeters 가 전부 파생
+  입력 분리 = 모드 배타.  Placing 이 입력 독점 → 배치 즉시 닫음 → 재배치는 버튼으로만
+
+[3090] ★★ removed 실측 — **D75 를 면책이 아니라 정당화한 숫자**
+                   8³(v3)        4³(v4)
+  부모 청크         89            376
+  changed           89 (100%)     242 (64%)
+  removed            0             19 (5.1%)
+  🔴 **8³ 에서는 자산 전체가 다시 간다(89/89) — 델타가 델타가 아니었다.**
+     4³ 는 36% 를 승계한다.  대가는 GameObject 파괴 19건
+  (recolor 의 71/0/0 은 D75 를 면책 못 한다 — recolor_asset 이 removed=[] 를 명시해 구조적으로 못 만든다)
+
+[3090] ★ halo — 3090 이 자기 실수를 물리로 잡았다.  이 프로젝트에서 가장 좋은 자기검증이다
+  처음 **해시 비교**로 재니 halo 0/1/2/3 = 190/188/187/187 → "halo 가 안 듣는다"
+  ⇒ 삼각형이 최대 0.45복셀인데 **44복셀 떨어진 청크가 바뀌는 게 물리적으로 말이 안 된다**
+     확인하니 먼 청크 116/116 이 정점·면·바이트 길이까지 같고 **순서만 달랐다**
+     (자기 정점 압축이 partition_mesh 입력 순서를 바꿨다.  D61-a 를 인용해 놓고 스스로 어겼다)
+  기하 기준 재측정        halo 0→ 부기72 놓침2 과잉1
+                          halo 1→ 부기116 놓침0 과잉43
+                          halo 2→ 부기148 놓침0 과잉75
+                          halo 3→ 부기190 놓침0 과잉117
+  바뀐 청크는 해시 261 이 아니라 **기하 73** (거짓 양성 188)
+  ⇒ DEFAULT_HALO_VOXELS=2 는 틀리지 않았다(놓치는 쪽만 사고).  다만 이 자산은 halo1 로도 0누락
+  ⚠️ 자산 1·마스크 1·편집 1건.  마스크가 청크 경계와 어떻게 맞느냐에 좌우된다
+
+[3090] ★ 떠 있는 엔드포인트 — 셋뿐.  추측이 아니라 실제로 쏴 본 결과
+  200  GET /healthz · /runs · /v2/assets/{id}/slat_coords.v{n}.json
+  404  GET /v2/assets · /v2/jobs/{id} · /v2/assets/{id}/chunks/{key}.v{n}.cbin
+  404  POST /v2/assets · /v2/assets/{id}/edits
+  ⇒ 라쏘용 좌표 엔드포인트 하나만 서 있다.  생성·편집·폴링·청크 전송은 **없다**
+
+[3090] ★ 스키마 — contract/ 에 전부 있다.  **새로 지을 것이 없고 계약 변경 요청도 없다**
+  생성  GenerateRequest → JobStatus.manifest = ChunkManifest
+  편집  EditRequest(base_version·mask·idempotency_key) → JobStatus.patch = PatchPackage
+  폴링  JobStatus.state ∈ queued·running·succeeded·failed·cancelled.  생성·편집 같은 규약
+  청크  uris.chunk_uri · slat_coords_uri · staging_chunk_uri
+  마스크 = EditMask mode="voxels" **복셀 좌표 목록** (청크 목록도 지문도 아니다).
+        grid_source="slat_coords" 생략 불가, 서버가 안 채운다 (D28-a)
+  manifest 가드 충족 — ContractInfo 에 chunk_size 4 · chunk_grid_res 16 · contract_version 4
+  생성 1회 실측 **38초** (Z-Image+BiRefNet 27s + TRELLIS→청크 11s, 콜드 포함)
+  ⇒ 폴링 상한 120초 · 간격 2초
+
+🔴🔴 **배선의 선행 조건 — A5000 :8082 가 아직 v3 를 낸다**
+  이번 생성에서 확인: contract_version 3 · chunk_size 8 · 헤더 바이트 3
+  → v4 클라이언트가 `ChunkBinError: file=3, local=4` 로 거부한다
+  **생성 경로를 그대로 Unity 에 연결하면 화면이 통째로 빈다.**
+  지금 앱이 뜨는 건 3090 이 v4 로 재분할해 넣은 assets/ 덕이고, 새로 생성하면 다시 v3 다
+  ⇒ A5000 의 deltacontract 를 v4 로 올리는 것이 W27 의 선행 조건
+```
+
 ## 4. Plan
 
 ```
@@ -256,9 +332,12 @@ W24 ★ 청크 8³ → 16³ (D75)
     ② ☑ [3090]  실물 자산 v4 재분할 → PR #10.  ★ removed 0 확인.  원인 ② 발견
     ③ ☑ [맥북]  Texture3D 표면 하이라이트 · 키보드 · 되돌리기 → PR #9
 W25 ☑ **PR #9·#10 머지 → 빌드 경로 수정 → 실기에서 곡면 확인**  ✅ 성립 (PR #11)
-W26 ▶ 병렬 두 갈래
-    ① [맥북] 🔴 **AR 배치 (D)** — plane 감지 → 탭 배치 → 앵커 유지.  지금 화면 고정이다
-    ② [3090] ★ **서버 배선 준비** — 엔드포인트 점검 · Unity 가 부를 계약 확정
+W26 ☑ ① [맥북] AR 살아남 (카메라·평면감지·앵커 코드).  ★ 탭 배치 실기 미완
+    ☑ ② [3090] 계약 확정 · removed/halo 실측 · 🔴 A5000 v3 블로커 발견
+W26b ▶ 병렬 세 갈래
+    ① [맥북] 🔴 **평면 테두리 하이라이트 · 손가락 회전 제거 · 실기 탭 배치**  ← 사용자 지시
+    ② [A5000] 🔴 **deltacontract v4 승급** — W27 의 선행 조건.  안 하면 화면이 빈다
+    ③ [3090] 서버 라우트 구현 (생성/편집/폴링/청크) — 계약은 확정됐다
 W27 ★ 서버 배선 실행 — 자연어 생성 · 편집 요청 · 델타 수신 · **AR 앵커 위에서 in-place 교체**
     ← 최대 미지수.  Unity 가 서버를 부른 적이 **0회**다
 W28 멀티유저 (M6)
