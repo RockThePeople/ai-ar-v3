@@ -85,6 +85,14 @@ CASE_SRC="${V3_CASE_DIR:-${TMPDIR:-/tmp}/lasso-unity/Cases}/$CASE"
 cp "$CASE_SRC" "$PROJ/Assets/StreamingAssets/$CASE"
 echo "케이스 $CASE ($(wc -l < "$CASE_SRC") 줄) → StreamingAssets"
 
+# 🔴 clean 빌드 — `ARCoreBuildProcessor` 는 매니페스트 태그를 **추가만** 한다.
+#    그래픽 API·ARCore requirement 를 바꿔도 **낡은 태그가 살아남는다** (§5).
+#    OpenGLES3 전환(W26c) 이후 세 웨이브째 미결이던 항목이다.
+if [ "${V3_CLEAN:-0}" = "1" ]; then
+  echo "clean 빌드 — Library/ · Builds/ 를 지운다"
+  rm -rf "$PROJ/Library" "$PROJ/Builds" "$PROJ/Temp"
+fi
+
 # ── ② 빌드 (V3_SKIP_BUILD=1 이면 기존 APK 를 그대로 쓴다)
 if [ "${V3_SKIP_BUILD:-0}" != "1" ]; then
 V3_APK_PATH="Builds/LassoProbe.apk" V3_CASE_FILE="$CASE" "$UNITY_BIN" \

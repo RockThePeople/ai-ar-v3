@@ -315,13 +315,29 @@ namespace DeltaContract
             // ── 적용: **changed 만** 교체한다. GameObject 를 다시 만들지 않는다.
             int replaced = 0, created = 0, destroyed = 0, failed = 0;
             float t1 = Time.realtimeSinceStartup;
+
+            // ★ (C) 확장 — 이제 파괴가 **정상**이다. "파괴 0" 을 합격선으로 쓸 수 없다.
+            //    삼자 일치를 잰다: removed 수 == 파괴 수 == 사전에서 사라진 수.
+            //    그리고 **나머지 노드의 EntityId 는 유지**돼야 한다 — 그게 in-place 다.
+            int dictBefore = _chunkRenderers.Count;
+            var idBefore = new Dictionary<string, EntityId>(dictBefore);
+            foreach (var kv0 in _chunkRenderers)
+                if (kv0.Value != null) idBefore[kv0.Key] = kv0.Value.gameObject.GetEntityId();
+
+            int removedReported = removed?.Count ?? 0;
             if (removed != null)
                 foreach (var rk in removed)
                 {
                     var key = (string)rk;
+                    // 🔴 파괴 **와** 사전 제거를 둘 다 한다. 사전에 남기면 다음 패치가
+                    //    이미 파괴된 MeshFilter 에 덮어쓰고 **예외가 안 난다** (DESIGN_INTENT §3-E).
+                    //    부기를 diff 로 유도하면 비워진 청크가 목록에서 사라진다 — 실측 8청크가
+                    //    통째로 빠지고 그 자리에 옛 기하가 남았다 (FINDINGS §4).
                     if (_chunkRenderers.TryGetValue(key, out var r0) && r0 != null) Destroy(r0.gameObject);
-                    _chunkRenderers.Remove(key); _chunkMeshes.Remove(key); destroyed++;
+                    if (_chunkRenderers.Remove(key)) destroyed++;
+                    _chunkMeshes.Remove(key);
                 }
+            int dictRemoved = dictBefore - _chunkRenderers.Count;
             if (changed != null)
                 foreach (var kv in changed)
                 {
@@ -355,8 +371,22 @@ namespace DeltaContract
             AssetVersion = toV;
 
             var (dp1, dr1) = _ar != null ? _ar.PoseDelta() : (-1f, -1f);
+            // ★ 삼자 일치 + 나머지 EntityId 유지
+            int kept = 0, recreated = 0;
+            foreach (var kv1 in _chunkRenderers)
+            {
+                if (!idBefore.TryGetValue(kv1.Key, out var old)) continue;      // 새로 생긴 것
+                if (kv1.Value != null && old.Equals(kv1.Value.gameObject.GetEntityId())) kept++;
+                else recreated++;
+            }
+            bool triple = removedReported == destroyed && destroyed == dictRemoved;
             Debug.Log($"{Tag} APPLY 교체 {replaced} · 생성 {created} · 파괴 {destroyed} · 실패 {failed} · " +
-                      $"{tApply*1000f:F0}ms · 노드 {_chunkRenderers.Count}");
+                      $"{tApply*1000f:F0}ms · 노드 {dictBefore}→{_chunkRenderers.Count}");
+            Debug.Log($"{Tag} REMOVED 삼자 {(triple ? "일치" : "**불일치**")} — " +
+                      $"보고 {removedReported} / 파괴 {destroyed} / 사전제거 {dictRemoved} · " +
+                      $"나머지 EntityId 유지 {kept} · 재생성 {recreated}");
+            if (!triple || recreated > 0)
+                Debug.LogError($"{Tag} in-place 조건 위반 — 삼자 {triple} · 재생성 {recreated}");
             Debug.Log($"{Tag} POSE-DELTA 적용 전 {dp0*1000f:F2}mm/{dr0:F3}° → 후 {dp1*1000f:F2}mm/{dr1:F3}° " +
                       $"(순수 변화 {(dp1-dp0)*1000f:F2}mm/{dr1-dr0:F3}°)");
             _editStatus = $"v{toV} 적용 · 교체 {replaced} · {tApply*1000f:F0}ms";
