@@ -22,6 +22,7 @@ sys.path.insert(0, str(HERE))
 from deltacontract import (  # noqa: E402
     CHUNK_GRID_RES,
     CHUNK_SIZE,
+    DEFAULT_HALO_VOXELS,
     CONTRACT_CONSTANTS,
     VOXEL_RES,
     ChunkBinError,
@@ -96,7 +97,7 @@ def test_chunk_grid_partitions_voxel_space_exactly():
         np.meshgrid(*[np.arange(VOXEL_RES)] * 3, indexing="ij"), axis=-1
     ).reshape(-1, 3)
     cids = np.unique(cells // CHUNK_SIZE, axis=0)
-    assert cids.shape[0] == (VOXEL_RES // CHUNK_SIZE) ** 3 == 512
+    assert cids.shape[0] == (VOXEL_RES // CHUNK_SIZE) ** 3 == 4096   # D75: 512 → 4,096
 
 
 def test_chunk_key_roundtrip():
@@ -534,7 +535,7 @@ def test_mesh_grid_divides_cleanly():
     assert MESH_RES % VOXEL_RES == 0
     assert MESH_CELLS_PER_VOXEL == 4
     assert VOXEL_RES % CHUNK_SIZE == 0
-    assert (MESH_RES // CHUNK_GRID_RES) == 32  # 청크 1개 = 메시 셀 32³
+    assert (MESH_RES // CHUNK_GRID_RES) == 16  # D75: 청크 1개 = 메시 셀 16³ (전 32³)
 
 
 # ══════════════════════════════════════════════════════ 마스크
@@ -560,10 +561,12 @@ def test_halo_dilation_grows_and_clamps():
 
 def test_affected_chunks_folds_three_sets():
     added = np.array([[0, 0, 0]])
-    removed = np.array([[8, 0, 0]])
-    modified = np.array([[0, 0, 0], [63, 63, 63]])
+    removed = np.array([[CHUNK_SIZE * 2, 0, 0]])
+    modified = np.array([[0, 0, 0], [VOXEL_RES - 1, VOXEL_RES - 1, VOXEL_RES - 1]])
     keys = affected_chunks(added, removed, modified)
-    assert keys == ["0_0_0", "1_0_0", "7_7_7"]
+    # 🔴 키를 손으로 적지 않는다 — 격자가 바뀌면 같이 바뀌어야 하는 값이다 (D75).
+    last = CHUNK_GRID_RES - 1
+    assert keys == ["0_0_0", "2_0_0", f"{last}_{last}_{last}"]
     assert affected_chunks(None, None, None) == []
 
 
@@ -787,12 +790,21 @@ def test_local_edit_only_changes_local_chunks(base_mesh):
     assert changed, "편집했는데 바뀐 청크가 없다 — 픽스처나 분할이 잘못됐다"
     assert unchanged, "편집 영역 밖 청크가 전부 바뀌었다 — 델타의 전제가 무너졌다"
 
-    # 편집 bbox 의 x 하한은 0.15 → voxel floor(0.65*64)=41 → chunk 5.
-    # 경계에 걸친 삼각형까지 감안해도 chunk x < 5 인 청크는 절대 바뀌면 안 된다.
-    for key in changed:
+    # 편집 bbox 의 x 하한은 0.15 → voxel floor(0.65*64)=41.
+    # 🔴 청크 하한을 **유도한다.** 예전에는 5 를 손으로 적어 뒀는데, D75 로 격자가
+    #    바뀌자 그 5 가 실제 하한(10)보다 헐거워졌다 — 통과는 하지만 아무것도 안
+    #    지키는 상태가 된다. 격자에서 계산하면 격자를 또 바꿔도 따라온다.
+    cx_min = int(0.65 * VOXEL_RES) // CHUNK_SIZE
+    for key in list(changed) + list(removed):
         cx = parse_chunk_key(key)[0]
-        assert cx >= 5, f"편집 영역과 무관한 청크가 바뀌었다: {key}"
-    assert not removed, f"이번 편집은 청크를 비우지 않는다: {removed}"
+        assert cx >= cx_min, f"편집 영역과 무관한 청크가 바뀌었다: {key} (하한 {cx_min})"
+
+    # 🔴 D75 — 청크가 4복셀로 잘아지면서 이 편집이 **청크를 비우기 시작했다**(18개).
+    #    예전에는 `assert not removed` 였다. 비워진 청크는 새 바이트가 없어서
+    #    diff 로 만든 목록에서 사라지고, 클라이언트가 옛 기하를 들고 남는다 —
+    #    부기를 배치에서 유도하는 이유 그 자체다 (§4.3). 이제 이 픽스처가 그 경로를
+    #    실제로 밟는다는 사실을 잠근다.
+    assert removed, "청크가 하나도 안 비워졌다 — removed 경로를 이 픽스처가 더는 안 밟는다"
 
 
 def test_delta_is_a_small_fraction_of_full_payload(base_mesh):
@@ -848,9 +860,16 @@ def test_bookkeeping_with_halo_covers_all_changed_chunks(base_mesh):
     h1 = {k: blob_hash(encode(m)) for k, m in build_chunks(v1, f1, a1).items()}
     changed, removed = diff_chunk_sets(h0, h1)
 
-    missed = (set(changed) | set(removed)) - _bookkeeping_chunks(v0, v1, halo=1)
+    # 🔴 D75 — 청크가 4복셀이 되면서 **halo=1 로는 부족해졌다.** 그 사실 자체를 잠근다:
+    #    기본값을 되돌리면 이 단언이 먼저 깨진다.
+    missed1 = (set(changed) | set(removed)) - _bookkeeping_chunks(v0, v1, halo=1)
+    assert missed1, (
+        "halo=1 이 다 덮는다 — DEFAULT_HALO_VOXELS 를 1 로 되돌려도 되는지 재검토하라"
+    )
+
+    missed = (set(changed) | set(removed)) - _bookkeeping_chunks(v0, v1, DEFAULT_HALO_VOXELS)
     assert not missed, (
-        f"halo=1 로도 놓친 청크: {sorted(missed)} — halo_margin_voxels 를 키워야 한다 (§8.2)"
+        f"halo={DEFAULT_HALO_VOXELS} 로도 놓친 청크: {sorted(missed)} — 키워야 한다 (§8.2)"
     )
 
 

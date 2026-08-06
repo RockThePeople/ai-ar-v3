@@ -231,7 +231,10 @@ namespace DeltaContract
         void Retint()
         {
             var hit = new HashSet<string>();
-            foreach (var c in _selected) hit.Add($"{c.x / 8}_{c.y / 8}_{c.z / 8}");
+            // 🔴 청크 크기를 손으로 적지 않는다 — D75 에서 8 → 4 로 바뀌었고,
+            //    여기 8 이 남아 있었으면 **틴트만 조용히 엉뚱한 청크를 칠했다.**
+            int cs = DeltaConstants.ChunkSize;
+            foreach (var c in _selected) hit.Add($"{c.x / cs}_{c.y / cs}_{c.z / cs}");
             foreach (var kv in _chunkRenderers)
             {
                 _mpb.Clear();

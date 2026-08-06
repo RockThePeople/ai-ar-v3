@@ -11,7 +11,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .coords import CONTRACT_CONSTANTS, CONTRACT_VERSION
+from .coords import CONTRACT_CONSTANTS, CONTRACT_VERSION, DEFAULT_HALO_VOXELS
 
 # URL 규칙은 uris.py 가 정본이다 (pydantic 없이도 쓸 수 있어야 하므로 분리).
 from .uris import API_PREFIX, TRELLIS_PREFIX, chunk_uri, parse_chunk_uri  # noqa: F401
@@ -269,7 +269,9 @@ class EditMask(BaseModel):
     # mode == "voxels": VOXEL [0,64) SLat 공간의 셀 인덱스 목록 (라쏘 결과)
     voxels: Optional[List[Tuple[int, int, int]]] = None
     # §8.2. 마스크 경계 바깥 halo. 0 이면 확장 없음.
-    halo_margin_voxels: int = 1
+    # 🔴 D75 에서 1 → 2. 청크가 4복셀로 잘아지면서 1복셀 부풀림이 경계 넘김을
+    #    못 덮게 됐다 (conformance 실측: halo=1 이 114청크 중 6개를 놓친다).
+    halo_margin_voxels: int = DEFAULT_HALO_VOXELS
 
     # 🔴 3.26.0 (D28-a) — **이 셀들이 어느 격자에서 나왔는가.**
     #

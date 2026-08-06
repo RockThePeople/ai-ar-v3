@@ -38,7 +38,7 @@ namespace DeltaContract
     public static class ChunkBin
     {
         // python 쪽 coords.CONTRACT_VERSION 과 반드시 같아야 한다.
-        public const uint ContractVersion = 3;
+        public const uint ContractVersion = 4;   // D75 — 청크 격자 세분화로 와이어가 깨진다
 
         public const int HeaderSize = 40;
         private const uint Magic = 0x314E4243; // "CBN1" little-endian
