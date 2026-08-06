@@ -40,14 +40,27 @@ ln -sf "$REPO/unity/Editor/V3AppBuild.cs"         "$PROJ/Assets/Editor/V3AppBuil
 ln -sf "$REPO/unity/Runtime/ChunkSurface.shader"  "$PROJ/Assets/DeltaContract/ChunkSurface.shader"
 
 # 🔴 자산 기하 — 이게 없으면 화면에 **아무것도 안 뜬다** (좌표만으로는 안 보인다)
-CHUNKS="${V3_CHUNK_DIR:-$REPO/../.inplace}/parent"
+# 🔴 W25 — 기본값이 **리포 밖**(`$REPO/../.inplace`)을 가리키고 있었다. 그 결과
+#    3090 이 실물 자산을 리포에 올려도 빌드는 계속 **내 합성본**을 집어갔고,
+#    화면은 큐브인 채였다. "자산을 고쳤는데 화면이 그대로" 의 원인이 이것이다.
+#    §7-A 계열이다 — 소스가 맞아도 **배포물이 다른 것을 담는다.**
+#
+#    ⇒ 기본값은 **리포 안 실물 자산**이다. 리포 밖을 보려면 명시적으로 지정해야 한다.
+#    (변수명도 정리했다: V3_CHUNK_DIR 은 v3 시절 이름이라 이제 v4 자산과 어긋난다.
+#     ASSET_DIR 을 쓰고, 옛 이름은 당분간 받아 준다.)
+ASSET_DIR="${ASSET_DIR:-${V3_CHUNK_DIR:-$REPO/assets/${ASSET_ID:-moto-b}}}"
+CHUNKS="$ASSET_DIR/parent"
 if [ -d "$CHUNKS" ]; then
   mkdir -p "$PROJ/Assets/StreamingAssets/chunks"
-  cp "$CHUNKS"/*.cbin "$PROJ/Assets/StreamingAssets/chunks/" 2>/dev/null || true
+  rm -f "$PROJ/Assets/StreamingAssets/chunks/"*.cbin
+  cp "$CHUNKS"/*.cbin "$PROJ/Assets/StreamingAssets/chunks/"
   (cd "$CHUNKS" && ls *.cbin | sed 's/\.cbin$//') > "$PROJ/Assets/StreamingAssets/chunks.txt"
-  echo "청크 $(wc -l < "$PROJ/Assets/StreamingAssets/chunks.txt" | tr -d ' ')개 → StreamingAssets"
+  N=$(wc -l < "$PROJ/Assets/StreamingAssets/chunks.txt" | tr -d ' ')
+  echo "자산 $ASSET_DIR · 청크 ${N}개 → StreamingAssets"
+  # 실물인지 **숫자로** 남긴다 — 합성본은 청크당 면이 복셀×12 라 훨씬 적다.
+  [ -f "$ASSET_DIR/SHA256SUMS" ] && echo "   SHA256SUMS 있음 ($(wc -l < "$ASSET_DIR/SHA256SUMS" | tr -d ' ')줄)"
 else
-  echo "⚠️ 청크 디렉터리가 없다: $CHUNKS — 화면에 기하가 안 뜬다"
+  echo "❌ 청크 디렉터리가 없다: $CHUNKS — 화면에 기하가 안 뜬다" >&2; exit 2
 fi
 
 CASE_SRC="${V3_CASE_DIR:-${TMPDIR:-/tmp}/lasso-unity/Cases}/$CASE"
@@ -86,6 +99,25 @@ else
   unzip -l "$APK" | grep -iE "streamingassets|\.case" || true; exit 1
 fi
 rm -f "$TMPC"
+# 🔴 APK **안의 청크**가 리포의 실물과 같은 바이트인가. 경로만 맞고 내용이 옛것이면
+#    화면은 여전히 큐브인데 "빌드 성공" 이라 아무도 못 잡는다 (§7-A).
+if [ -f "$ASSET_DIR/SHA256SUMS" ]; then
+  SAMPLE="$(head -1 "$PROJ/Assets/StreamingAssets/chunks.txt")"
+  TMPB="$(mktemp)"
+  if unzip -p "$APK" "assets/chunks/$SAMPLE.cbin" > "$TMPB" 2>/dev/null && [ -s "$TMPB" ]; then
+    GOT="$(shasum -a 256 "$TMPB" | awk '{print $1}')"
+    WANT="$(grep -E "(^|[ /])$SAMPLE\.cbin$" "$ASSET_DIR/SHA256SUMS" | awk '{print $1}' | head -1)"
+    if [ -n "$WANT" ] && [ "$GOT" = "$WANT" ]; then
+      echo "✅ APK 안 청크 $SAMPLE.cbin 이 리포 실물과 **바이트 동일** ($GOT)"
+    else
+      echo "❌ APK 안 청크가 SHA256SUMS 와 다르다: got=$GOT want=${WANT:-없음}" >&2; exit 1
+    fi
+  else
+    echo "❌ APK 에서 청크를 못 꺼냈다: assets/chunks/$SAMPLE.cbin" >&2; exit 1
+  fi
+  rm -f "$TMPB"
+fi
+
 "$ADB" shell true >/dev/null 2>&1 || { echo "⚠️ 기기가 없다 — 설치·실행은 건너뛴다"; exit 0; }
 
 # ── ④ 설치 · 실행 · logcat. **앱이 실제로 낸 로그**가 진짜 판정이다
