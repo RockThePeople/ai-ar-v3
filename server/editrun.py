@@ -93,7 +93,16 @@ def run_edit(asset_id: str, req: EditRequest, progress) -> dict:
         spec = plan_edit(req.raw_prompt, mask=MaskSummary.from_mask(mask))
     except LLMError:
         raise
-    check_supported(spec, "recolor")          # 못 하는 op 는 여기서 **거부**된다
+    # 🔴 op 가 소비자를 정한다. 여기서 op 를 갈아끼우지 않는다 (D26) —
+    #    자동 강등은 게이트가 "형태를 바꿨다" 고 적으면서 색만 바꾼 결과를 재게 만든다.
+    consumer = "recolor" if spec.op == "recolor" else "voxhammer"
+    check_supported(spec, consumer)           # 못 하는 op 는 여기서 **거부**된다
+
+    if consumer == "voxhammer":
+        # 형태 편집은 상류(<EDIT_HOST>)가 한다. 색은 안 읽는다 — 색 어휘가 없어도 된다.
+        from .voxhammer import run_voxhammer_edit
+
+        return run_voxhammer_edit(asset_id, req, spec, progress)
 
     progress(0.35, "color", "색 해석")
     color = _color_of(spec.target_prompt or req.raw_prompt)
