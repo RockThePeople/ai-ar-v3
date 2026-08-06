@@ -54,6 +54,7 @@ ln -sf "$REPO/unity/Runtime/LassoEditApp.cs"       "$PROJ/Assets/DeltaContract/L
 #   in-place 계측 하네스는 unity_inplace_check.sh 쪽에 그대로 남아 있다.
 ln -sf "$REPO/unity/Editor/V3AppBuild.cs"         "$PROJ/Assets/Editor/V3AppBuild.cs"
 ln -sf "$REPO/unity/Runtime/ChunkSurface.shader"  "$PROJ/Assets/DeltaContract/ChunkSurface.shader"
+ln -sf "$REPO/unity/Runtime/PlaneLine.shader"     "$PROJ/Assets/DeltaContract/PlaneLine.shader"
 
 # 🔴 자산 기하 — 이게 없으면 화면에 **아무것도 안 뜬다** (좌표만으로는 안 보인다)
 # 🔴 W25 — 기본값이 **리포 밖**(`$REPO/../.inplace`)을 가리키고 있었다. 그 결과

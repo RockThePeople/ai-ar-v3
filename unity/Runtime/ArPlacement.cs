@@ -114,14 +114,20 @@ namespace DeltaContract
         {
             var go = new GameObject("PlaneOutline");
             var line = go.AddComponent<LineRenderer>();
-            var sh = Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default");
-            var mat = new Material(sh);
-            mat.color = new Color(0.15f, 0.85f, 1f, 1f);     // 청록 — 자산 하이라이트(주황)와 안 겹친다
+            // 🔴 빌트인 셰이더를 찾으면 IL2CPP 스트립에 걸려 **선이 안 보인다** (W26b 실기).
+            //    리포에 둔 전용 셰이더 + Always Included 로 그 경로를 막는다.
+            var sh = Shader.Find("DeltaContract/PlaneLine");
+            if (sh == null)
+            {
+                Debug.LogError($"{Tag} PlaneLine 셰이더가 없다 — 윤곽선이 안 보인다 (스트립?)");
+                sh = Shader.Find("Sprites/Default");
+            }
+            var col = new Color(0.15f, 0.85f, 1f, 1f);       // 청록 — 자산 하이라이트(주황)와 안 겹친다
+            var mat = new Material(sh) { color = col };
             line.material = mat;
-            line.startColor = line.endColor = mat.color;
+            line.startColor = line.endColor = col;
             go.AddComponent<PlaneOutline>();
-            go.SetActive(false);                              // 프리팹은 꺼 둔다
-            return go;
+            return go;                                        // 활성 상태로 둔다 — 꺼 두면 복제본도 꺼진 채 시작한다
         }
 
         void Update()

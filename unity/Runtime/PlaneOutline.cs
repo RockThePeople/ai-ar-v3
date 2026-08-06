@@ -19,6 +19,7 @@ namespace DeltaContract
     public sealed class PlaneOutline : MonoBehaviour
     {
         LineRenderer _line;
+        bool _logged;
         ARPlane _plane;
 
         void Awake()
@@ -57,6 +58,8 @@ namespace DeltaContract
             _line.positionCount = b.Length;
             for (int i = 0; i < b.Length; i++)
                 _line.SetPosition(i, new Vector3(b[i].x, 0f, b[i].y));
+            if (!_logged) { _logged = true; Debug.Log($"[PlaneOutline] 경계 {b.Length}점 · 셰이더 " +
+                (_line.material != null && _line.material.shader != null ? _line.material.shader.name : "NULL")); }
         }
     }
 }

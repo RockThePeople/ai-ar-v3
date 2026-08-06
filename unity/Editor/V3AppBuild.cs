@@ -64,6 +64,7 @@ namespace DeltaContract.EditorTools
             // 🔴 런타임에 만드는 머티리얼의 셰이더는 씬이 참조하지 않아 **IL2CPP 에서
             //    스트립된다** — 그러면 메시가 shader=NULL 로 **안 보인다** (v2 실기 경험).
             IncludeShader("DeltaContract/ChunkSurface");
+            IncludeShader("DeltaContract/PlaneLine");   // 안 넣으면 선이 조용히 사라진다
 
             var go = new GameObject("LassoEditApp");
             var app = go.AddComponent<LassoEditApp>();
