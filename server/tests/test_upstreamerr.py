@@ -45,3 +45,18 @@ def test_detail_key_is_also_read():
     e = parse_upstream_error(404, json.dumps({"error_code": "NOT_FOUND",
                                               "detail": "staging 도 버전도 없다"}))
     assert "staging" in str(e)
+
+
+def test_no_host_or_port_leaks_into_the_message():
+    """🔴 §7 — 사유에 호스트·포트가 들어가면 안 된다.
+
+    실측: `httpx.raise_for_status()` 의 메시지에 URL 이 통째로 들어가 공인 IP 가
+    잡 상태로 올라갔다. 사유는 전파하되 **주소는 전파하지 않는다.**
+    """
+    import re
+
+    e = parse_upstream_error(500, "Internal Server Error", action="잡 조회")
+    msg = str(e)
+    assert not re.search(r"\d{1,3}(\.\d{1,3}){3}", msg), f"IP 가 샜다: {msg}"
+    assert "://" not in msg, f"URL 이 샜다: {msg}"
+    assert "<EDIT_HOST>" in msg, "출처 표기가 자리표시여야 한다"

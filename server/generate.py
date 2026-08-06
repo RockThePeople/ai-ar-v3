@@ -69,7 +69,11 @@ def run_generate(asset_id: str, rgba_png: bytes, seed: int, progress) -> dict:
         payload = None
         while time.time() < deadline:
             p = c.get(f"/v2/trellis/jobs/{job_id}")
-            p.raise_for_status()
+            if p.status_code >= 400:
+                # 🔴 `raise_for_status()` 를 쓰지 않는다 — httpx 의 예외 메시지에
+                #    **URL 이 통째로 들어간다**(호스트·포트). 그게 잡 상태로 올라가면
+                #    앱 화면·로그에 공인 IP 가 찍힌다 (§7 위반). 실측으로 겪었다.
+                raise parse_upstream_error(p.status_code, p.text, action="잡 조회")
             payload = p.json()
             # 🔴 완료 판정은 **응답 모양**으로 한다 (b_client._poll · submit_trellis 와 동일).
             #    state 로 판정하면 상류가 그 필드를 안 채우는 판본에서 영원히 돈다.

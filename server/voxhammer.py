@@ -49,6 +49,21 @@ def _client():
                         headers={"X-Blockedit-Key": key}, timeout=120.0)
 
 
+#: 조건 이미지용 구도 강제. **바꾼 뒤의 모습 전체**를 그리게 한다.
+#: ⚠️ 이 꼬리말은 자산 종류를 가정한다(측면·전신). 다른 자산군이 오면 여기가 틀린다 —
+#:    지금은 moto-b 한 자산이라 그대로 두고, 늘어나면 자산별로 갈라야 한다.
+CONDITION_TEMPLATE = os.environ.get(
+    "EDIT_CONDITION_TEMPLATE",
+    "{subject}, strict side view profile, full vehicle and rider fully visible, "
+    "product photography, studio lighting, plain white background, centered, "
+    "entire subject fully visible with margin, no text, no watermark")
+
+
+def _condition_prompt(spec, req) -> str:
+    """편집 지시 → 조건 이미지 프롬프트. **바뀐 뒤 전체**를 묘사해야 한다."""
+    return CONDITION_TEMPLATE.replace("{subject}", spec.target_prompt or req.raw_prompt)
+
+
 def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
     """`BEditRequest` → 상류 → 청크 검증 → 새 판본 → `PatchPackage`.
 
@@ -56,6 +71,30 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
        prompt · mask · seed · idempotency_key). **조건 이미지 슬롯이 없다** —
        조건은 텍스트 프롬프트가 전부다. 이미지 조건이 필요하면 계약 변경이다.
     """
+    # ── 조건 이미지 (D40). **조건이 프롬프트를 이긴다** — 조건 없이 돌리면 원본
+    #    머리로 회귀한다. 그래서 형태 편집에는 조건을 붙이는 것이 기본이다.
+    #
+    #    Unity→3090 구간은 자연어 그대로다. 조건 이미지는 **3090 이 만든다** —
+    #    사용자에게 이미지를 요구하지 않는다.
+    #
+    #    ⚠️ 규격(A5000 EDIT-API-SPEC): **바꾼 뒤의 모습 전체**다. 머리만 크롭하면 안 된다 —
+    #       조건은 전신 실루엣으로 읽힌다. 1024² · 단순 배경 · 알파 불필요(rembg 가 덮는다).
+    #    ⚠️ W11: **조건 이미지 좌표로 마스크를 판단하지 마라.** 비율이 다르다
+    #       (조건의 목 35% vs 자산 17%). 마스크는 클라가 준 복셀이 유일한 진실이다.
+    cond_png = None
+    if os.environ.get("EDIT_CONDITION_IMAGE", "1") != "0":
+        try:
+            from .t2i import render_rgba
+
+            progress(0.1, "condition", "조건 이미지 생성 (바뀐 뒤 전신)")
+            cond_png, _ = render_rgba(_condition_prompt(spec, req), seed=int(req.seed))
+        except Exception as exc:                        # noqa: BLE001
+            # 🔴 조건을 못 만들면 **조건 없이 몰래 진행하지 않는다.** D40 상 그건
+            #    원본 머리로 회귀하는 길이고, 결과만 보면 "편집이 약하다" 로 오독된다.
+            raise UpstreamEditFailed(
+                f"조건 이미지를 못 만들었다: {exc}. 조건 없이 돌리면 원본으로 회귀한다 "
+                f"(D40) — 조용히 진행하지 않는다. 끄려면 EDIT_CONDITION_IMAGE=0") from exc
+
     body = {
         "asset_id": asset_id,
         "base_version": int(req.base_version),
@@ -67,8 +106,17 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
         "idempotency_key": req.idempotency_key,
     }
     with _client() as c:
-        progress(0.2, "submit", f"<EDIT_HOST> 편집 제출 (op={spec.op})")
-        r = c.post("/v2/trellis/edit", json=body)
+        progress(0.2, "submit", f"<EDIT_HOST> 편집 제출 (op={spec.op})"
+                 + (" · 조건 이미지 동봉" if cond_png else " · 조건 없음"))
+        if cond_png:
+            # multipart — `meta`(BEditRequest JSON) + `image`. generate 와 같은 관례다.
+            import json as _json
+
+            r = c.post("/v2/trellis/edit",
+                       data={"meta": _json.dumps(body)},
+                       files={"image": ("condition.png", cond_png, "image/png")})
+        else:
+            r = c.post("/v2/trellis/edit", json=body)
         if r.status_code >= 400:
             # 🔴 상류 사유를 **그대로** 올린다. "실패" 로 뭉뚱그리면 사용자가 재시도만
             #    하고, 재시도로는 절대 안 고쳐지는 오류가 많다 (VERSION_CONFLICT 등).
@@ -82,7 +130,11 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
         payload = None
         while time.time() < deadline:
             p = c.get(f"/v2/trellis/jobs/{job_id}")
-            p.raise_for_status()
+            if p.status_code >= 400:
+                # 🔴 `raise_for_status()` 를 쓰지 않는다 — httpx 의 예외 메시지에
+                #    **URL 이 통째로 들어간다**(호스트·포트). 그게 잡 상태로 올라가면
+                #    앱 화면·로그에 공인 IP 가 찍힌다 (§7 위반). 실측으로 겪었다.
+                raise parse_upstream_error(p.status_code, p.text, action="잡 조회")
             payload = p.json()
             # 완료 판정은 **응답 모양**이다 (state 로 판정하면 그 필드를 안 채우는
             # 판본에서 영원히 돈다 — generate 경로와 같은 규약).
