@@ -19,6 +19,10 @@ handoff/lasso/                             라쏘 입력 slat 좌표·마스크 
         server/tests/test_lasso.py · test_routes_v2.py · tools/build_moto_patch.py ·
         tools/moto_b_cases.py 가 경로로 읽는다.  옮기면 테스트가 깨진다
 handoff/w20-recolor/result.json            server/tests/test_inplace.py 가 읽는 기준값
+handoff/conditions/                        형태 편집 조건 이미지 A/B 쌍 (§8 첫 항목의 입력)
+        ironman-rider.png     sha256 0ee13d02…  아이언맨 머리 라이더 · 전신 · 정측면
+        spiked-cone-rider.png sha256 2a037681…  뿔 달린 원뿔 머리 — **머리 기하만 다르고** 차종·구도·템플릿 동일
+        *-prompt.txt          각 이미지를 만든 t2i 프롬프트
 ```
 
 ---
@@ -124,7 +128,26 @@ multipart: meta={"version":N} · manifest · slat · input · chunks(chunks.tar.
 
 전부 통과한 뒤에만 원자적으로 교체한다. `version > latest` 면 `committed.json` 이 갱신된다.
 
-### 2-5. 저장소 (3090)
+### 2-5. idempotency_key — 계약상 Optional, 서버가 내용에서 유도
+
+필수화(계약 3.27.0 안)는 **보류**됐다 — Unity 가 키를 안 보내서 넣으면 모든 편집이 422 가 된다
+(`docs/adr/0001-idempotency-key-required-deferred.md`). 서버가 난수로 지어내면 같은
+요청 두 번이 다른 슬롯을 가져가 **재시도가 GPU 재계산**이 된다.
+3090 은 클라가 안 보내면 `server.editreq.derive_idempotency_key(asset_id, base_version,
+raw_prompt, mask_voxels, seed)` 로 **내용에서 유도**한다. 클라가 보낸 키는 덮지 않는다.
+마스크 순서·중복은 키를 안 흔든다(서비스가 정렬 불필요·중복 허용이므로).
+
+### 2-6. 판본 동기화·수납 (3090 쪽 규칙)
+
+- 커밋 여부는 **상류가 실제로 409 를 준 뒤에만** 판단한다. 없는 엔드포인트의 404 를
+  "커밋 안 됨" 으로 읽어 멀쩡한 v1 을 막은 적이 있다
+- ingest 전에 `check_v1_payload()` 로 재료를 검사한다 — 서비스 진입점과 **양쪽에서** 막는다
+- `chunks.tar.gz` 는 `mtime=0` 으로 묶는다. 안 그러면 같은 내용이 매번 다른 바이트가 된다
+- recolor 판본은 slat 을 만들지 않는다 → **부모 slat 을 그대로** 싣는다. 새로 만들면 바이트가 갈린다
+- 상류 연결 실패는 `UPSTREAM_UNREACHABLE` 로 분류된다 (`INTERNAL` 아님). A5000 편집 서비스가
+  내려가 있으면 이게 뜬다 — 연구 트랙이 FLUX 를 돌리려고 서비스를 내려 두는 일이 잦다
+
+### 2-7. 저장소 (3090)
 
 읽기 루트는 **목록**(`ASSET_STORE_ROOT` → 리포 `assets/` → `ASSET_READ_ROOTS`), 쓰기는
 `ASSET_STORE_ROOT` 하나. 슬롯 스캔은 읽기 루트 mtime 으로 캐시한다(TTL 없음 — 만료 전 404 의
@@ -308,6 +331,13 @@ SLat_v2(호박 머리) → 하단부 선인장 SLat_v3 완주. 1차 편집 결�
 ---
 
 ## 8. 열린 문제 — 다음에 할 일
+
+**제품 경로 바로 다음 런 — 조건 A/B** (`handoff/conditions/`). 같은 마스크·같은 halo 로
+아이언맨 vs 뿔 달린 원뿔 두 런. 산출이 잡음 수준으로 같으면 조건이 SLAT 에 안 닿는 것이고,
+뚜렷이 다르면 조건은 일하고 한계는 해상도다. v2(ingest 로 커밋됨) 기반 편집이 A5000 서비스
+다운(`UPSTREAM_UNREACHABLE`)으로 못 돌았다 — 서비스를 올리면 바로 돈다.
+⚠️ 마스크는 결정 6 대로 볼륨(halo)으로, 조건은 그 마스크와 맞춰 만든다 (§6 규칙 4·5).
+⚠️ 빈 공간 비율의 분모 정의가 맥북(halo=2 80.2%)과 A5000(73.0%)이 다르다. 셀 수는 2,398 로 같다.
 
 **Challenge: 마스크 안(편집) 품질이 원저자만 못하다는 육안 인상.** 첫 과제는 고치는 게 아니라 **재는 것**이다.
 VoxHammer Table 1 과 같은 지표(CLIP-I / DINO-I)를 써야 직접 비교가 선다. 가설 후보(미검증):
