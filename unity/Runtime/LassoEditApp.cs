@@ -445,6 +445,88 @@ namespace DeltaContract
             catch { return ""; }
         }
 
+        /// <summary>🔴 저장된 PatchPackage 를 적용해 **removed ≠ 0 에서 (C)** 를 잰다.
+        ///
+        /// 서버에 편집을 걸 필요가 없다 — 패치 실물이 리포에 있고(handoff/w27f-ironman-result),
+        /// **델타 적용 코드 경로는 동일**하다. base_version 조정 문제도 안 생긴다.
+        /// 재는 것: 보고 removed = 파괴 = 사전제거 **삼자 일치** · 나머지 EntityId 유지.</summary>
+        System.Collections.IEnumerator ApplyStoredPatch()
+        {
+            var text = Read(Path.Combine(Application.streamingAssetsPath, "stored-patch.json"));
+            if (string.IsNullOrEmpty(text)) { _editStatus = "저장된 패치 없음"; yield break; }
+            var patch = Newtonsoft.Json.Linq.JObject.Parse(text);
+            var changed = patch["changed_chunks"] as Newtonsoft.Json.Linq.JObject;
+            var removed = patch["removed_chunk_ids"] as Newtonsoft.Json.Linq.JArray;
+            int removedReported = removed?.Count ?? 0;
+            Debug.Log($"{Tag} STORED v{patch["from_version"]}→v{patch["to_version"]} · " +
+                      $"changed {changed?.Count ?? 0} · removed {removedReported} · " +
+                      $"mask {patch["mask_voxels_used"]}셀 · 지문 {(string)patch["mask_fingerprint"]}");
+
+            int dictBefore = _chunkRenderers.Count;
+            var idBefore = new Dictionary<string, EntityId>(dictBefore);
+            foreach (var kv0 in _chunkRenderers)
+                if (kv0.Value != null) idBefore[kv0.Key] = kv0.Value.gameObject.GetEntityId();
+            var (dp0, dr0) = _ar != null ? _ar.PoseDelta() : (-1f, -1f);
+            float t0 = Time.realtimeSinceStartup;
+
+            int destroyed = 0, replaced = 0, created = 0, failed = 0;
+            if (removed != null)
+                foreach (var rk in removed)
+                {
+                    var key = (string)rk;
+                    if (_chunkRenderers.TryGetValue(key, out var r0) && r0 != null) Destroy(r0.gameObject);
+                    if (_chunkRenderers.Remove(key)) destroyed++;      // 파괴 **와** 사전 제거 둘 다
+                    _chunkMeshes.Remove(key);
+                }
+            int dictRemoved = dictBefore - _chunkRenderers.Count;
+
+            var mat = new Material(Shader.Find("DeltaContract/ChunkSurface"));
+            if (changed != null)
+                foreach (var kv in changed)
+                {
+                    using (var rq = UnityEngine.Networking.UnityWebRequest.Get(ServerUrl + (string)kv.Value["uri"]))
+                    {
+                        yield return rq.SendWebRequest();
+                        if (rq.result != UnityEngine.Networking.UnityWebRequest.Result.Success) { failed++; continue; }
+                        var data = ChunkBin.Decode(rq.downloadHandler.data);
+                        for (int i = 0; i < data.Positions.Length; i++)
+                            data.Positions[i] = ToUnity(data.Positions[i]);
+                        if (data.Normals != null)
+                            for (int i = 0; i < data.Normals.Length; i++)
+                                data.Normals[i] = ToUnity(data.Normals[i]);
+                        if (_chunkMeshes.TryGetValue(kv.Key, out var mesh) && mesh != null)
+                        {
+                            ChunkBin.ApplyTo(mesh, data);
+                            if (data.Normals == null) mesh.RecalculateNormals();
+                            replaced++;
+                        }
+                        else { SpawnChunk(kv.Key, rq.downloadHandler.data, mat); created++; }
+                    }
+                }
+            float dt = Time.realtimeSinceStartup - t0;
+
+            int kept = 0, recreated = 0;
+            foreach (var kv1 in _chunkRenderers)
+            {
+                if (!idBefore.TryGetValue(kv1.Key, out var old)) continue;
+                if (kv1.Value != null && old.Equals(kv1.Value.gameObject.GetEntityId())) kept++;
+                else recreated++;
+            }
+            bool triple = removedReported == destroyed && destroyed == dictRemoved;
+            var (dp1, dr1) = _ar != null ? _ar.PoseDelta() : (-1f, -1f);
+
+            Debug.Log($"{Tag} STORED APPLY 교체 {replaced} · 생성 {created} · 파괴 {destroyed} · 실패 {failed} · " +
+                      $"{dt*1000f:F0}ms · 노드 {dictBefore}→{_chunkRenderers.Count}");
+            Debug.Log($"{Tag} REMOVED 삼자 {(triple ? "일치" : "**불일치**")} — " +
+                      $"보고 {removedReported} / 파괴 {destroyed} / 사전제거 {dictRemoved} · " +
+                      $"나머지 EntityId 유지 {kept} · 재생성 {recreated}");
+            Debug.Log($"{Tag} POSE-DELTA 적용 전 {dp0*1000f:F2}mm → 후 {dp1*1000f:F2}mm " +
+                      $"(순수 {(dp1-dp0)*1000f:F2}mm/{dr1-dr0:F3}°)");
+            if (!triple || recreated > 0)
+                Debug.LogError($"{Tag} in-place 조건 위반 — 삼자 {triple} · 재생성 {recreated}");
+            _editStatus = $"저장패치 적용 · 교체 {replaced} · 파괴 {destroyed} · 유지 {kept}";
+        }
+
         void AimCamera()
         {
             // 🔴 AR 이면 카메라를 **우리가 옮기지 않는다.** 세션이 자세를 넣는다.
@@ -759,6 +841,8 @@ namespace DeltaContract
                                      : "라쏘로 감싸면 볼륨이 선택된다 (다시 그리면 더해진다)")
                         : "걸어서 둘러봐라 — 화면을 돌리지 않는다. [편집] 을 켜면 라쏘");
             _devOn = GUI.Toggle(new Rect(W - 230, H - 150, 210, 60), _devOn, " 개발자");
+            if (_devOn && !_editBusy && GUI.Button(new Rect(W - 470, H - 226, 440, 62), "저장 패치 적용 (삼자 일치)"))
+                StartCoroutine(ApplyStoredPatch());
 
             // 재배치는 **토글**이다 (사용자 지시). 켜면 평면 탭으로 다시 놓고, 끄면 취소.
             // 라쏘 드래그가 배치를 건드리지 않게 하려면 이 상태가 명시적이어야 한다.
