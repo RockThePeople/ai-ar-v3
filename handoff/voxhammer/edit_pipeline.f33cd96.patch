@@ -1,0 +1,159 @@
+diff --git a/voxhammer/edit_pipeline.py b/voxhammer/edit_pipeline.py
+index d47ef49..d48222f 100644
+--- a/voxhammer/edit_pipeline.py
++++ b/voxhammer/edit_pipeline.py
+@@ -150,8 +150,30 @@ def ply_to_slat_mask(coords_tgt, coords_mask):
+     slat_self_kv_mask = new_coords_mask.contiguous().cuda()
+     return slat_self_kv_mask
+ 
++# ── W39 가설 G: self-attention 에서 편집 Query → 보존 Key 를 막는다 ─────────────
++# VoxHammer 는 보존 영역의 K,V 를 캐시된 원본으로 교체하지만 QKᵀ 는 여전히 전토큰에
++# 대해 돈다 ⇒ 편집 Query 가 원본 Value 를 끌어온다. 논문은 optional attention mask 를
++# 언급하고 구현하지 않았다. 환경변수로 켠다 (기본 꺼짐 = 기존 거동과 동일).
++W39_ATTN_MASK = os.environ.get("W39_ATTN_MASK") == "1"
++W39_STATS = {}
++
++def _w39_allow(is_edit, tag, heads):
++    """allow[i,j] = (not edit_i) or edit_j — 편집 Query → 보존 Key 만 막는다.
++    SDPA 의 bool attn_mask 는 True 가 '참여'다 (단위확인 완료)."""
++    allow = (~is_edit).unsqueeze(1) | is_edit.unsqueeze(0)
++    s = W39_STATS.setdefault(tag, {"calls": 0, "tokens": int(is_edit.numel()),
++                                   "edit": int(is_edit.sum()), "blocked_per_call_per_head": 0,
++                                   "blocked_total": 0, "min_row_allow": 10**9})
++    s["calls"] += 1
++    b = int((~allow).sum())
++    s["blocked_per_call_per_head"] = b
++    s["blocked_total"] += b * heads
++    s["min_row_allow"] = min(s["min_row_allow"], int(allow.sum(1).min()))
++    return allow
++
+ def ss_attn_forward(self, x, context=None, indices=None, ss_kv=None, kv_mask=None, t_latent=None, order=None, pos=None, layer=None, is_text=False):
+     B, L, C = x.shape
++    attn_allow = None                     # W39: cross-attention 은 끝까지 None 이다
+     if self._type == "self":
+         qkv = self.to_qkv(x)
+         qkv = qkv.reshape(B, L, 3, self.num_heads, -1)
+@@ -180,7 +202,10 @@ def ss_attn_forward(self, x, context=None, indices=None, ss_kv=None, kv_mask=Non
+             v = v * kv_mask + ss_kv[f"{t_latent}_{order}_{pos}_{layer}_{self._type}_v"].cuda() * (1 - kv_mask)
+             k = k.type(q.dtype)
+             v = v.type(q.dtype)
+-    h = F.scaled_dot_product_attention(q, k, v)
++            if W39_ATTN_MASK and self._type == "self":
++                # kv_mask (B, heads, L, dim): 1 = 편집영역 · 0 = 보존영역. 토큰 안에서 값이 같다
++                attn_allow = _w39_allow(kv_mask[0, 0, :, 0] > 0.5, "ss_self", self.num_heads)
++    h = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_allow)
+     h = h.permute(0, 2, 1, 3)
+     h = h.reshape(B, L, -1)
+     h = self.to_out(h)
+@@ -229,6 +254,7 @@ def ss_flow_forward(self, x, t, cond, ss_kv, self_kv_mask, cross_kv_mask, t_late
+     return h
+ 
+ def slat_attn_forward(self, x, context=None, slat_kv=None, kv_mask=None, t_latent=None, order=None, pos=None, layer=None, is_text=False):
++    attn_allow = None                     # W39: cross-attention 은 끝까지 None 이다
+     if self._type == "self":
+         qkv = self._linear(self.to_qkv, x)
+         qkv = self._fused_pre(qkv, num_fused=3)
+@@ -259,6 +285,9 @@ def slat_attn_forward(self, x, context=None, slat_kv=None, kv_mask=None, t_laten
+             feats_v[idx_1_v] = slat_kv[f"{t_latent}_{order}_{pos}_{layer}_{self._type}_v"].feats.cuda()[idx_2_v]
+             v = v.replace(feats_v)
+             v = v.type(q.dtype)
++            if W39_ATTN_MASK:
++                # match_1_k (N, M): k 의 각 토큰이 보존 좌표 목록에 있는가. any 로 접으면 보존 여부다
++                attn_allow = _w39_allow(~match_1_k.any(dim=1), "slat_self", self.num_heads)
+         h = q
+         q = q.feats
+         k = k.feats
+@@ -290,7 +319,7 @@ def slat_attn_forward(self, x, context=None, slat_kv=None, kv_mask=None, t_laten
+                 v = v * kv_mask + slat_kv[f"{t_latent}_{order}_{pos}_{layer}_{self._type}_v"].cuda() * (1 - kv_mask)
+                 k = k.type(q.dtype)
+                 v = v.type(q.dtype)
+-    out = F.scaled_dot_product_attention(q, k, v)
++    out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_allow)
+     out = out.permute(0, 2, 1, 3)[0]
+     h = h.replace(out)
+     h = self._reshape_chs(h, (-1,))
+@@ -350,7 +379,11 @@ class InversionFlowEulerGuidanceIntervalSampler(FlowEulerGuidanceIntervalSampler
+ 
+     def inference_model(self, model, sample, t, cond, cfg_strength, kv, self_kv_mask, cross_kv_mask, t_latent, order, is_text):
+         cfg_interval = [0.5, 1.0]
+-        if cfg_interval[0] <= t_latent <= cfg_interval[1]:
++        # W38 축8: cfg_strength == 0 이면 (1+0)*pred - 0*neg_pred == pred 라 음 분기는
++        # 계산하고 버리는 것이다. 기본 cfg=[5.0, 6.0, 0.0, 0.0] 이므로 SLAT 두 스테이지가
++        # 통째로 여기 해당한다. 게이트가 inversion·forward 양쪽에서 같은 판정을 하므로
++        # pos=0 KV 항목은 쓰이지도 읽히지도 않는다 (한쪽만 걸면 forward 가 KeyError).
++        if cfg_strength != 0 and cfg_interval[0] <= t_latent <= cfg_interval[1]:
+             pos = 1
+             pred = self._inference_model(model, sample, t, cond["cond"], kv, self_kv_mask, cross_kv_mask, t_latent, order, pos, is_text)
+             pos = 0
+@@ -497,7 +530,7 @@ def sample_slat_denoise(pipeline, cond_tgt, coords_tgt, slat_src, coords_mask, s
+     slat = slat.replace(feats)
+     return slat
+ 
+-def run_edit(pipeline, render_dir, output_path, image_dir, is_text, source_prompt, target_prompt, skip_step=0, re_init=False, cfg=[5.0, 6.0, 0.0, 0.0]):
++def run_edit(pipeline, render_dir, output_path, image_dir, is_text, source_prompt, target_prompt, skip_step=0, re_init=False, cfg=[5.0, 6.0, 0.0, 0.0], slat_path=None, mask_cells=None):
+     ss_flow = pipeline.models["sparse_structure_flow_model"]
+     ss_flow.forward = MethodType(ss_flow_forward, ss_flow)
+     for block in ss_flow.blocks:
+@@ -524,10 +557,35 @@ def run_edit(pipeline, render_dir, output_path, image_dir, is_text, source_promp
+     cfg_strength_stage_2_forward = cfg[3]
+ 
+     # torch.manual_seed(0)
+-    coords_src = ply_to_coords(os.path.join(render_dir, "voxels.ply"))
++    # ── W34: 생성 SLat 재사용 경로 ────────────────────────────────────────────
++    # 기존 경로는 GLB → 150뷰 렌더 → dinov2 → slat_encoder 로 SLat 을 **재구성**한다.
++    # 그 왕복에서 점유가 깎인다 (실측 t1s-snowman: 13,460 → 11,467, 손실 21.2%, IoU 0.741).
++    # 생성 때 만든 SLat 이 있으면 그것을 그대로 쓴다 — 손실이 0 이고 STEP1/3 이 사라진다.
++    #
++    # 공간이 맞는지 확인함: 생성 sample_slat 은 `slat*std+mean` 로 끝나고(denormalized),
++    # 아래 sample_slat_inverse 는 `(slat-mean)/std` 로 시작한다. 같은 공간이다.
++    # 좌표 프레임도 확인함: slat 좌표 = 상위 계약의 정본 격자(grid_source="slat_coords"),
++    # 항등이다. v3-moto-b v1 에서 지문 b8a621ab… 로 대조했다.
++    if slat_path is not None:
++        from safetensors import safe_open as _safe_open
++        with _safe_open(slat_path, "pt") as _f:
++            _c = _f.get_tensor("coords")
++            _ft = _f.get_tensor("feats")
++            _md = dict(_f.metadata() or {})
++        if _md.get("slat_space") not in (None, "denormalized"):
++            raise ValueError(f"slat_space={_md.get('slat_space')} — denormalized 여야 한다")
++        if _c.shape[1] == 3:                       # batch 열이 없으면 붙인다
++            _c = torch.cat([torch.zeros(_c.shape[0], 1, dtype=_c.dtype), _c], dim=1)
++        _c = _c.int().cuda()
++        slat_src = sp.SparseTensor(feats=_ft.float().cuda(), coords=_c)
++        coords_src = _c[:, 1:].contiguous()
++    else:
++        coords_src = ply_to_coords(os.path.join(render_dir, "voxels.ply"))
++        slat_src = feats_to_slat(pipeline, os.path.join(render_dir, "features.npz"))
+     voxel_src = coords_to_voxel(coords_src)
+-    slat_src = feats_to_slat(pipeline, os.path.join(render_dir, "features.npz"))
+-    ply_delete_path = os.path.join(render_dir, "voxels_delete.ply")
++    # W34: mask_cells 를 직접 받으면 render_dir 이 아예 없을 수 있다(None). 그때 경로를
++    # 조립하면 TypeError 로 죽는다 — 실측으로 물렸다.
++    ply_delete_path = None if mask_cells is not None else os.path.join(render_dir, "voxels_delete.ply")
+     if not is_text:
+         img_src_path = os.path.join(image_dir, "2d_render.png")
+         img_tgt_path = os.path.join(image_dir, "2d_edit.png")
+@@ -539,8 +597,21 @@ def run_edit(pipeline, render_dir, output_path, image_dir, is_text, source_promp
+         pre_mask = None
+         cond_src = pipeline.get_cond([source_prompt])
+         cond_tgt = pipeline.get_cond([target_prompt])
+-    coords_delete = ply_to_coords(ply_delete_path)
+-    coords_preserve = coords_src[~torch.isin(coords_src, coords_delete).all(dim=1)]
++    # W34: 마스크를 복셀 목록으로 직접 받는다. 기존 경로는 mask.glb 를 bpy 로 임포트해
++    # 262,144 복셀 부피검사를 돌린다(실측 38.0s). 우리는 그 복셀을 이미 갖고 있다.
++    # ⚠️ 같은 격자·같은 순서여야 한다 — 등가는 ⓓ 검증에서 집합 동일성으로 확인한다.
++    if mask_cells is not None:
++        coords_delete = torch.as_tensor(np.asarray(mask_cells), dtype=torch.int32).cuda()
++    else:
++        coords_delete = ply_to_coords(ply_delete_path)
++    # D51 fix: torch.isin is ELEMENT-WISE over the flattened value set, so a voxel was
++    # treated as deleted whenever each of its x,y,z VALUES appeared anywhere in the delete
++    # set - not when the (x,y,z) triple was in the mask. Measured: 13 of 8511 preserved
++    # instead of 7608. Encode each coord to a single int (all coords are in [0,63]) so
++    # isin tests ROW membership.
++    coords_preserve = coords_src[~torch.isin(coords_src[:, 0] * 4096 + coords_src[:, 1] * 64 + coords_src[:, 2], coords_delete[:, 0] * 4096 + coords_delete[:, 1] * 64 + coords_delete[:, 2])]
++    # W38 계측: D51 기능확인용. 13 근처면 D51 이 안 먹는 것이고, 7,000대면 정상이다.
++    print(f"[D51] coords_src {coords_src.shape[0]} · coords_delete {coords_delete.shape[0]} · coords_preserve {coords_preserve.shape[0]}", flush=True)
+ 
+     voxel_mask, ss_latent_mask, ss_self_kv_mask, cross_kv_mask = ply_to_ss_mask(coords_preserve, pre_mask)
+     noise, ss_latent, ss_kv = sample_sparse_structure_inverse(pipeline, cond_src, voxel_src, cfg_strength_stage_1_inverse, skip_step, is_text)
