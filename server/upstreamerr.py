@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from typing import Optional, Tuple
 
-__all__ = ["UpstreamError", "parse_upstream_error"]
+__all__ = ["UpstreamError", "parse_upstream_error", "upstream_call"]
 
 
 class UpstreamError(RuntimeError):
@@ -69,3 +69,29 @@ def parse_upstream_error(status: int, body: str, *, where: str = "<EDIT_HOST>",
         f"UPSTREAM_HTTP_{status}",
         f"{where} {action} 실패 ({status}): {(body or '(본문 없음)')[:200]}",
         status=status, where=where)
+
+
+def upstream_call(fn, *, action: str, where: str = "<EDIT_HOST>"):
+    """상류 호출을 감싼다. **연결 실패도 상류 사유다.**
+
+    `ConnectError` 가 `INTERNAL` 로 나가면 화면이 "서버 버그" 라고 말하는 셈이다 —
+    실제로는 상대가 내려가 있는 것이고, 고칠 사람이 다르다 (D71).
+
+    ⚠️ httpx 예외 메시지에는 URL 이 들어갈 수 있다. 그대로 올리면 공인 IP 가 화면에
+       찍힌다 (§7) — 그래서 **예외 종류만 쓰고 메시지는 안 싣는다.**
+    """
+    import httpx
+
+    try:
+        return fn()
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise UpstreamError(
+            "UPSTREAM_UNREACHABLE",
+            f"{where} 에 못 닿는다 ({type(exc).__name__}) — {action} 을 시작도 못 했다. "
+            f"상대가 내려가 있거나 경로가 막혔다",
+            where=where) from exc
+    except httpx.ReadTimeout as exc:
+        raise UpstreamError(
+            "UPSTREAM_TIMEOUT",
+            f"{where} 가 제한 시간 안에 답하지 않았다 ({action})",
+            where=where) from exc

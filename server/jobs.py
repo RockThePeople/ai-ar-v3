@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import traceback
 import uuid
@@ -57,7 +58,20 @@ class JobRegistry:
                 self._jobs[job_id] = j.model_copy(update=fields)
 
     def run(self, job_id: str, fn: Callable[[Callable[..., None]], dict]) -> None:
-        """백그라운드 실행. `fn(progress)` 가 `JobStatus` 갱신 필드를 반환한다."""
+        """백그라운드 실행. `fn(progress)` 가 `JobStatus` 갱신 필드를 반환한다.
+
+        ⚠️ `JOBS_EXECUTE=0` 이면 **띄우지 않고 queued 로 둔다.** 테스트 이음매다 —
+           라우트 테스트가 잡을 실제로 돌리면 LLM·t2i·상류 GPU 를 태우고, 인터프리터
+           종료 시 데몬 스레드가 남아 무관한 오류를 낸다(실측). 라우트가 무엇을
+           **접수했는가**를 재는 테스트에 실행은 필요 없다.
+
+           🔴 기본값은 실행이다. 끄는 쪽이 명시적이어야 운영에서 조용히 안 도는 일이 없다.
+        """
+        if os.environ.get("JOBS_EXECUTE", "1") == "0":
+            self._set(job_id, stage="not-executed",
+                      stage_detail="JOBS_EXECUTE=0 — 실행하지 않았다 (테스트 이음매)")
+            return
+
         def progress(p: float, stage: str = "", detail: str = "") -> None:
             self._set(job_id, progress=float(p), stage=stage or None,
                       stage_detail=detail or None)

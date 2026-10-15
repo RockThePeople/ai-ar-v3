@@ -31,6 +31,7 @@ from deltacontract.schemas import (  # type: ignore[import-not-found]
 )
 
 from .assetstore import STORE, AssetNotFound, VersionNotFound
+from .editreq import derive_idempotency_key
 from .jobs import JOBS
 
 router = APIRouter()
@@ -85,7 +86,18 @@ def create_edit(asset_id: str, req: EditRequest) -> JobStatus:
     except VersionNotFound as e:
         raise HTTPException(409, str(e)) from e
 
-    job = JOBS.new(asset_id=asset_id, idempotency_key=req.idempotency_key)
+    # 🔴 키가 없으면 **내용에서 유도한다** (계약 3.15.5 · `derive_idempotency_key`).
+    #    난수를 쓰면 재시도가 매번 새 잡이 되고, GPU 를 쓰는 편집에서 그건 곧 중복
+    #    실행이다. 내용 파생이라 **같은 요청은 같은 키**, 다른 요청은 다른 키다.
+    #
+    #    ⚠️ 계약이 곧 이 필드를 필수로 바꾼다 (맥북 PR). 그때도 여기는 안 깨진다 —
+    #       클라가 보내면 그것을 쓰고, 없으면 유도할 뿐이다. **서버가 지어내는 값이
+    #       아니라 요청 내용의 함수**라 "무엇을 재시도했는가" 가 흐려지지 않는다.
+    idem = req.idempotency_key or derive_idempotency_key(
+        asset_id, req.base_version, req.raw_prompt, req.mask.voxels or [], req.seed)
+    if not req.idempotency_key:
+        req = req.model_copy(update={"idempotency_key": idem})
+    job = JOBS.new(asset_id=asset_id, idempotency_key=idem)
     if job.state != "queued":            # 같은 키의 잡을 재사용했다
         return job
 
