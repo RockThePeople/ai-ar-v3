@@ -418,6 +418,12 @@ class EditRequest(BaseModel):
     raw_prompt: str
     mask: EditMask
     seed: int = 42
+    # 3.28.0 — 조건 렌더 시점(포크 `render_rgb_and_mask.py` 5시점 번호 0–4). **선택 항목.**
+    # 생략(None)하면 A5000 이 고른다 — 마스크 셀(halo 전)을 5시점 카메라로 투영해 화면 면적이
+    # 가장 큰 시점(동률이면 낮은 번호). 고른 값은 `BRenderResponse.view` 로 돌아온다
+    # (Voxhammer-light http-contract §4 결정 4, 2026-10-25 수정본). 3090 은 그대로
+    # `BRenderRequest.view` 로 넘긴다. 범위 밖 값은 거부한다(서버가 고쳐 쓰지 않는다).
+    view: Optional[int] = Field(default=None, ge=0, le=4)
     # §10-1 부분 실패 대비. 같은 키로 재요청하면 이미 커밋된 결과를 그대로 돌려준다.
     #
     # 🔴 **키는 요청 내용에서 파생시켜라. 고정하지도, 매번 새로 만들지도 마라** (3.15.5).
@@ -623,6 +629,51 @@ class BEditRequest(BaseModel):
     mask: EditMask
     seed: int = 42
     idempotency_key: Optional[str] = None
+    # 3.28.0 — 조건 이미지 경로 (위 docstring 의 복구 경로 1). 요청은 multipart 다:
+    #   meta = 이 모델 JSON,  파트 `2d_render` · `2d_mask` · `2d_edit` (PNG 1024²)
+    # `2d_render`·`2d_mask` 는 `/v2/trellis/render`(BRenderRequest) 응답 파일 그대로,
+    # `2d_edit` 는 3090 인페인팅 결과(마스크 밖은 2d_render 와 바이트 동일)다.
+    # A5000 은 받은 파일의 sha256 을 `render_id` 기록·아래 두 값과 대조한다 —
+    # 다르면 RENDER_MISMATCH(409), 기록이 없으면 RENDER_UNKNOWN(404),
+    # 이미지 파트가 하나라도 없으면 CONDITION_IMAGES_REQUIRED(422).
+    # 🔴 Optional 인 이유는 옛 JSON 경로(조건 없음)를 쓰는 A5000 이 아직 있어서다.
+    #    새 A5000 은 셋이 없으면 **거절한다** — 조건 없이 진행하지 않는다(고객사 회신 A4).
+    render_id: Optional[str] = None
+    render_sha256: Optional[str] = None
+    mask_sha256: Optional[str] = None
+
+
+class BRenderRequest(BaseModel):
+    """3090 → A5000 **조건 렌더** 요청 (3.28.0, Voxhammer-light http-contract §3.1).
+
+    부모 판본의 원본 렌더와 2D 마스크를 고정 시점 하나에서 만든다. 2D 마스크 정의는
+    포크 `render_rgb_and_mask.py` 그대로(원본 depth − 마스크 depth > 1e-4).
+    3090 은 이 렌더를 인페인팅해 `BEditRequest` 의 `2d_edit` 로 보낸다.
+    """
+
+    asset_id: str
+    base_version: int
+    mask: EditMask
+    # None 이면 A5000 이 마스크 투영 면적 최대 시점을 고른다(EditRequest.view 주석).
+    view: Optional[int] = Field(default=None, ge=0, le=4)
+    idempotency_key: Optional[str] = None
+
+
+class BRenderResponse(BaseModel):
+    """`/v2/trellis/render` 응답. 파일은
+    `GET /v2/trellis/renders/{render_id}/2d_render.png` · `.../2d_mask.png`.
+
+    A5000 은 `render_id` → (두 해시, base_version) 기록을 24시간 보관한다(재기동해도 유지).
+    만료·유실이면 편집 제출이 RENDER_UNKNOWN 이 되고, 3090 은 렌더부터 1회 다시 한다.
+    """
+
+    render_id: str
+    asset_id: str
+    base_version: int
+    view: int = Field(ge=0, le=4)  # 실제로 렌더한 시점. 요청이 None 이면 A5000 이 고른 값
+    render_sha256: str
+    mask_sha256: str
+    renderer: Dict[str, object] = Field(default_factory=dict)
 
 
 class BAssembleRequest(BaseModel):
@@ -877,6 +928,10 @@ class ErrorBody(BaseModel):
         "BOOKKEEPING_MISMATCH",  # 부기가 지목한 청크를 B 가 빠뜨렸다 (집합의 문제)
         "CHUNK_HASH_MISMATCH",  # 전송된 청크 바이트 해시가 보고와 다르다 (바이트의 문제, 재시도 가능)
         "STAGING_EXPIRED",  # 410. ephemeral 결과가 만료됐다 — 404(URI 오류)와 갈라야 한다
+        "CONDITION_IMAGES_REQUIRED",  # 422. 편집 multipart 에 2d_render·2d_mask·2d_edit 중 빠진 것 (3.28.0)
+        "RENDER_MISMATCH",  # 409. 받은 렌더·마스크 해시가 render_id 기록과 다르다 (3.28.0)
+        "RENDER_UNKNOWN",  # 404. render_id 기록이 없다(만료 포함) — 렌더부터 다시 (3.28.0)
+        "BAD_CONDITION_IMAGE",  # 400. 조건 이미지가 PNG 1024² 가 아니다 (3.28.0)
         "INTERNAL",
     ]
     message: str

@@ -124,8 +124,12 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
     #       조건은 전신 실루엣으로 읽힌다. 1024² · 단순 배경 · 알파 불필요(rembg 가 덮는다).
     #    ⚠️ W11: **조건 이미지 좌표로 마스크를 판단하지 마라.** 비율이 다르다
     #       (조건의 목 35% vs 자산 17%). 마스크는 클라가 준 복셀이 유일한 진실이다.
+    # ── 계약 3.28.0 조건 이미지 경로 (Voxhammer-light R9, 토글 `VHL_R9`, 기본 꺼짐).
+    #    켜지면 t2i 대신 ① A5000 조건 렌더 → ② 3090 인페인팅 → ③ 조건 3장 multipart 로
+    #    제출한다(`condrender.py`). 꺼져 있으면 아래 기존 경로 그대로다.
+    use_render_inpaint = os.environ.get("VHL_R9") == "1"
     cond_png = None
-    if os.environ.get("EDIT_CONDITION_IMAGE", "1") != "0":
+    if not use_render_inpaint and os.environ.get("EDIT_CONDITION_IMAGE", "1") != "0":
         try:
             from .t2i import render_rgba
 
@@ -148,20 +152,26 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
         "seed": int(req.seed),
         "idempotency_key": req.idempotency_key,
     }
+    cond_info = None
     with _client() as c:
-        progress(0.2, "submit", f"<EDIT_HOST> 편집 제출 (op={spec.op})"
-                 + (" · 조건 이미지 동봉" if cond_png else " · 조건 없음"))
-        if cond_png:
-            # multipart — `meta`(BEditRequest JSON) + `image`. generate 와 같은 관례다.
-            import json as _json
+        if use_render_inpaint:
+            from .condrender import submit_with_condition
 
-            r = upstream_call(lambda: c.post(
-                "/v2/trellis/edit", data={"meta": _json.dumps(body)},
-                files={"image": ("condition.png", cond_png, "image/png")}),
-                action="편집 제출")
+            r, cond_info = submit_with_condition(c, asset_id, req, spec, body, progress)
         else:
-            r = upstream_call(lambda: c.post("/v2/trellis/edit", json=body),
-                              action="편집 제출")
+            progress(0.2, "submit", f"<EDIT_HOST> 편집 제출 (op={spec.op})"
+                     + (" · 조건 이미지 동봉" if cond_png else " · 조건 없음"))
+            if cond_png:
+                # multipart — `meta`(BEditRequest JSON) + `image`. generate 와 같은 관례다.
+                import json as _json
+
+                r = upstream_call(lambda: c.post(
+                    "/v2/trellis/edit", data={"meta": _json.dumps(body)},
+                    files={"image": ("condition.png", cond_png, "image/png")}),
+                    action="편집 제출")
+            else:
+                r = upstream_call(lambda: c.post("/v2/trellis/edit", json=body),
+                                  action="편집 제출")
         if r.status_code >= 400:
             # 🔴 상류 사유를 **그대로** 올린다. "실패" 로 뭉뚱그리면 사용자가 재시도만
             #    하고, 재시도로는 절대 안 고쳐지는 오류가 많다.
@@ -247,6 +257,12 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
         changed_chunks=changed, removed_chunk_ids=removed,
         mask_fingerprint=payload.get("mask_fingerprint"),
         mask_voxels_used=len(req.mask.voxels or []), op="edit")
+    detail = f"청크 {len(blobs)} · 제거 {len(removed)} · 판본 {counts}"
+    if cond_info:
+        t = cond_info["timings"]
+        detail += (f" · 조건 ①렌더 {t.get('render_s', 0):.1f}s ②인페인팅 {t.get('inpaint_s', 0):.1f}s"
+                   f" ③제출 {t.get('submit_s', 0):.1f}s (렌더 {cond_info['render_attempts']}회"
+                   f" · view {cond_info['view']}{'' if cond_info['view_requested'] is not None else ' 자동'})")
     return {"patch": patch, "asset_id": asset_id,
             "manifest": STORE.manifest(asset_id, to_version),
-            "stage_detail": f"청크 {len(blobs)} · 제거 {len(removed)} · 판본 {counts}"}
+            "stage_detail": detail}

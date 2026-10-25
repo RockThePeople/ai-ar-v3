@@ -8,7 +8,7 @@
   partition  메시를 청크로 분할
   assemble   다른 자산의 일부를 마스크 자리에 끼워넣기 (크롭·정수배치·부기)
   schemas    와이어 스키마 (pydantic, 선택 의존)
-  errors     오류 코드 13종
+  errors     오류 코드 17종
 
 배경과 실측 근거는 README.md · FINDINGS.md.
 """
@@ -67,6 +67,8 @@ from .uris import (  # noqa: F401
 from .errors import (  # noqa: F401
     ERROR_CODE_TO_EXCEPTION,
     AssetNotFound,
+    BadConditionImage,
+    ConditionImagesRequired,
     DeltaContractError,
     BookkeepingMismatch,
     DeterminismViolation,
@@ -74,6 +76,8 @@ from .errors import (  # noqa: F401
     InvalidRequest,
     MaskEmpty,
     NotFound,
+    RenderMismatch,
+    RenderUnknown,
     Unauthorized,
     UpstreamOOM,
     UpstreamTimeout,
@@ -106,6 +110,8 @@ try:
         BEditRequest,
         BGenerateRequest,
         BHealth,
+        BRenderRequest,
+        BRenderResponse,
         ChunkEntry,
         ChunkManifest,
         ChunkMeshPayload,
@@ -124,4 +130,4 @@ except ImportError as _e:  # pragma: no cover
     HAS_SCHEMAS = False
     _SCHEMAS_IMPORT_ERROR = _e
 
-__version__ = "3.25.0"
+__version__ = "3.28.0"
