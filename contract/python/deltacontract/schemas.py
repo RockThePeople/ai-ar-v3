@@ -418,10 +418,12 @@ class EditRequest(BaseModel):
     raw_prompt: str
     mask: EditMask
     seed: int = 42
-    # 3.28.0 — 조건 렌더 시점(포크 `render_rgb_and_mask.py` 5시점 번호 0–4). 편집 부위가
-    # 가려지지 않는 시점이 자산·편집마다 다르므로 **요청마다 받는다** (Voxhammer-light
-    # http-contract §4 결정 4). 생략하면 0. 3090 은 이 값을 `BRenderRequest.view` 로 넘긴다.
-    view: int = Field(default=0, ge=0, le=4)
+    # 3.28.0 — 조건 렌더 시점(포크 `render_rgb_and_mask.py` 5시점 번호 0–4). **선택 항목.**
+    # 생략(None)하면 A5000 이 고른다 — 마스크 셀(halo 전)을 5시점 카메라로 투영해 화면 면적이
+    # 가장 큰 시점(동률이면 낮은 번호). 고른 값은 `BRenderResponse.view` 로 돌아온다
+    # (Voxhammer-light http-contract §4 결정 4, 2026-10-25 수정본). 3090 은 그대로
+    # `BRenderRequest.view` 로 넘긴다. 범위 밖 값은 거부한다(서버가 고쳐 쓰지 않는다).
+    view: Optional[int] = Field(default=None, ge=0, le=4)
     # §10-1 부분 실패 대비. 같은 키로 재요청하면 이미 커밋된 결과를 그대로 돌려준다.
     #
     # 🔴 **키는 요청 내용에서 파생시켜라. 고정하지도, 매번 새로 만들지도 마라** (3.15.5).
@@ -652,7 +654,8 @@ class BRenderRequest(BaseModel):
     asset_id: str
     base_version: int
     mask: EditMask
-    view: int = Field(default=0, ge=0, le=4)
+    # None 이면 A5000 이 마스크 투영 면적 최대 시점을 고른다(EditRequest.view 주석).
+    view: Optional[int] = Field(default=None, ge=0, le=4)
     idempotency_key: Optional[str] = None
 
 
@@ -667,7 +670,7 @@ class BRenderResponse(BaseModel):
     render_id: str
     asset_id: str
     base_version: int
-    view: int
+    view: int = Field(ge=0, le=4)  # 실제로 렌더한 시점. 요청이 None 이면 A5000 이 고른 값
     render_sha256: str
     mask_sha256: str
     renderer: Dict[str, object] = Field(default_factory=dict)

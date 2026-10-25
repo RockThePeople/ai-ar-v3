@@ -942,15 +942,22 @@ def _voxel_mask():
 
 
 @needs_schemas
-def test_view_is_bounded_to_the_five_fork_views():
-    """`view` 는 포크 렌더러의 5시점 번호(0–4)다. 범위 밖은 **거부**한다 —
-    서버가 가까운 값으로 고치면 다른 시점의 렌더로 편집하면서 예외가 안 난다."""
+def test_view_is_optional_and_bounded_to_the_five_fork_views():
+    """`view` 는 포크 렌더러의 5시점 번호(0–4)이고 **선택 항목**이다. 생략(None)하면
+    A5000 이 마스크 투영 면적 최대 시점을 골라 응답 `view` 로 돌려준다(http-contract §4-4 수정본).
+    범위 밖은 **거부**한다 — 서버가 가까운 값으로 고치면 다른 시점의 렌더로 편집하면서 예외가 안 난다."""
     from pydantic import ValidationError
 
-    from deltacontract.schemas import BRenderRequest, EditRequest
+    from deltacontract.schemas import BRenderRequest, BRenderResponse, EditRequest
 
     e = EditRequest(session_id="s", base_version=0, raw_prompt="p", mask=_voxel_mask())
-    assert e.view == 0, "생략하면 0 (http-contract §4 결정 4)"
+    assert e.view is None, "생략하면 None — 서버가 고른다"
+    assert BRenderRequest(asset_id="a", base_version=0, mask=_voxel_mask()).view is None
+    assert BRenderRequest(asset_id="a", base_version=0, mask=_voxel_mask(), view=None).view is None
+    # 응답의 view 는 실제로 렌더한 시점이라 None 일 수 없다
+    with pytest.raises(ValidationError):
+        BRenderResponse(render_id="r", asset_id="a", base_version=0, view=None,
+                        render_sha256="0" * 64, mask_sha256="1" * 64)
     for bad in (-1, 5):
         with pytest.raises(ValidationError):
             EditRequest(session_id="s", base_version=0, raw_prompt="p", mask=_voxel_mask(), view=bad)
