@@ -124,6 +124,8 @@ class MockA5000(_Server):
         change_render_on_retry 다시 렌더하면 다른 바이트를 낸다(비결정 렌더)
         mismatch: bool         ③ 이 RENDER_MISMATCH 를 준다
         render_base_version_offset  렌더 응답의 base_version 을 어긋나게 한다
+        auto_view              view 가 null 일 때 고르는 시점(실제 A5000 은 마스크 투영 면적 최대)
+        view_offset            요청과 다른 시점을 렌더한다
     관찰:
         calls: [(method, path)] · edits: [{"meta", "parts"}] · renders: {render_id: rec}
     """
@@ -136,6 +138,9 @@ class MockA5000(_Server):
         self.change_render_on_retry = False
         self.mismatch = False
         self.render_base_version_offset = 0
+        self.auto_view = 2              # view 생략 시 "고른" 시점
+        self.view_offset = 0            # 요청과 다른 시점을 렌더하게 한다
+        self.render_requests: List[dict] = []
         self.calls: List[tuple] = []
         self.edits: List[dict] = []
         self.renders: Dict[str, dict] = {}
@@ -184,9 +189,15 @@ class _A5000Handler(_H):
         for k in ("asset_id", "base_version", "mask"):
             if k not in req:
                 return self._err(422, "INVALID_REQUEST", f"{k} 가 없다")
-        view = int(req.get("view", 0))
-        if not 0 <= view <= 4:
-            return self._err(422, "INVALID_REQUEST", "view 는 0–4")
+        S.render_requests.append(req)
+        view = req.get("view")
+        if view is None:
+            # 실제 A5000 은 마스크 셀을 5시점에 투영해 면적 최대 시점을 고른다(§4-4 수정본).
+            # 모의 서버는 그 계산을 흉내 내지 않고 정해 둔 값을 돌려준다.
+            view = S.auto_view
+        elif not (isinstance(view, int) and 0 <= view <= 4):
+            return self._err(422, "INVALID_REQUEST", "view 는 0–4 또는 null")
+        view = (view + S.view_offset) % 5
         if int(req["base_version"]) != S.latest_version:
             return self._err(409, "VERSION_CONFLICT", "최신이 아니다",
                              {"latest_version": str(S.latest_version)})

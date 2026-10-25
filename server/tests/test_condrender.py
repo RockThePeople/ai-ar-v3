@@ -141,7 +141,30 @@ def test_timing_log_records_each_stage(env):
     rec = json.loads((env.tmp / "timing.jsonl").read_text().splitlines()[-1])
     for k in ("render_s", "render_fetch_s", "inpaint_s", "submit_s", "condition_upload_bytes"):
         assert k in rec["timings"], k
-    assert rec["render_attempts"] == 1 and rec["view"] == 3 and rec["inpaint_reused"] is False
+    assert rec["render_attempts"] == 1 and rec["inpaint_reused"] is False
+    assert (rec["view"], rec["view_requested"]) == (3, 3)
+
+
+# ══════════════════════════════════════════════════════════ view 선택 항목 (§4-4 수정본)
+def test_view_omitted_is_sent_as_null_and_server_choice_is_recorded(env):
+    """Unity 가 view 를 안 보내면(None) 3090 은 null 로 넘기고, A5000 이 고른 시점을 기록한다."""
+    out, _ = _run(_req(view=None))
+    assert "view" in env.a.render_requests[0] and env.a.render_requests[0]["view"] is None
+    rec = json.loads((env.tmp / "timing.jsonl").read_text().splitlines()[-1])
+    assert (rec["view"], rec["view_requested"]) == (env.a.auto_view, None)
+    assert f"view {env.a.auto_view} 자동" in out["stage_detail"]
+    # 서버가 고른 시점의 렌더가 ②③ 에 그대로 쓰였다
+    rid = env.a.edits[0]["meta"]["render_id"]
+    assert env.a.renders[rid]["view"] == env.a.auto_view
+
+
+def test_render_of_another_view_than_requested_is_refused(env):
+    env.a.view_offset = 1
+    from server.condrender import ConditionFailed
+
+    with pytest.raises(ConditionFailed):
+        _run(_req(view=3))
+    assert env.w.requests == [] and env.a.edits == []
 
 
 # ══════════════════════════════════════════════════════════ RENDER_UNKNOWN — ①부터 1회

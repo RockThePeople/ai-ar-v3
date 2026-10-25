@@ -261,7 +261,8 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
     if cond_info:
         t = cond_info["timings"]
         detail += (f" · 조건 ①렌더 {t.get('render_s', 0):.1f}s ②인페인팅 {t.get('inpaint_s', 0):.1f}s"
-                   f" ③제출 {t.get('submit_s', 0):.1f}s (렌더 {cond_info['render_attempts']}회)")
+                   f" ③제출 {t.get('submit_s', 0):.1f}s (렌더 {cond_info['render_attempts']}회"
+                   f" · view {cond_info['view']}{'' if cond_info['view_requested'] is not None else ' 자동'})")
     return {"patch": patch, "asset_id": asset_id,
             "manifest": STORE.manifest(asset_id, to_version),
             "stage_detail": detail}

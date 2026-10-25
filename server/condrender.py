@@ -66,7 +66,8 @@ def _render(c, asset_id: str, req, timings: Dict[str, float]) -> dict:
         "asset_id": asset_id,
         "base_version": int(req.base_version),
         "mask": req.mask.model_dump(mode="json"),
-        "view": int(getattr(req, "view", 0) or 0),
+        # None 이면 그대로 null 로 넘긴다 — A5000 이 마스크 투영 면적 최대 시점을 고른다(§4-4 수정본).
+        "view": _requested_view(req),
     }
     t0 = time.perf_counter()
     r = upstream_call(lambda: c.post("/v2/trellis/render", json=body), action="조건 렌더")
@@ -76,6 +77,12 @@ def _render(c, asset_id: str, req, timings: Dict[str, float]) -> dict:
     for k in ("render_id", "render_sha256", "mask_sha256"):
         if not meta.get(k):
             raise ConditionFailed(f"조건 렌더 응답에 {k} 가 없다: {r.text[:200]}")
+    view, asked = meta.get("view"), _requested_view(req)
+    if not isinstance(view, int) or not 0 <= view <= 4:
+        raise ConditionFailed(f"조건 렌더 응답의 view 가 0–4 가 아니다: {view!r}")
+    if asked is not None and view != asked:
+        # 다른 시점을 렌더했다 — 그 렌더로 편집하면 예외 없이 다른 시점의 조건을 쓴다.
+        raise ConditionFailed(f"조건 렌더의 view 가 다르다: 요청 {asked}, 응답 {view}")
     if int(meta.get("base_version", -1)) != int(req.base_version):
         # 다른 판본을 렌더했다 — 그 렌더로 편집하면 예외 없이 다른 부모를 조건으로 쓴다.
         raise ConditionFailed(
@@ -97,6 +104,11 @@ def _render(c, asset_id: str, req, timings: Dict[str, float]) -> dict:
     timings["render_fetch_s"] = timings.get("render_fetch_s", 0.0) + (t2 - t1)
     timings["render_bytes"] = len(files["2d_render"]) + len(files["2d_mask"])
     return {**meta, **files}
+
+
+def _requested_view(req) -> Optional[int]:
+    v = getattr(req, "view", None)
+    return None if v is None else int(v)
 
 
 def _inpaint(render_png: bytes, mask_png: bytes, prompt: str, timings: Dict[str, float]) -> bytes:
@@ -175,7 +187,8 @@ def submit_with_condition(c, asset_id: str, req, spec, body: dict,
     edit_png: Optional[bytes] = None
     while True:
         attempts += 1
-        progress(0.1, "render", f"조건 렌더 (view {int(getattr(req, 'view', 0) or 0)}, 시도 {attempts})")
+        asked = _requested_view(req)
+        progress(0.1, "render", f"조건 렌더 (view {'자동' if asked is None else asked}, 시도 {attempts})")
         cond = _render(c, asset_id, req, timings)
         same = prev is not None and (cond["render_sha256"], cond["mask_sha256"]) == (
             prev["render_sha256"], prev["mask_sha256"])
@@ -199,6 +212,7 @@ def submit_with_condition(c, asset_id: str, req, spec, body: dict,
                 "render_id": cond["render_id"], "render_sha256": cond["render_sha256"],
                 "mask_sha256": cond["mask_sha256"], "edit_sha256": edit_sha,
                 "upstream_idempotency_key": key, "render_attempts": attempts,
+                "view": cond["view"], "view_requested": _requested_view(req),
                 "inpaint_reused": bool(same)}
         _log_timing(asset_id, req, info)
         return r, info
@@ -209,7 +223,6 @@ def _log_timing(asset_id: str, req, info: dict) -> None:
     path = os.environ.get("R9_TIMING_LOG")
     if not path:
         return
-    rec = {"t": time.time(), "asset_id": asset_id, "base_version": int(req.base_version),
-           "view": int(getattr(req, "view", 0) or 0), **info}
+    rec = {"t": time.time(), "asset_id": asset_id, "base_version": int(req.base_version), **info}
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
