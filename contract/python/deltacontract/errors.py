@@ -246,6 +246,46 @@ class StagingExpired(DeltaContractError):
     retriable = False
 
 
+class ConditionImagesRequired(DeltaContractError):
+    """편집 multipart 에 조건 이미지 셋(`2d_render`·`2d_mask`·`2d_edit`) 중 빠진 것이 있다 (3.28.0).
+
+    🔴 조건 없이 진행하지 않는다 — 조건 없는 편집은 원본으로 회귀하고, 결과만 보면
+    "편집이 약하다" 로 오독된다(D40). `detail["missing"]` 에 빠진 파트 이름을 쉼표로.
+    """
+
+    error_code = "CONDITION_IMAGES_REQUIRED"
+    http_status = 422
+
+
+class RenderMismatch(DeltaContractError):
+    """받은 `2d_render`/`2d_mask` 의 sha256 이 `render_id` 기록 또는 meta 의 해시와 다르다 (3.28.0).
+
+    렌더가 바뀌었거나(다른 판본·다른 시점) 전송 중 바뀌었다. 같은 파일을 다시 보내도
+    안 고쳐진다 — 렌더부터 다시 해야 한다. `detail` 에 기대값·받은 값.
+    """
+
+    error_code = "RENDER_MISMATCH"
+    http_status = 409
+
+
+class RenderUnknown(DeltaContractError):
+    """`render_id` 기록이 없다 — 만료(24시간)했거나 모르는 id 다 (3.28.0).
+
+    3090 은 렌더부터 **1회** 다시 한다. 그래도 같으면 보고한다(무한 재시도 금지).
+    """
+
+    error_code = "RENDER_UNKNOWN"
+    http_status = 404
+    retriable = True
+
+
+class BadConditionImage(DeltaContractError):
+    """조건 이미지가 PNG 가 아니거나 1024² 가 아니다 (3.28.0)."""
+
+    error_code = "BAD_CONDITION_IMAGE"
+    http_status = 400
+
+
 class InternalError(DeltaContractError):
     error_code = "INTERNAL"
     http_status = 500
@@ -268,6 +308,10 @@ ERROR_CODE_TO_EXCEPTION: Dict[str, type] = {
         BookkeepingMismatch,
         ChunkHashMismatch,
         StagingExpired,
+        ConditionImagesRequired,
+        RenderMismatch,
+        RenderUnknown,
+        BadConditionImage,
         InternalError,
     )
 }

@@ -932,6 +932,76 @@ def test_schema_field_names_match_csharp_mirror():
     assert not missing, f"C# 미러에 없는 필드: {missing}"
 
 
+# ══════════════════════════════════════════════════════ 3.28.0 조건 렌더·이미지
+
+
+def _voxel_mask():
+    from deltacontract.schemas import EditMask
+
+    return EditMask(mode="voxels", voxels=[(1, 2, 3)], grid_source="slat_coords")
+
+
+@needs_schemas
+def test_view_is_bounded_to_the_five_fork_views():
+    """`view` 는 포크 렌더러의 5시점 번호(0–4)다. 범위 밖은 **거부**한다 —
+    서버가 가까운 값으로 고치면 다른 시점의 렌더로 편집하면서 예외가 안 난다."""
+    from pydantic import ValidationError
+
+    from deltacontract.schemas import BRenderRequest, EditRequest
+
+    e = EditRequest(session_id="s", base_version=0, raw_prompt="p", mask=_voxel_mask())
+    assert e.view == 0, "생략하면 0 (http-contract §4 결정 4)"
+    for bad in (-1, 5):
+        with pytest.raises(ValidationError):
+            EditRequest(session_id="s", base_version=0, raw_prompt="p", mask=_voxel_mask(), view=bad)
+        with pytest.raises(ValidationError):
+            BRenderRequest(asset_id="a", base_version=0, mask=_voxel_mask(), view=bad)
+    assert BRenderRequest(asset_id="a", base_version=0, mask=_voxel_mask(), view=4).view == 4
+
+
+@needs_schemas
+def test_render_response_and_edit_condition_fields_roundtrip():
+    from deltacontract.schemas import BEditRequest, BRenderResponse
+
+    r = BRenderResponse(render_id="r1", asset_id="a", base_version=3, view=1,
+                        render_sha256="0" * 64, mask_sha256="1" * 64, renderer={"name": "x"})
+    assert BRenderResponse.model_validate_json(r.model_dump_json()) == r
+
+    # 옛 경로(조건 없음) 본문은 그대로 통과한다 — 거절은 새 A5000 의 몫(CONDITION_IMAGES_REQUIRED).
+    old = BEditRequest(asset_id="a", base_version=3, prompt="p", mask=_voxel_mask())
+    assert old.render_id is None and old.render_sha256 is None and old.mask_sha256 is None
+    new = BEditRequest(asset_id="a", base_version=3, prompt="p", mask=_voxel_mask(),
+                       render_id="r1", render_sha256=r.render_sha256, mask_sha256=r.mask_sha256)
+    assert BEditRequest.model_validate_json(new.model_dump_json()) == new
+
+
+def test_condition_errors_have_fixed_status_and_retry_semantics():
+    from deltacontract.errors import (
+        BadConditionImage,
+        ConditionImagesRequired,
+        RenderMismatch,
+        RenderUnknown,
+        raise_from_error_body,
+    )
+
+    assert (ConditionImagesRequired.http_status, ConditionImagesRequired.retriable) == (422, False)
+    # 같은 파일을 다시 보내도 안 고쳐진다 — 렌더부터 다시 해야 한다.
+    assert (RenderMismatch.http_status, RenderMismatch.retriable) == (409, False)
+    # 만료·유실. 3090 이 렌더부터 1회 다시 한다.
+    assert (RenderUnknown.http_status, RenderUnknown.retriable) == (404, True)
+    assert (BadConditionImage.http_status, BadConditionImage.retriable) == (400, False)
+    with pytest.raises(RenderUnknown):
+        raise_from_error_body({"error_code": "RENDER_UNKNOWN", "message": "만료"})
+    # ⚠️ `pytest.raises(...) as ei` 를 쓰지 않는다 — run_conformance.py 의 스텁에 `.value` 가 없다.
+    try:
+        raise_from_error_body({"error_code": "CONDITION_IMAGES_REQUIRED", "message": "x",
+                               "detail": {"missing": "2d_edit"}})
+    except ConditionImagesRequired as e:
+        assert e.detail["missing"] == "2d_edit"
+    else:
+        raise AssertionError("CONDITION_IMAGES_REQUIRED 가 예외로 되살아나지 않았다")
+
+
 # ══════════════════════════════════════════════════════ 골든 벡터
 
 

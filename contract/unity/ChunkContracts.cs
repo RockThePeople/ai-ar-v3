@@ -269,6 +269,8 @@ namespace DeltaContract
         [JsonProperty("raw_prompt")]      public string RawPrompt;
         [JsonProperty("mask")]            public EditMask Mask;
         [JsonProperty("seed")]            public int Seed = 42;
+        // 3.28.0 — 조건 렌더 시점(0–4). 편집 부위가 가려지지 않는 시점. 생략하면 0.
+        [JsonProperty("view")]            public int View = 0;
         // 재시도 시 같은 값을 유지해야 서버가 중복 커밋을 막을 수 있다 (FINAL §10-1).
         [JsonProperty("idempotency_key")] public string IdempotencyKey;
     }
