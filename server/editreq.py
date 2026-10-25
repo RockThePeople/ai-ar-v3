@@ -103,11 +103,20 @@ def build_edit_mask(lasso_result: dict, *, halo_margin_voxels: int = 1) -> dict:
 
 
 def derive_idempotency_key(
-    asset_id: str, base_version: int, raw_prompt: str, mask_cells, seed: int = 42
+    asset_id: str, base_version: int, raw_prompt: str, mask_cells, seed: int = 42,
+    *, condition_sha256: Optional[str] = None,
 ) -> str:
-    """계약 3.15.5 의 권장식. **내용 파생**이라 같은 편집은 재생, 다른 편집은 재계산."""
+    """계약 3.15.5 의 권장식. **내용 파생**이라 같은 편집은 재생, 다른 편집은 재계산.
+
+    `condition_sha256`(3.28.0 제안) — 조건 이미지(`2d_edit`) 바이트의 sha256. 주면 키에 들어간다.
+    같은 마스크·프롬프트라도 조건 이미지가 다르면 **다른 편집**이다(3090→A5000 상류 키).
+    안 주면 키는 3.15.5 그대로다 — Unity·라우트가 만드는 3090 잡 키는 바뀌지 않는다.
+    """
     fp = mask_fingerprint(_cells(mask_cells))
-    blob = "|".join([asset_id, str(int(base_version)), raw_prompt, fp, str(int(seed))])
+    parts = [asset_id, str(int(base_version)), raw_prompt, fp, str(int(seed))]
+    if condition_sha256:
+        parts.append(str(condition_sha256))
+    blob = "|".join(parts)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
