@@ -36,7 +36,7 @@ from deltacontract.errors import RenderUnknown  # type: ignore[import-not-found]
 from .editreq import derive_idempotency_key
 from .upstreamerr import parse_upstream_error, upstream_call
 
-__all__ = ["ConditionFailed", "submit_with_condition", "inpaint_url"]
+__all__ = ["ConditionFailed", "submit_with_condition", "inpaint_url", "log_timing"]
 
 #: 인페인팅 시드. 정오표 E5 — 조건 이미지는 시드 0(VoxHammer `utils/inpaint.py` 와 같은 값).
 #: 편집 시드(`req.seed`)와 다르다. 편집 시드는 TRELLIS 출발 잡음이다.
@@ -208,18 +208,35 @@ def submit_with_condition(c, asset_id: str, req, spec, body: dict,
             prev = cond
             continue                     # ①부터 1회 (§4 결정 1)
         # RENDER_MISMATCH 는 다시 보내도 안 고쳐진다 — 부르는 쪽이 사유 그대로 보고한다.
+        _keep(cond, edit_png)
         info = {"timings": {k: round(v, 3) for k, v in timings.items()},
                 "render_id": cond["render_id"], "render_sha256": cond["render_sha256"],
                 "mask_sha256": cond["mask_sha256"], "edit_sha256": edit_sha,
                 "upstream_idempotency_key": key, "render_attempts": attempts,
                 "view": cond["view"], "view_requested": _requested_view(req),
                 "inpaint_reused": bool(same)}
-        _log_timing(asset_id, req, info)
+        if r.status_code >= 400:
+            # ③ 이 거절됐다 — 부르는 쪽이 예외로 보고한다. ①② 시간은 여기서 남긴다.
+            log_timing(asset_id, req, {**info, "submit_status": r.status_code, "submit_error_code": code})
         return r, info
 
 
-def _log_timing(asset_id: str, req, info: dict) -> None:
-    """`R9_TIMING_LOG` 가 있으면 JSONL 로 한 줄 남긴다(종단 계측용). 없으면 아무것도 안 한다."""
+def _keep(cond: dict, edit_png: bytes) -> None:
+    """`R9_KEEP_DIR` 가 있으면 조건 이미지 3장을 남긴다(종단 기록용). 없으면 아무것도 안 한다."""
+    d = os.environ.get("R9_KEEP_DIR")
+    if not d:
+        return
+    os.makedirs(d, exist_ok=True)
+    for name, b in (("2d_render", cond["2d_render"]), ("2d_mask", cond["2d_mask"]), ("2d_edit", edit_png)):
+        with open(os.path.join(d, f"{name}.png"), "wb") as f:
+            f.write(b)
+
+
+def log_timing(asset_id: str, req, info: dict) -> None:
+    """`R9_TIMING_LOG` 가 있으면 JSONL 로 한 줄 남긴다(종단 계측용). 없으면 아무것도 안 한다.
+
+    성공한 편집은 `voxhammer.run_voxhammer_edit` 가 ③ 의 잡 대기·청크 수신 시간을 더해 부른다.
+    """
     path = os.environ.get("R9_TIMING_LOG")
     if not path:
         return

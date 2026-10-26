@@ -54,6 +54,9 @@ def env(monkeypatch, tmp_path, chunks):
         monkeypatch.setenv("BLOCKEDIT_B_KEY", KEY)
         monkeypatch.setenv("INPAINT_PORT", str(w.port))
         monkeypatch.setenv("R9_TIMING_LOG", str(tmp_path / "timing.jsonl"))
+        monkeypatch.setenv("EDIT_POLL_INTERVAL", "0.05")
+        monkeypatch.delenv("A5000_URL", raising=False)
+        monkeypatch.delenv("A5000_KEY", raising=False)
         monkeypatch.setattr(voxhammer, "STORE", AssetStore(root=tmp_path / "store"))
         yield SimpleNamespace(a=a, w=w, tmp=tmp_path)
 
@@ -139,8 +142,11 @@ def test_condition_hash_is_optional_and_keeps_3_15_5_key():
 def test_timing_log_records_each_stage(env):
     _run()
     rec = json.loads((env.tmp / "timing.jsonl").read_text().splitlines()[-1])
-    for k in ("render_s", "render_fetch_s", "inpaint_s", "submit_s", "condition_upload_bytes"):
+    for k in ("render_s", "render_fetch_s", "inpaint_s", "submit_s", "condition_upload_bytes",
+              "job_wait_s", "chunk_fetch_s", "chunk_bytes", "n_chunks"):
         assert k in rec["timings"], k
+    assert rec["timings"]["n_chunks"] == 3 and rec["timings"]["chunk_bytes"] > 0
+    assert rec["to_version"] == 2 and rec["job_id"]
     assert rec["render_attempts"] == 1 and rec["inpaint_reused"] is False
     assert (rec["view"], rec["view_requested"]) == (3, 3)
 
@@ -289,3 +295,39 @@ def test_mock_enforces_rejection_reasons(mock_only):
     assert (r.status_code, r.json()["error_code"]) == (422, "CONDITION_IMAGES_REQUIRED")
     r = _edit(c, meta, {**files, "2d_edit": edit})
     assert r.status_code == 202 and r.json()["job_id"]
+
+
+# ══════════════════════════════════════════════════════════ 실주소 설정 (04L)
+def test_a5000_url_takes_precedence_over_old_upstream_vars(env, monkeypatch):
+    """`A5000_URL`(R8a 워커)이 있으면 옛 `BLOCKEDIT_B_URL` 을 쓰지 않는다."""
+    monkeypatch.setenv("BLOCKEDIT_B_URL", "http://127.0.0.1:1")      # 아무도 안 듣는다
+    monkeypatch.setenv("A5000_URL", env.a.url)
+    monkeypatch.setenv("A5000_KEY", KEY)
+    out, _ = _run()
+    assert out["patch"].to_version == 2 and len(env.a.edits) == 1
+
+
+def test_a5000_url_without_key_sends_no_key_header(env, monkeypatch):
+    monkeypatch.setenv("A5000_URL", env.a.url)
+    monkeypatch.delenv("BLOCKEDIT_B_KEY")
+    with pytest.raises(UpstreamError) as ei:          # 모의 A5000 은 키를 요구한다 → 401
+        _run()
+    assert ei.value.error_code == "UPSTREAM_UNAUTHORIZED"
+
+
+def test_keep_dir_saves_the_three_condition_images(env, monkeypatch):
+    keep = env.tmp / "keep"
+    monkeypatch.setenv("R9_KEEP_DIR", str(keep))
+    _run()
+    e = env.a.edits[0]["parts"]
+    for n in ("2d_render", "2d_mask", "2d_edit"):
+        assert (keep / f"{n}.png").read_bytes() == e[n], n
+
+
+def test_rejected_submit_still_logs_render_and_inpaint_times(env):
+    env.a.mismatch = True
+    with pytest.raises(UpstreamError):
+        _run()
+    rec = json.loads((env.tmp / "timing.jsonl").read_text().splitlines()[-1])
+    assert rec["submit_status"] == 409 and rec["submit_error_code"] == "RENDER_MISMATCH"
+    assert rec["timings"]["inpaint_s"] > 0 and "job_wait_s" not in rec["timings"]

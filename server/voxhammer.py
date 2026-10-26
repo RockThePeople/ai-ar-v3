@@ -42,11 +42,19 @@ class UpstreamEditFailed(RuntimeError):
 def _client():
     import httpx
 
-    url, key = os.environ.get("BLOCKEDIT_B_URL"), os.environ.get("BLOCKEDIT_B_KEY")
-    if not url or not key:
-        raise UpstreamEditFailed("상류 자격증명이 없다 (환경변수 미설정)")
+    # `A5000_URL`(·`A5000_KEY`)이 있으면 그것을 쓴다 — 계약 3.28.0 의 A5000 R8a 워커(8082).
+    # 없으면 기존 `BLOCKEDIT_B_URL`·`BLOCKEDIT_B_KEY`(옛 상류)를 그대로 쓴다. 인페인팅 워커
+    # 주소(`INPAINT_PORT`, 127.0.0.1)와 이름을 갈라 둔다 — 둘 다 8082 라 헷갈리기 쉽다.
+    if os.environ.get("A5000_URL"):
+        url, key = os.environ["A5000_URL"], os.environ.get("A5000_KEY", "")
+        if not url.strip():
+            raise UpstreamEditFailed("A5000_URL 이 비었다")
+    else:
+        url, key = os.environ.get("BLOCKEDIT_B_URL"), os.environ.get("BLOCKEDIT_B_KEY")
+        if not url or not key:
+            raise UpstreamEditFailed("상류 자격증명이 없다 (환경변수 미설정)")
     return httpx.Client(base_url=url.rstrip("/"),
-                        headers={"X-Blockedit-Key": key}, timeout=120.0)
+                        headers={"X-Blockedit-Key": key} if key else {}, timeout=120.0)
 
 
 #: 조건 이미지용 구도 강제. **바꾼 뒤의 모습 전체**를 그리게 한다.
@@ -188,6 +196,9 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
             raise UpstreamEditFailed(f"job_id 가 없다: {r.text[:200]}")
 
         progress(0.3, "running", f"상류 잡 {job_id}")
+        t_wait = time.perf_counter()
+        # 폴링 간격. 기본 2 s(기존). 종단 계측은 짧게 줘서 완료 시각의 양자화 오차를 줄인다.
+        poll = float(os.environ.get("EDIT_POLL_INTERVAL") or 2)
         deadline = time.time() + 900
         payload = None
         while time.time() < deadline:
@@ -207,7 +218,7 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
                 raise UpstreamEditFailed(f"상류 잡 {st}: {payload.get('error')}")
             progress(0.3 + 0.4 * float(payload.get("progress") or 0),
                      payload.get("stage") or "running", payload.get("stage_detail") or "")
-            time.sleep(2)
+            time.sleep(poll)
         if not (payload and "chunks" in payload):
             raise UpstreamEditFailed(f"상류 잡이 제한 시간 안에 안 끝났다: {job_id}")
 
@@ -216,6 +227,7 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
         removed = list(payload.get("removed_chunk_ids") or [])
 
         progress(0.75, "chunk", f"청크 {len(entries)} 수신")
+        t_chunks = time.perf_counter()
         blobs: Dict[str, bytes] = {}
         failed = []
         for e in entries:
@@ -232,6 +244,16 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
             raise UpstreamEditFailed(
                 f"청크 {len(failed)}/{len(entries)} 를 못 받았다 "
                 f"(예: {', '.join(failed[:5])}). 부분 저장하지 않는다")
+        if cond_info is not None:
+            t_end = time.perf_counter()
+            cond_info["timings"].update(
+                job_wait_s=round(t_chunks - t_wait, 3), chunk_fetch_s=round(t_end - t_chunks, 3),
+                chunk_bytes=sum(len(b) for b in blobs.values()), n_chunks=len(blobs),
+                n_removed=len(removed), poll_interval_s=poll)
+            cond_info.update(job_id=job_id, to_version=int(payload["to_version"]))
+            from .condrender import log_timing
+
+            log_timing(asset_id, req, cond_info)
 
     # 🔴 가드 — 상류가 무엇을 선언했든 **바이트**로 판정한다.
     progress(0.9, "verify", "계약 판본 검증 (바이트)")
