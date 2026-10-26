@@ -250,7 +250,8 @@ def run_voxhammer_edit(asset_id: str, req, spec, progress) -> dict:
                 job_wait_s=round(t_chunks - t_wait, 3), chunk_fetch_s=round(t_end - t_chunks, 3),
                 chunk_bytes=sum(len(b) for b in blobs.values()), n_chunks=len(blobs),
                 n_removed=len(removed), poll_interval_s=poll)
-            cond_info.update(job_id=job_id, to_version=int(payload["to_version"]))
+            cond_info.update(job_id=job_id, to_version=int(payload["to_version"]),
+                             edit_stats_a5000=payload.get("stats") or {})
             from .condrender import log_timing
 
             log_timing(asset_id, req, cond_info)

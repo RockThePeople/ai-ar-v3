@@ -214,6 +214,9 @@ def submit_with_condition(c, asset_id: str, req, spec, body: dict,
                 "mask_sha256": cond["mask_sha256"], "edit_sha256": edit_sha,
                 "upstream_idempotency_key": key, "render_attempts": attempts,
                 "view": cond["view"], "view_requested": _requested_view(req),
+                # A5000 이 렌더 응답 `renderer` 에 실어 보내는 자기 쪽 시간·시점 선택 근거(있으면 그대로)
+                "render_a5000": {k: (cond.get("renderer") or {}).get(k)
+                                 for k in ("timing", "view_auto", "view_areas") if (cond.get("renderer") or {}).get(k) is not None},
                 "inpaint_reused": bool(same)}
         if r.status_code >= 400:
             # ③ 이 거절됐다 — 부르는 쪽이 예외로 보고한다. ①② 시간은 여기서 남긴다.
