@@ -187,6 +187,12 @@ class Db:
         self.lock = threading.RLock()
         with self.lock:
             self.c.executescript(SCHEMA)
+            for col in ("deleted_at REAL", "qr_origin TEXT"):           # 1.0.2 보관(S3) — 옛 DB 에 열 추가
+                try:
+                    self.c.execute(f"ALTER TABLE assets ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
+            self.c.execute("UPDATE assets SET qr_origin=qr_id WHERE qr_origin IS NULL AND qr_id IS NOT NULL")
 
     def q(self, sql: str, args: tuple = ()) -> List[sqlite3.Row]:
         with self.lock:
@@ -200,6 +206,11 @@ class Db:
     def asset(self, asset_id: str) -> Optional[sqlite3.Row]:
         r = self.q("SELECT * FROM assets WHERE asset_id=?", (asset_id,))
         return r[0] if r else None
+
+    def live_asset(self, asset_id: str) -> Optional[sqlite3.Row]:
+        """앱 API 에 보이는 자산(삭제되지 않음). 삭제된 자산은 앱 API 에서 404 다(1.0.2 9절)."""
+        a = self.asset(asset_id)
+        return a if a is not None and a["deleted_at"] is None else None
 
     def asset_by_qr(self, qr_id: str) -> Optional[sqlite3.Row]:
         r = self.q("SELECT * FROM assets WHERE qr_id=?", (qr_id,))

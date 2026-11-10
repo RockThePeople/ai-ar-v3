@@ -362,3 +362,46 @@ def test_mock_mode(tmp_path):
     eng.drain()
     j = c.get(f"/app/v1/jobs/{jid}", headers=A).json()
     assert j["state"] == "failed" and j["error_code"] == "INPAINT_FAILED"
+
+
+# ── S3: 보관(1.0.2 9절)·/clients ───────────────────────────────────
+def test_soft_delete_archives_and_hides(env):
+    aid = make_asset(env)
+    jid = to_3d(env, aid)
+    env.post(f"/app/v1/jobs/{jid}/review3d", json={"keep": False}, headers=A)        # 되돌림 → archive
+    jid2 = to_3d(env, aid, 1)
+    env.post(f"/app/v1/jobs/{jid2}/review3d", json={"keep": True}, headers=A)
+    rid = env.post(f"/app/v1/assets/{aid}/ratings", json={"stars": 5}, headers=A).json()["rating_id"]
+    assert env.delete("/app/v1/qr/booth-07", headers=A).status_code == 204
+    # 앱 API: 1.0.1 과 같은 404 응답
+    for url, code in ((f"/app/v1/qr/booth-07", "QR_EMPTY"), (f"/app/v1/jobs/{jid2}", "JOB_NOT_FOUND"),
+                      (f"/app/v1/jobs/{jid2}/preview/1/edit.png", "JOB_NOT_FOUND"),
+                      (f"/v2/assets/{aid}/manifest.v2.json", "ASSET_NOT_FOUND"),
+                      (f"/v2/assets/{aid}/slat_coords.v1.json", "ASSET_NOT_FOUND")):
+        b = err(env.get(url, headers=A), 404, code)
+        assert set(b) <= {"error_code", "message", "detail"}
+    err(edit(env, aid, v=2), 404, "ASSET_NOT_FOUND")
+    err(env.post(f"/app/v1/assets/{aid}/ratings", json={"stars": 1}, headers=A), 404, "ASSET_NOT_FOUND")
+    # 서버 안 보관: 판본·작업·미리보기·archive·평가가 남는다
+    assert sorted(env.eng.store.versions(aid)) == [1, 2]
+    assert (env.tmp / "jobs" / jid2 / "1" / "edit.png").is_file()
+    assert any((env.tmp / "archive" / jid).glob("*.cbin"))
+    assert env.get(f"/app/v1/ratings/{rid}.json").status_code == 200
+    d = env.get(f"/clients/api/assets/{aid}").json()
+    assert d["status"] == "삭제됨" and d["versions"] == [1, 2] and {j["outcome"] for j in d["jobs"]} >= {"유지", "되돌리기"}
+    g = env.get(f"/clients/glb/archive/{jid}.glb")                                 # 되돌린 결과 3D
+    assert g.status_code == 200 and g.content[:4] == b"glTF"
+    assert env.get(f"/clients/glb/{aid}/v2.glb").content[:4] == b"glTF"
+    # 같은 QR 재생성 → 목록 2행
+    env.clock.t += 10
+    aid2 = make_asset(env)
+    rows = [r for r in env.get("/clients/api/assets").json() if r["qr_id"] == "booth-07"]
+    assert [r["asset_id"] for r in rows] == [aid2, aid] and [r["status"] for r in rows] == ["활성", "삭제됨"]
+
+
+def test_clients_cidr(env, monkeypatch):
+    monkeypatch.setenv("CLIENTS_ALLOW_CIDR", "10.0.0.0/8")
+    err(env.get("/clients/api/assets"), 403, "NOT_OWNER")                           # TestClient 주소는 testclient
+    monkeypatch.setenv("CLIENTS_ALLOW_CIDR", "")
+    assert env.get("/clients/api/assets").status_code == 200
+    assert env.get("/clients").status_code == 200

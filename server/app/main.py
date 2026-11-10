@@ -42,6 +42,8 @@ def create_app(settings: Optional[Settings] = None, *, backend=None, clock=None,
     app.include_router(v2)
     from .debug import build_debug
     app.include_router(build_debug(st))
+    from .clients import build_clients
+    app.include_router(build_clients(st))
 
     @app.exception_handler(AppError)
     async def _app_err(_req: Request, e: AppError):

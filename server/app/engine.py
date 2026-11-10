@@ -94,6 +94,8 @@ class Engine:
                 j["state"] = state
                 j["state_since"] = self.clock()
                 j["history"].append({"t": self.clock(), "state": state, "stage": stage or j["stage"]})
+            if stage and stage != j["stage"]:
+                j.setdefault("stage_log", []).append({"t": self.clock(), "stage": stage})
             if stage:
                 j["stage"] = stage
             if progress is not None:
@@ -127,6 +129,7 @@ class Engine:
 
     def _enqueue(self, j: dict, task: str) -> None:
         with self.lock:
+            j["enqueued_at"] = self.clock()
             self.order.append(j["job_id"])
         self.q.put((task, j["job_id"]))
 
@@ -140,23 +143,29 @@ class Engine:
             if self.db.asset_by_qr(qr_id) is not None:
                 raise AppError(409, "QR_TAKEN", "이미 자산이 있거나 생성 중이다")
             asset_id = f"a-{uuid.uuid4().hex[:8]}"
-            self.db.x("INSERT INTO assets(asset_id,qr_id,creator,scene_prompt,version,created_at,source) VALUES(?,?,?,?,0,?,?)",
-                      (asset_id, qr_id, device, None, self.clock(), "generate"))
+            self.db.x("INSERT INTO assets(asset_id,qr_id,qr_origin,creator,scene_prompt,version,created_at,source) "
+                      "VALUES(?,?,?,?,?,0,?,?)", (asset_id, qr_id, qr_id, device, None, self.clock(), "generate"))
             j = self._new_job("generate", asset_id, device, qr_id, prompt=prompt, seed=seed, mock_fail=mock_fail)
         self._enqueue(j, "generate")
         return j
 
     def _drop_unborn(self, j: dict) -> None:
-        """생성 실패 → QR 을 다시 비운다(판본 0 인 자산 행 삭제)."""
+        """생성 실패 → QR 을 다시 비운다. 기록은 남긴다(보관, `source=generate_failed`)."""
         a = self.db.asset(j["asset_id"])
         if a is not None and a["version"] == 0:
-            self.db.x("DELETE FROM assets WHERE asset_id=?", (j["asset_id"],))
-            self.store.delete_asset(j["asset_id"])
+            # 사용자 삭제가 아니므로 deleted_at 을 두지 않는다 — 실패한 생성 작업은 앱에서 계속 조회된다
+            self.db.x("UPDATE assets SET qr_id=NULL, source='generate_failed' WHERE asset_id=?", (j["asset_id"],))
 
     def _run_generate(self, j: dict) -> None:
         self._set(j, "generating", "t2i", 0.0)
         prompt_en = fake_translate(j["prompt"])
+        j["prompt_en"] = prompt_en
         out = self.be.generate(j["asset_id"], prompt_en, int(j["seed"]), self._progress(j))
+        if out.get("png"):                               # T2I RGBA 보관(S3)
+            d = self.s.data_dir / "jobs" / j["job_id"]
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "t2i.png").write_bytes(out["png"])
+            j["t2i"] = {"file": "t2i.png", "timing": out.get("t2i_timing")}
         if j["state"] != "generating":
             return                                        # TIMEOUT 등으로 이미 끝났다
         self._set(j, stage="chunking", progress=0.95)
@@ -174,7 +183,7 @@ class Engine:
                     cells: List[list], mock_fail: Optional[str] = None) -> dict:
         """검사 순서(1.0.1 3.3): 입력(라우트) → 404 → 403 → 잠금 → 판본."""
         with self.lock:
-            a = self.db.asset(asset_id)
+            a = self.db.live_asset(asset_id)
             if a is None or a["version"] == 0 and not a["is_sample"]:
                 raise AppError(404, "ASSET_NOT_FOUND", f"자산 없음: {asset_id}")
             if a["is_sample"]:
@@ -302,6 +311,8 @@ class Engine:
                 return j
             cat, guide = out["category"], out["guidance"]
             j["review"] = {"reason": reason, "category": cat, "guidance": guide}
+            if j.get("attempts"):                        # 시도별 거절 기록(S3)
+                j["attempts"][-1].update(rejected=True, reason=reason, category=cat, guidance=guide)
             if j["attempt"] >= self.s.max_attempts:
                 self._finish(j, "failed", "RETRY_LIMIT", "2D 거절 3회")
                 return j
@@ -358,6 +369,13 @@ class Engine:
 
     def _discard(self, j: dict, why: str) -> None:
         note = self.be.discard(j["asset_id"], j.get("worker_job_id") or "")
+        src = self.store.staging_dir(j["asset_id"], j["job_id"])     # 되돌린 결과도 3D 로 볼 수 있게(S3)
+        if src.is_dir():
+            import shutil
+            dst = self.s.data_dir / "archive" / j["job_id"]
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(src, dst)
+            j["archive"] = f"archive/{j['job_id']}"
         self.store.drop_staging(j["asset_id"], j["job_id"])
         j["discard_note"] = f"{why}{' · ' + note if note else ''}"
         self._finish(j, "discarded")
@@ -404,6 +422,9 @@ class Engine:
                 self.order.remove(job_id)
             j = self.jobs.get(job_id)
             self.running = job_id
+            if j is not None and j.get("enqueued_at") is not None:   # GPU 대기 시간(S3)
+                j.setdefault("queue_waits", []).append({"task": task, "wait_s": round(self.clock() - j["enqueued_at"], 3)})
+                j["enqueued_at"] = None
         try:
             if j is None or j["state"] in TERMINAL:
                 return
@@ -459,19 +480,11 @@ class Engine:
                 raise AppError(409, "ASSET_LOCKED", "진행 중 작업이 있다", {"job_id": act["job_id"]})
             aid = a["asset_id"]
             try:
-                note = self.be.delete(aid)
+                note = self.be.delete(aid)               # A5000 워커 저장소는 지운다(1.0.2 9절)
             except StageError as e:
                 raise AppError(409, e.code, str(e))
-            self.store.delete_asset(aid)
-            for jj in self.db.jobs("asset_id=?", (aid,)):
-                self.jobs.pop(jj["job_id"], None)
-                d = self.s.data_dir / "jobs" / jj["job_id"]
-                if d.is_dir():
-                    import shutil
-                    shutil.rmtree(d, ignore_errors=True)
-            self.db.x("DELETE FROM jobs WHERE asset_id=?", (aid,))
-            self.db.x("DELETE FROM commits WHERE asset_id=?", (aid,))
-            self.db.x("DELETE FROM assets WHERE asset_id=?", (aid,))
+            # 앱 서버 기록은 보관한다: QR 만 비우고 판본·청크·작업·미리보기·LLM 기록·평가는 그대로(1.0.2 9절)
+            self.db.x("UPDATE assets SET qr_id=NULL, deleted_at=? WHERE asset_id=?", (self.clock(), aid))
             self.db.x("UPDATE ratings SET asset_deleted=1 WHERE asset_id=?", (aid,))
             if note:   # 앱 쪽 삭제는 진행한다. A5000 쪽이 남았을 수 있다는 기록
                 print(f"[delete] {aid}: {note}", flush=True)
@@ -490,7 +503,7 @@ class Engine:
 
     def rate(self, asset_id: str, device: str, stars: int) -> dict:
         with self.lock:
-            a = self.db.asset(asset_id)
+            a = self.db.live_asset(asset_id)
             if a is None or (a["version"] == 0 and not a["is_sample"]):
                 raise AppError(404, "ASSET_NOT_FOUND", f"자산 없음: {asset_id}")
             if a["is_sample"]:

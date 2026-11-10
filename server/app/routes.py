@@ -157,10 +157,23 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
                                  b.camera.model_dump(mode="json"), [list(c) for c in cells], mock_fail(req))
         return M.EditCreated(job_id=j["job_id"]).model_dump(mode="json")
 
+    def visible_job(job_id: str):
+        """삭제된 자산의 작업은 앱 API 에서 없는 것으로 본다(1.0.2 9절)."""
+        j = S.engine.get(job_id)
+        if j is None:
+            return None
+        a = S.db.asset(j["asset_id"])
+        return j if a is not None and a["deleted_at"] is None else None
+
+    def visible_asset(asset_id: str) -> None:
+        a = S.db.asset(asset_id)
+        if a is None or a["deleted_at"] is not None:
+            raise AppError(404, "ASSET_NOT_FOUND", f"자산 없음: {asset_id}")
+
     @r.get("/jobs/{job_id}")
     def job_get(job_id: str, req: Request):
         dev = req.headers.get("X-Device-Key")
-        j = S.engine.get(job_id)
+        j = visible_job(job_id)
         if j is None:
             raise AppError(404, "JOB_NOT_FOUND", f"작업 없음: {job_id}")
         return job_obj(j, dev)
@@ -169,22 +182,28 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     async def review2d(job_id: str, req: Request):
         dev = device(req)
         b = await body(req, M.Review2DReq)
+        if visible_job(job_id) is None:
+            raise AppError(404, "JOB_NOT_FOUND", f"작업 없음: {job_id}")
         return job_obj(S.engine.review2d(job_id, dev, b.accept, b.reason), dev)
 
     @r.post("/jobs/{job_id}/review3d")
     async def review3d(job_id: str, req: Request):
         dev = device(req)
         b = await body(req, M.Review3DReq)
+        if visible_job(job_id) is None:
+            raise AppError(404, "JOB_NOT_FOUND", f"작업 없음: {job_id}")
         return job_obj(S.engine.review3d(job_id, dev, b.keep), dev)
 
     @r.post("/jobs/{job_id}/cancel")
     def cancel(job_id: str, req: Request):
         dev = device(req)
+        if visible_job(job_id) is None:
+            raise AppError(404, "JOB_NOT_FOUND", f"작업 없음: {job_id}")
         return job_obj(S.engine.cancel(job_id, dev), dev)
 
     @r.get("/jobs/{job_id}/preview/{attempt}/{name}.png")
     def preview(job_id: str, attempt: int, name: str):
-        if name not in ("render", "edit", "mask") or S.engine.get(job_id) is None:
+        if name not in ("render", "edit", "mask") or visible_job(job_id) is None:
             raise AppError(404, "JOB_NOT_FOUND", "미리보기 없음")
         p = S.settings.data_dir / "jobs" / job_id / str(int(attempt)) / f"{name}.png"
         if not p.is_file():
@@ -210,6 +229,7 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     # ── /v2 (계약 3.28.0 경로, 앱 저장소) ───────────────────────────
     @v2.get("/v2/assets/{asset_id}/manifest.v{version}.json")
     def manifest(asset_id: str, version: int):
+        visible_asset(asset_id)
         try:
             return S.store.manifest(asset_id, version).model_dump(mode="json")
         except (AssetNotFound, VersionNotFound) as e:
@@ -220,6 +240,7 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         m = re.fullmatch(r"(-?\d+_-?\d+_-?\d+)\.v(\d+)\.cbin", name)
         if not m:
             raise AppError(400, "INVALID_REQUEST", f"청크 이름 형식: {name}")
+        visible_asset(asset_id)
         try:
             b = S.store.chunk(asset_id, m.group(1), int(m.group(2)))
         except (AssetNotFound, VersionNotFound) as e:
@@ -231,6 +252,8 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         m = re.fullmatch(r"(-?\d+_-?\d+_-?\d+)\.cbin", name)
         if not m:
             raise AppError(400, "INVALID_REQUEST", f"청크 이름 형식: {name}")
+        if visible_job(job_id) is None:
+            raise AppError(404, "JOB_NOT_FOUND", "staging 청크 없음")
         p = S.store.staging_dir(asset_id, job_id) / f"{m.group(1)}.cbin"
         if not p.is_file():
             raise AppError(404, "JOB_NOT_FOUND", "staging 청크 없음(커밋·폐기 뒤 포함)")
@@ -239,6 +262,7 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     @v2.get("/v2/assets/{asset_id}/slat_coords.v{version}.json")
     def slat_coords(asset_id: str, version: int):
         from ..editreq import build_slat_coords_payload
+        visible_asset(asset_id)
         coords = S.store.slat_coords(asset_id, version)
         if coords is None:
             try:
