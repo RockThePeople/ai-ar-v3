@@ -1,6 +1,6 @@
 # 앱 API 계약 v1 — QR AR 3D 편집 (Unity 클라이언트 ↔ 앱 서버)
 
-판본: **app-api 1.0.1** (2026-11-10, 수행사 chief). 기준: `APP_SPEC.md` 4절 초안 + 사용자 결정(2026-11-10). 청크 형식(`.cbin`)과 청크·manifest 경로는 ai-ar-v3 계약 3.28.0(`contract/`)을 그대로 쓴다. 이 문서는 그 위에 앱 흐름(QR·생성·편집 확인·평가·삭제)만 더한다.
+판본: **app-api 1.0.3** (2026-11-10, 수행사 chief). 기준: `APP_SPEC.md` 4절 초안 + 사용자 결정(2026-11-10). 청크 형식(`.cbin`)과 청크·manifest 경로는 ai-ar-v3 계약 3.28.0(`contract/`)을 그대로 쓴다. 이 문서는 그 위에 앱 흐름(QR·생성·편집 확인·평가·삭제)만 더한다.
 
 바뀌면 판본을 올리고 끝의 변경 기록에 적는다. 클라이언트는 `GET /app/v1/health` 의 `app_api` 로 판본을 확인한다.
 
@@ -36,7 +36,7 @@
 | NORMALIZED | float, 자산 정육면체 [−0.5, +0.5]³. 축은 **복셀 축**(SLat, z 가 위) |
 | VOXEL | int [0, 64)³ 셀 인덱스. 셀 (i, j, k) 의 중심 = NORMALIZED `((i + 0.5)/64 − 0.5, (j + 0.5)/64 − 0.5, (k + 0.5)/64 − 0.5)` |
 | CHUNK | VOXEL ÷ 4 → 16³ 슬롯. 청크 키 `"{cx}_{cy}_{cz}"` |
-| Unity 자산 로컬 | 청크 메시를 붙이는 부모 Transform(이하 **자산 루트**)의 로컬 좌표. `VoxelFrame.ToUnity(v) = (v.x, v.z, −v.y)`, 역변환 `VoxelFrame.ToVoxel(u) = (u.x, −u.z, u.y)` (`unity/Runtime/VoxelFrame.cs`, 유일한 정의). 자산 루트 스케일은 `AssetScale.RootScale`(0.24 m) |
+| Unity 자산 로컬 | 청크 메시를 붙이는 부모 Transform(이하 **자산 루트**)의 로컬 좌표. `VoxelFrame.ToUnity(v) = (v.x, v.z, −v.y)`, 역변환 `VoxelFrame.ToVoxel(u) = (u.x, −u.z, u.y)` (`unity/Runtime/VoxelFrame.cs`, 유일한 정의). 자산 루트 스케일은 **0.5 m**(자산 정육면체 한 변, APP_SPEC D13). 기존 런타임의 `AssetScale.RootScale` 0.24 m 는 이 앱에서 쓰지 않는다. 카메라·볼륨 값은 NORMALIZED 라 스케일과 무관하다 |
 
 `.cbin` 정점과 slat coords 는 NORMALIZED(복셀 축)로 오고, 클라이언트가 `ToUnity` 로 바꿔 자산 루트 아래에 놓는다. 이 동작은 기존 런타임과 같다.
 
@@ -116,7 +116,7 @@ aspect = (float)Screen.width / Screen.height;
 `GET /app/v1/health` → 200
 
 ```json
-{"ok": true, "app_api": "1.0.1", "contract_version": 4, "mock": false,
+{"ok": true, "app_api": "1.0.3", "contract_version": 4, "mock": false,
  "workers": {"a5000": "up", "inpaint": "up", "llm": "configured"}}
 ```
 
@@ -125,7 +125,7 @@ aspect = (float)Screen.width / Screen.height;
 ### 3.2 QR
 
 **`GET /app/v1/qr/{qr_id}`** — QR 에 묶인 자산을 조회한다.
-- `qr_id`: QR 내용에서 만든 문자열, `[A-Za-z0-9_-]{1,64}`. 형식이 다르면 `INVALID_QR`.
+- `qr_id`: QR 내용에서 만든 문자열, `[A-Za-z0-9_-]{1,64}`. 형식이 다르면 `INVALID_QR`. 스테이션 방식(D13, QR 2장이 자산 바닥 대각 모서리)에서는 스테이션 이름(예: `st-01`)을 보낸다. 서버는 qr_id 를 불투명 문자열로만 다루므로 바뀌는 것이 없다.
 - 200: 자산 있음.
 ```json
 {"qr_id": "booth-07", "asset_id": "a-3f9c2e1d", "version": 4, "is_creator": true,
@@ -148,7 +148,7 @@ aspect = (float)Screen.width / Screen.height;
 **`DELETE /app/v1/qr/{qr_id}`** — 삭제(생성자만).
 - 204: 삭제됨.
 - 403 `NOT_CREATOR`, 404 `QR_EMPTY`, 409 `ASSET_LOCKED`(진행 중 작업 있음).
-- 자산·판본·작업 기록이 지워지고 QR 은 다시 비게 된다. **평가 기록은 남는다**(자산 참조만 끊김, 9절).
+- 앱에서 보이는 결과: QR 이 다시 비고(`GET qr` → 404 `QR_EMPTY`), 그 자산의 manifest·청크·작업·미리보기 경로는 앱 API 에서 404 가 된다. 서버 안의 기록은 지우지 않고 보관본으로 남는다(9절).
 
 ### 3.3 편집
 
@@ -378,6 +378,7 @@ GET /app/v1/jobs/{job_id}/preview/{attempt}/mask.png     2D 마스크(흰색 = �
 | `WRONG_STATE` | 409 | 그 상태에서 못 하는 요청 | 작업 다시 조회 |
 | `NOTHING_TO_RATE` | 409 | 평가할 편집 없음 | 버튼 비활성 |
 | `REFINE_INVALID` | 작업 failed | 보정 LLM 출력이 스키마 위반(재시도 후) | 다시 시도 |
+| `CLASSIFY_FAILED` | 작업 failed | 거절 이유 분류 LLM 출력이 스키마 위반(재시도 후). 1.0.3 추가 | 다시 시도 |
 | `LLM_UNAVAILABLE` | 작업 failed | LLM 호출 실패·키 없음 | 잠시 뒤 다시 |
 | `T2I_FAILED` / `GENERATE_FAILED` | 작업 failed | 생성 실패 | 다시 시도 |
 | `RENDER_FAILED` / `INPAINT_FAILED` / `EDIT_FAILED` | 작업 failed | 편집 단계 실패 | 다시 시도 |
@@ -409,14 +410,19 @@ GET /app/v1/jobs/{job_id}/preview/{attempt}/mask.png     2D 마스크(흰색 = �
 - `sample-jeep`·`sample-cottage`·`sample-adventurer`: 논문 연속 5회 편집의 제안 경로(P1) 원본과 r1–r5 결과(`.cbin`, 봉합 켬).
 - 면 수는 원본 TRELLIS 메시 대비 약 20–51배다(크기 축소 안 함, 지시 유효).
 
-## 9. 데이터 보존
+## 9. 데이터 보존 (1.0.2)
 
-- 자산 삭제 때 지우는 것: QR 등록, 자산 판본·청크, 장면 문장, 작업 기록, 미리보기, A5000 워커 저장소.
-- 남기는 것: 평가 기록. `asset_id` 문자열은 남고 `asset_deleted: true` 로 표시한다. 평가는 에이전트(편집 서비스)에 대한 것이고, 나중에 ERC-8004 로 올린다.
+- **앱에서 보이는 동작:** 자산을 삭제하면 QR 이 비고, 그 자산의 manifest·청크·slat coords·작업·미리보기는 앱 API(`/app/v1`, `/v2/assets`)에서 404 다. 같은 QR 에 새로 생성하면 새 `asset_id` 가 붙는다. 이 동작은 1.0.1 과 같다.
+- **서버 안 보관:** 삭제한 자산의 QR 등록 이력, 장면 문장, 판본·청크, 작업 기록(상태 이력·LLM 호출 기록), 미리보기·T2I 이미지, 평가는 지우지 않는다. 보관본으로 남기고 운영자용 조회 페이지(`/clients`, 앱 API 아님)에 "삭제됨"으로 표시한다.
+- A5000 워커 저장소(SLat 등)는 삭제 때 지운다. 지난 판본의 3D 보기는 앱 서버에 남은 청크로 만든다.
+- 평가 기록의 `asset_id` 는 남고 `asset_deleted: true` 로 표시한다(1.0.0 과 같음).
+- 클라이언트 응답 모양은 바뀌지 않는다.
 
 ## 변경 기록
 
 | 판본 | 날짜 | 내용 |
 |---|---|---|
+| 1.0.3 | 2026-11-10 | 자산 루트 스케일 0.5 m(D13), qr_id 에 스테이션 이름 허용(서버 변경 없음), 실패 코드 `CLASSIFY_FAILED` 추가(S2 구현에 있던 코드). 응답 모양 변경 없음 |
+| 1.0.2 | 2026-11-10 | 사용자 요청: 자산 삭제 때 서버 기록·판본·이미지를 보관본으로 남김(9절, 3.2 삭제 설명). 앱 응답 모양 변경 없음 |
 | 1.0.1 | 2026-11-10 | Unity C1 질문 반영: 편집 요청 오류 검사 순서(잠금 > 판본), 항상 채워지는 필드 표(4.0), QR 조회에 `can_rate`·`rate_range` 추가. 기존 필드 변경 없음 |
 | 1.0.0 | 2026-11-10 | 첫 판. APP_SPEC 4절 대비 바뀐 것: 기기 키를 본문 대신 헤더 `X-Device-Key` 로, `cancel`·`health`·`samples`·미리보기 경로 추가, `failed(RETRY_LIMIT)`, 3D 확인 30분 자동 discard |

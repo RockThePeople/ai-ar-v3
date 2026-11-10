@@ -79,7 +79,7 @@ ALWAYS = ("job_id", "kind", "state", "stage", "asset_id", "is_mine", "progress",
 # ── health · 헤더 ──────────────────────────────────────────────────
 def test_health(env):
     h = env.get("/app/v1/health").json()
-    assert h["app_api"] == "1.0.1" and h["ok"] is True and h["contract_version"] == 4 and h["mock"] is False
+    assert h["app_api"] == "1.0.3" and h["ok"] is True and h["contract_version"] == 4 and h["mock"] is False
     assert set(h["workers"]) == {"a5000", "inpaint", "llm"}
 
 
