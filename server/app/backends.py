@@ -135,7 +135,7 @@ class RealBackend:
             res = self._poll(c, r.json()["job_id"], "GENERATE_FAILED", progress, "generating")
             progress("chunking", 0.9)
             blobs = self._fetch_version(c, asset_id, 1, res)
-        return {"blobs": blobs, "t2i_timing": timing}
+        return {"blobs": blobs, "t2i_timing": timing, "png": png}
 
     # 편집
     def render(self, asset_id: str, base_version: int, camera: dict, cells: List[list]) -> dict:
