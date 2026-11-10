@@ -72,7 +72,13 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     @r.get("/health")
     def health():
         w = S.backend.health()
-        llm = "mock" if S.settings.mock else "fake"   # S1: 규칙 기반 가짜 어댑터. 실제 Claude 는 S2
+        ad = S.engine.llm
+        if S.settings.mock:
+            llm = "mock"                                  # 계약 7절 가짜 모드
+        elif ad.name != "claude":
+            llm = "missing"                               # 키 없음 → 규칙 기반
+        else:
+            llm = "error" if ad.last_ok is False else "configured"
         return M.HealthResp(ok=True, app_api=APP_API, contract_version=int(CONTRACT_VERSION), mock=S.settings.mock,
                             workers=M.Workers(a5000=w.get("a5000", "down"), inpaint=w.get("inpaint", "down"),
                                               llm=llm)).model_dump(mode="json")

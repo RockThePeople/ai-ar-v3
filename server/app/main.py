@@ -22,7 +22,8 @@ from .routes import build, err_response
 from .store import ChunkStore, Db
 
 
-def create_app(settings: Optional[Settings] = None, *, backend=None, clock=None, start_thread: bool = True) -> FastAPI:
+def create_app(settings: Optional[Settings] = None, *, backend=None, clock=None, start_thread: bool = True,
+               llm=None) -> FastAPI:
     s = settings or Settings.from_env()
     s.data_dir.mkdir(parents=True, exist_ok=True)
     db = Db(s.data_dir / "app.sqlite3")
@@ -31,7 +32,7 @@ def create_app(settings: Optional[Settings] = None, *, backend=None, clock=None,
         backend = MockBackend(s, store, Path(os.environ.get("APP_MOCK_FIXTURES") or s.data_dir / "mock_fixtures")) if s.mock \
             else RealBackend(s, store)
     kw = {"clock": clock} if clock else {}
-    eng = Engine(s, db, store, backend, start_thread=start_thread, **kw)
+    eng = Engine(s, db, store, backend, start_thread=start_thread, llm=llm, **kw)
     st = SimpleNamespace(settings=s, db=db, store=store, engine=eng, backend=backend)
 
     app = FastAPI(title="vhl app server", docs_url=None, redoc_url=None, openapi_url=None)

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.app.config import Settings
+from server.app.llm_adapter import FakeAdapter
 from server.app.main import create_app
 from server.tests.app_fakes import BASE_KEYS, FakeWorkers
 from server.tests.test_app_server import A, CAM, CELLS
@@ -24,7 +25,7 @@ def _app(tmp_path, fw, mode="camera"):
     s = Settings(data_dir=tmp_path, mock=False, a5000_url=f"http://127.0.0.1:{fw.port}", a5000_key="",
                  inpaint_port=fw.port, shared_token="", bind_host="127.0.0.1", bind_port=0, render_mode=mode,
                  mock_time_scale=0.0, mock_source="x")
-    app = create_app(s, start_thread=False)
+    app = create_app(s, start_thread=False, llm=FakeAdapter())
     c = TestClient(app)
     c.eng = app.state.app.engine
     return c
@@ -40,7 +41,7 @@ def test_generate_swap_order_and_edit(tmp_path, fw, monkeypatch):
 
     monkeypatch.setattr(t2i, "render_rgba", fake_rgba)
     c = _app(tmp_path, fw)
-    assert c.get("/app/v1/health").json()["workers"] == {"a5000": "up", "inpaint": "up", "llm": "fake"}
+    assert c.get("/app/v1/health").json()["workers"] == {"a5000": "up", "inpaint": "up", "llm": "missing"}
     aid = c.post("/app/v1/qr/q1/asset", json={"prompt": "a jeep", "seed": 7}, headers=A).json()["asset_id"]
     c.eng.drain()
     seq = [x for x in fw.log if x.startswith(("POST /release", "t2i", "POST /reload", "POST /v2/trellis/generate"))]
@@ -104,7 +105,7 @@ def test_worker_unreachable(tmp_path):
     s = Settings(data_dir=tmp_path, mock=False, a5000_url="http://127.0.0.1:1", a5000_key="", inpaint_port=1,
                  shared_token="", bind_host="127.0.0.1", bind_port=0, render_mode="camera", mock_time_scale=0.0,
                  mock_source="x")
-    app = create_app(s, start_thread=False)
+    app = create_app(s, start_thread=False, llm=FakeAdapter())
     c = TestClient(app)
     assert c.get("/app/v1/health").json()["workers"]["a5000"] == "down"
     jid = c.post("/app/v1/qr/q4/asset", json={"prompt": "x"}, headers=A).json()["job_id"]
