@@ -157,8 +157,17 @@ class RealBackend:
                 if g.status_code != 200:
                     raise self._err(g, "RENDER_FAILED", f"렌더 파일 {n}")
                 files[n] = g.content
+        # camera 렌더 응답의 `view` 는 null 이다(A1, 계약 3.28.0 은 정수를 기대). 앱 서버는 view 를 쓰지 않는다 —
+        # 다음 단계(`/edit`)는 render_id·두 PNG 만 넘기고, 클라이언트 응답(작업 객체)에는 view 가 없다.
+        # 그래서 BRenderResponse 로 검증하지 않고 필요한 키만 꺼내 내부 기록에 남긴다.
+        for k in ("render_id", "render_sha256", "mask_sha256"):
+            if not rec.get(k):
+                raise StageError("RENDER_FAILED", f"A5000 render 응답에 {k} 가 없다")
+        record = {"view": rec.get("view"), "camera_used": rec.get("camera_used"), "mode": self.s.render_mode,
+                  "render_sha256": rec["render_sha256"], "mask_sha256": rec["mask_sha256"],
+                  "timing": (rec.get("renderer") or {}).get("timing")}
         return {"render_id": rec["render_id"], "render_png": files["2d_render"], "mask_png": files["2d_mask"],
-                "record": rec}
+                "record": record}
 
     def inpaint(self, render_png: bytes, mask_png: bytes, prompt: str, seed: int) -> bytes:
         with self._w() as w:
@@ -214,7 +223,7 @@ class RealBackend:
         try:
             with self._a() as c:
                 r = c.post(f"/v2/trellis/assets/{asset_id}/discard", json={"job_id": worker_job_id})
-            return None if r.status_code in (200, 404, 409) else f"discard {r.status_code}"
+            return None if r.status_code == 200 else f"A5000 discard {r.status_code} {r.text[:120]}"
         except httpx.HTTPError as e:
             return f"discard {type(e).__name__}"
 
@@ -224,7 +233,7 @@ class RealBackend:
                 r = c.delete(f"/v2/trellis/assets/{asset_id}")
             if r.status_code == 409:
                 raise StageError("ASSET_LOCKED", "A5000 에 진행 중 작업이 있다")
-            return None if r.status_code in (204, 200, 404) else f"delete {r.status_code}"
+            return None if r.status_code in (200, 204) else f"A5000 delete {r.status_code} {r.text[:120]}"
         except httpx.HTTPError as e:
             return f"delete {type(e).__name__}"
 

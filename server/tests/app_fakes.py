@@ -171,7 +171,11 @@ class FakeWorkers:
                 if p == "/v2/trellis/render":
                     req = json.loads(b)
                     fw.log.append(f"render camera={'camera' in req} view={'view' in req}")
-                    return self._send(200, {"render_id": "r-fake1", "asset_id": req["asset_id"]})
+                    resp = {"render_id": "r-fake1", "asset_id": req["asset_id"], "base_version": req["base_version"],
+                            "view": None if "camera" in req else 3, "render_sha256": "a" * 64, "mask_sha256": "b" * 64}
+                    if "camera" in req:     # A1: camera 렌더는 view 가 null 이고 camera_used 를 준다
+                        resp["camera_used"] = {"position": [0, -1.8, 0], "fov_deg": 49.1}
+                    return self._send(200, resp)
                 if p == "/v2/trellis/generate":
                     f = _multipart(self.headers, b)
                     meta = json.loads(f["meta"])

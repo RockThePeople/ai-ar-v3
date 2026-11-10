@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -53,6 +55,9 @@ def test_generate_swap_order_and_edit(tmp_path, fw, monkeypatch):
     j = c.get(f"/app/v1/jobs/{jid}", headers=A).json()
     assert j["state"] == "awaiting_2d_review", j
     assert "render camera=True view=False" in fw.log
+    assert "view" not in j and '"view"' not in json.dumps(j)                  # view=null 은 클라이언트에 안 나간다
+    rec = c.eng.get(jid)["render"]["record"]
+    assert rec["view"] is None and rec["camera_used"]["fov_deg"] == 49.1
     assert any(x.startswith("inpaint prompt=") and x.endswith("seed=0") for x in fw.log)
     c.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": True}, headers=A)
     c.eng.drain()

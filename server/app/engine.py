@@ -446,8 +446,12 @@ class Engine:
             self.db.x("DELETE FROM commits WHERE asset_id=?", (aid,))
             self.db.x("DELETE FROM assets WHERE asset_id=?", (aid,))
             self.db.x("UPDATE ratings SET asset_deleted=1 WHERE asset_id=?", (aid,))
-            if note:
-                print(f"[delete] {aid}: worker {note}", flush=True)
+            if note:   # 앱 쪽 삭제는 진행한다. A5000 쪽이 남았을 수 있다는 기록
+                print(f"[delete] {aid}: {note}", flush=True)
+                (self.s.data_dir / "logs").mkdir(parents=True, exist_ok=True)
+                with open(self.s.data_dir / "logs" / "worker-notes.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"t": self.clock(), "op": "delete", "asset_id": aid, "note": note},
+                                       ensure_ascii=False) + "\n")
 
     def rate_range(self, asset_id: str, device: str) -> Optional[List[int]]:
         """이 기기의 직전 평가 이후(없으면 생성 이후) 커밋된 편집 판본 범위. 없으면 None."""
