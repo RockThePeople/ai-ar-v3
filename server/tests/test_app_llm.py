@@ -136,3 +136,57 @@ def test_llm_calls_logged(tmp_path, monkeypatch):
     c.eng.drain()
     calls = c.get(f"/app/v1/debug/api/jobs/{jid}").json()["llm_calls"]
     assert [x["kind"] for x in calls] == ["refine"] and calls[0]["model"] == "rule-based"
+
+
+# ── S4: 생성 프롬프트 영어 변환, 부정 표현 금지 ─────────────────────
+from server.app.llm_adapter import is_english  # noqa: E402
+
+
+class TransLLM(StubLLM):
+    def __init__(self, result):
+        super().__init__()
+        self.result = result
+
+    def translate_prompt(self, prompt, job_id=""):
+        self.calls.append(("translate", prompt))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def _gen(c, prompt):
+    r = c.post("/app/v1/qr/st-01/asset", json={"prompt": prompt}, headers=A)
+    c.eng.drain()
+    return job(c, r.json()["job_id"]), c.eng.get(r.json()["job_id"])
+
+
+def test_translate_korean_prompt(tmp_path):
+    llm = TransLLM("a blue ceramic teapot")
+    c = _env(tmp_path, llm)
+    j, raw = _gen(c, "파란 도자기 찻주전자")
+    assert j["state"] == "committed" and ("translate", "파란 도자기 찻주전자") in llm.calls
+    assert raw["prompt_en"] == "a blue ceramic teapot" and raw["translate"] == {"ok": True}
+    assert c.get("/app/v1/qr/st-01", headers=A).json()["scene_prompt"] == "a blue ceramic teapot"
+
+
+def test_translate_skips_english_and_survives_failure(tmp_path):
+    llm = TransLLM(LLMUnavailable("down"))
+    c = _env(tmp_path, llm)
+    j, raw = _gen(c, "a red pickup truck")
+    assert raw["translate"] == {"skipped": "english"} and not [x for x in llm.calls if x[0] == "translate"]
+    c.delete("/app/v1/qr/st-01", headers=A)
+    j, raw = _gen(c, "빨간 트럭")                                                 # LLM 실패 → 원문으로 생성 계속
+    assert j["state"] == "committed" and raw["prompt_en"] == "빨간 트럭" and raw["translate"]["ok"] is False
+
+
+def test_negation_rejected():
+    ok = {"target_element": "the armrests", "replacement": "plain open seat sides", "op": "remove",
+          "new_scene_prompt": "a wooden chair with plain open sides and a knob on the north side"}
+    assert ClaudeAdapter.check_refine(ok) is None                                  # knob·north 는 통과
+    for bad in ("a chair without armrests", "a backrest, not a solid panel", "no armrests", "it isn't red",
+                "slats instead of a panel"):
+        assert "부정" in ClaudeAdapter.check_refine({**ok, "new_scene_prompt": bad}), bad
+    assert "부정" in ClaudeAdapter.check_refine({**ok, "replacement": "nothing"})
+    assert ClaudeAdapter.check_translate({"prompt_en": "a teapot with no lid"}) and \
+        ClaudeAdapter.check_translate({"prompt_en": "a blue teapot"}) is None
+    assert is_english("a man’s red car — 2 doors") and not is_english("빨간 차")

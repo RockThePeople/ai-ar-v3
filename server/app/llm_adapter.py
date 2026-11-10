@@ -25,6 +25,9 @@ from .backends import fake_classify, fake_refine
 OPS = ("replace", "add", "remove", "recolor")
 CATEGORIES = ("prompt", "quality", "region")
 _HANGUL = re.compile(r"[ㄱ-ㆎ가-힣]")
+# S4: 부정 표현(FLUX·TRELLIS 조건은 부정어를 처리하지 못하고, 장면 문장이 다음 편집으로 이어진다)
+_NEG = re.compile(r"\b(not|no|without|instead of|never|none|nothing|non|isn't|aren't|doesn't|don't|lacking|free of)\b|n't\b", re.I)
+_NON_ENGLISH = re.compile(r"[^\x00-\x7f\u2018\u2019\u201c\u201d\u2013\u2014]")
 _COORD = re.compile(r"[\[(]\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*[\])]")
 
 
@@ -64,12 +67,16 @@ The app edits only the region of the object the user selected; your text is the 
 
 Return JSON with:
 - target_element: the part of the scene the instruction changes, as it appears in the current scene (English, short noun phrase).
-- replacement: what it becomes. For "remove", describe what remains in its place (e.g. "nothing, bare seat sides"). For "recolor", the element with its new color.
+- replacement: what it becomes, described positively. For "remove", describe what is visible in its place (e.g. "plain open seat sides"). For "recolor", the element with its new color.
 - op: "replace" (swap one element for another), "add" (add a new element), "remove" (take an element away), "recolor" (change only color/material color).
 - new_scene_prompt: the WHOLE current scene sentence, kept as it is except for the target element, which is changed as instructed.
   Do not drop other elements of the scene. Do not append the instruction text. One sentence, English.
 
 Rules:
+- Use only positive descriptions. Never write negations in new_scene_prompt or replacement: no "not", "no", "without",
+  "instead of", "never", "nothing". Image models cannot handle negation, and the scene sentence is reused for later edits.
+  Turn rejection feedback into a positive description of what should be there (e.g. feedback "not a solid panel" →
+  "separate vertical slats with open gaps"). For "remove", describe the remaining appearance (e.g. "a chair with plain open sides").
 - The instruction may be in Korean or any language; always write English.
 - Never output coordinates, numbers describing positions, or sizes in units. Describe content only.
 - If rejection feedback from earlier attempts is given, follow it.
@@ -92,6 +99,25 @@ Classify the reason into exactly one category and write short English guidance.
 Return JSON {"category": ..., "guidance": ...}."""
 
 
+TRANSLATE_SCHEMA = {
+    "type": "object",
+    "properties": {"prompt_en": {"type": "string"}},
+    "required": ["prompt_en"],
+    "additionalProperties": False,
+}
+
+TRANSLATE_SYSTEM = """Translate a user's request for a 3D object into one short English sentence for a text-to-image model.
+Describe a single object (the subject) with its key visual attributes. Keep the user's meaning; add nothing unrelated.
+Use only positive descriptions (no negations). No camera, background, lighting or style words — those are added later.
+Return JSON {"prompt_en": ...}.
+Example: "검은 오토바이를 탄 남자" → {"prompt_en": "a man riding a black motorcycle"}"""
+
+
+def is_english(text: str) -> bool:
+    """영어로 볼 수 있으면 변환하지 않는다(ASCII 와 일반 따옴표·대시만)."""
+    return not _NON_ENGLISH.search(text or "")
+
+
 class FakeAdapter:
     name = "fake"
     model = "rule-based"
@@ -106,6 +132,9 @@ class FakeAdapter:
                       "instruction": instruction, "history": reject_history}, "output": out, "latency_s": 0.0,
                       "in_tokens": 0, "out_tokens": 0, "retried": False, "ok": True, "error": None})
         return out
+
+    def translate_prompt(self, prompt: str, job_id: str = "") -> str:
+        return prompt.strip()
 
     def classify(self, reason: str, refine: Optional[dict], history: List[str], job_id: str = "") -> dict:
         cat, guide = fake_classify(reason)
@@ -194,6 +223,10 @@ class ClaudeAdapter:
         for k in ("target_element", "new_scene_prompt"):
             if not str(o[k]).strip():
                 return f"{k} 가 비었다"
+        for k in ("new_scene_prompt", "replacement"):
+            m = _NEG.search(str(o[k]))
+            if m:
+                return f"{k} 에 부정 표현 {m.group(0)!r} 이 있다(긍정 묘사로 바꿔야 한다)"
         for k, v in o.items():
             if _HANGUL.search(str(v)):
                 return f"{k} 에 한글이 있다(영어로 써야 한다)"
@@ -208,6 +241,25 @@ class ClaudeAdapter:
                 f"rejection feedback from earlier attempts:\n{hist}")
         return self._call("refine", REFINE_SYSTEM, user, REFINE_SCHEMA, self.check_refine, job_id,
                           {"scene": scene_prompt, "instruction": instruction, "history": reject_history})
+
+    # ── S4 생성 프롬프트 영어 변환 ─────────────────────────────────
+    @staticmethod
+    def check_translate(o: dict) -> Optional[str]:
+        t = str(o.get("prompt_en", "")).strip()
+        if set(o) != {"prompt_en"} or not t:
+            return "prompt_en 이 없거나 비었다"
+        if not is_english(t):
+            return "영어가 아닌 글자가 있다"
+        if _NEG.search(t):
+            return "부정 표현이 있다"
+        if len(t) > 300:
+            return "너무 길다(300자 초과)"
+        return None
+
+    def translate_prompt(self, prompt: str, job_id: str = "") -> str:
+        out = self._call("translate", TRANSLATE_SYSTEM, f"request: {json.dumps(prompt, ensure_ascii=False)}",
+                         TRANSLATE_SCHEMA, self.check_translate, job_id, {"prompt": prompt})
+        return out["prompt_en"].strip()
 
     # ── A4 분류 ────────────────────────────────────────────────────
     @staticmethod

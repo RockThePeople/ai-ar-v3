@@ -20,8 +20,8 @@ import uuid
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from .backends import StageError, fake_translate
-from .llm_adapter import LLMInvalid, LLMUnavailable, make_adapter
+from .backends import StageError
+from .llm_adapter import LLMInvalid, LLMUnavailable, is_english, make_adapter
 from .config import Settings
 from .store import ChunkStore, Db
 
@@ -158,8 +158,18 @@ class Engine:
 
     def _run_generate(self, j: dict) -> None:
         self._set(j, "generating", "t2i", 0.0)
-        prompt_en = fake_translate(j["prompt"])
+        # S4: 계약 3.2 "서버가 영어로 바꾼다". 이미 영어면 그대로, LLM 실패면 원문으로 진행(생성은 막지 않는다)
+        raw = j["prompt"].strip()
+        if is_english(raw):
+            prompt_en, j["translate"] = raw, {"skipped": "english"}
+        else:
+            try:
+                prompt_en = self.llm.translate_prompt(raw, job_id=j["job_id"])
+                j["translate"] = {"ok": True}
+            except (LLMInvalid, LLMUnavailable) as e:
+                prompt_en, j["translate"] = raw, {"ok": False, "error": f"{type(e).__name__}: {e}"}
         j["prompt_en"] = prompt_en
+        self._save(j)
         out = self.be.generate(j["asset_id"], prompt_en, int(j["seed"]), self._progress(j))
         if out.get("png"):                               # T2I RGBA 보관(S3)
             d = self.s.data_dir / "jobs" / j["job_id"]

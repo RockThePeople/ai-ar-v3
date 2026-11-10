@@ -85,6 +85,7 @@ def build_clients(S) -> APIRouter:
                 "created_at": j["created_at"], "finished_at": j.get("finished_at"),
                 "elapsed_s": round(end - j["created_at"], 1), "device": (j.get("device") or "")[:10],
                 "instruction": j.get("instruction"), "prompt": j.get("prompt"), "prompt_en": j.get("prompt_en"),
+                "translate": j.get("translate"),
                 "seed": j.get("seed"), "t2i": bool(j.get("t2i")),
                 "refine": j.get("refine"), "camera": j.get("camera"), "n_cells": len(j.get("cells") or []),
                 "attempts": attempts, "base_version": j.get("base_version") or res.get("base_version"),
@@ -254,7 +255,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
  document.getElementById('title').textContent=`${d.asset_id} · QR ${d.qr_id??'-'} · ${d.status}`;
  document.getElementById('meta').innerHTML=`생성 ${ts(d.created_at)} · 생성자 ${esc(d.creator)} · 판본 ${d.version} · 편집 ${d.commits}/${d.edits} · 평가 ${d.rating_avg??'-'} (${d.ratings})${d.deleted_at?' · 삭제 '+ts(d.deleted_at):''}<br>장면 문장: ${esc(d.scene_prompt)}`;
  const g=d.jobs.find(j=>j.kind==='generate');
- document.getElementById('gen').innerHTML=g?`<div>프롬프트 원문: <b>${esc(g.prompt)}</b> · 영어: ${esc(g.prompt_en)} · seed ${g.seed} · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
+ document.getElementById('gen').innerHTML=g?`<div>프롬프트 원문: <b>${esc(g.prompt)}</b> · 영어: ${esc(g.prompt_en)} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM 변환':'변환 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span> · seed ${g.seed} · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
  init3d();const o=opts();['selA','selB'].forEach((id,i)=>{const s=document.getElementById(id);s.innerHTML=o.map(x=>`<option value="${x.k}">${esc(x.cap)}</option>`).join('');s.onchange=()=>pick(i);});
  if(o.length){document.getElementById('selA').value=o[0].k;document.getElementById('selB').value=o[o.length-1].k;pick(0);pick(1);}
  const qj=new URLSearchParams(location.search).get('job');
