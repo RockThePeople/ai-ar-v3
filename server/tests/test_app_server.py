@@ -199,6 +199,7 @@ def test_keep_commits_and_staging(env):
         assert hashlib.sha256(env.get(e["uri"]).content).hexdigest() == e["hash"]
     j = env.post(f"/app/v1/jobs/{jid}/review3d", json={"keep": True}, headers=A).json()
     assert j["state"] == "committed" and j["result"]["manifest_uri"] == f"/v2/assets/{aid}/manifest.v2.json"
+    err(env.get(res["chunks"][0]["uri"]), 404, "JOB_NOT_FOUND")                   # 커밋 뒤 staging 은 판본 경로로
     m = env.get(j["result"]["manifest_uri"]).json()
     assert sorted(m["chunks"]) == ["10_8_8", "8_8_8", "8_8_9"]                   # 9_8_8 제거
     assert m["chunks"]["8_8_9"]["version"] == 1 and m["chunks"]["8_8_8"]["version"] == 2
@@ -215,6 +216,7 @@ def test_discard_and_auto_discard(env):
     jid = to_3d(env, aid)
     j = env.post(f"/app/v1/jobs/{jid}/review3d", json={"keep": False}, headers=A).json()
     assert j["state"] == "discarded" and ("discard",) in env.be.calls
+    err(env.get(j["result"]["chunks"][0]["uri"]), 404, "JOB_NOT_FOUND")          # 되돌리면 staging 도 지운다
     jid = to_3d(env, aid, 1)
     env.clock.t += 1799
     env.eng.tick()
