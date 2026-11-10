@@ -320,6 +320,7 @@ class Engine:
             raise AppError(503 if e.code == "WORKER_UNREACHABLE" else 500, e.code, str(e))
         blobs = self.store.staging_blobs(j["asset_id"], j["job_id"])
         self.store.put_version(j["asset_id"], to, blobs, j["result"]["removed_chunk_ids"])
+        self.store.drop_staging(j["asset_id"], j["job_id"])    # 판본 경로로 옮겼다(해시 같음)
         coords = self.be.slat_coords(j["asset_id"], to)
         if coords:
             self.store.put_slat_coords(j["asset_id"], to, coords)
@@ -332,6 +333,7 @@ class Engine:
 
     def _discard(self, j: dict, why: str) -> None:
         note = self.be.discard(j["asset_id"], j.get("worker_job_id") or "")
+        self.store.drop_staging(j["asset_id"], j["job_id"])
         j["discard_note"] = f"{why}{' · ' + note if note else ''}"
         self._finish(j, "discarded")
 

@@ -351,4 +351,6 @@ class MockBackend:
         return None
 
     def slat_coords(self, asset_id: str, version: int) -> Optional[list]:
-        return None
+        """사본 v k 의 좌표 = 원천 v min(k, N) 의 좌표(편집 변경분을 원천에서 가져오므로 같은 물체다)."""
+        vs = self._src_versions()
+        return self.store.slat_coords(self.s.mock_source, min(int(version), vs[-1])) if vs else None
