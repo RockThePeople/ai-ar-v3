@@ -1,8 +1,8 @@
 """`/clients` — 앱 활동 기록 조회(운영자용, 앱 API 아님). Voxhammer-light `ops/tasks/S3-clients-3090.md`.
 
 - 목록 `GET /clients`, 상세 `GET /clients/{asset_id}`. 삭제된 자산(1.0.2 9절 보관본)도 "삭제됨"으로 보인다.
-- 인증 없음. `CLIENTS_ALLOW_CIDR`(쉼표로 여러 대역)가 있으면 그 밖의 요청에 403.
-- GLB 는 요청 때 `glbbuild.build_glb` 로 만들고 최근 20개만 캐시한다. 되돌린 편집은 `archive/<job_id>/` 청크를
+- 인증 없음. 외부 공개(사용자 결정 2026-11-10). `CLIENTS_ALLOW_CIDR`(쉼표로 여러 대역)를 넣으면 그 밖의 요청에 403.
+- GLB 는 요청 때 `glbbuild.build_glb` 로 만들고 캐시한다(개수 제한 없음 — 사용자 결정, 용량 무시). 되돌린 편집은 `archive/<job_id>/` 청크를
   부모 판본 위에 얹어 만든다.
 """
 
@@ -19,8 +19,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
 from .engine import AppError
-
-GLB_CACHE_MAX = 20
 
 
 def _allowed(req: Request) -> None:
@@ -141,7 +139,7 @@ def build_clients(S) -> APIRouter:
             raise AppError(404, "JOB_NOT_FOUND", "T2I 이미지 없음")
         return FileResponse(p, media_type="image/png")
 
-    # ── GLB (최근 20개 캐시) ───────────────────────────────────────
+    # ── GLB (캐시, 개수 제한 없음) ─────────────────────────────────
     def _glb(key: str, blobs: Dict[str, bytes]) -> Path:
         from ..glbbuild import build_glb
         cache = data / "glb_clients"
@@ -152,11 +150,6 @@ def build_clients(S) -> APIRouter:
                 for k, b in blobs.items():
                     (Path(td) / f"{k}.cbin").write_bytes(b)
                 build_glb(Path(td), out)
-            files = sorted(cache.glob("*.glb"), key=lambda p: p.stat().st_mtime, reverse=True)
-            for old in files[GLB_CACHE_MAX:]:
-                old.unlink(missing_ok=True)
-        else:
-            out.touch()
         return out
 
     @r.get("/glb/{asset_id}/v{version}.glb")
@@ -264,6 +257,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
  document.getElementById('gen').innerHTML=g?`<div>프롬프트 원문: <b>${esc(g.prompt)}</b> · 영어: ${esc(g.prompt_en)} · seed ${g.seed} · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
  init3d();const o=opts();['selA','selB'].forEach((id,i)=>{const s=document.getElementById(id);s.innerHTML=o.map(x=>`<option value="${x.k}">${esc(x.cap)}</option>`).join('');s.onchange=()=>pick(i);});
  if(o.length){document.getElementById('selA').value=o[0].k;document.getElementById('selB').value=o[o.length-1].k;pick(0);pick(1);}
+ const qj=new URLSearchParams(location.search).get('job');
  document.getElementById('edits').innerHTML=d.jobs.filter(j=>j.kind==='edit').map(j=>`<details><summary>${ts(j.created_at)} · ${esc(j.instruction)} → <span class="${j.outcome==='유지'?'ok':(j.outcome==='실패'?'bad':'')}">${j.outcome}${j.error_code?' '+j.error_code:''}</span> · v${j.base_version}${j.to_version?' → v'+j.to_version:''} · 바뀐 ${j.n_changed} · 제거 ${j.n_removed}</summary>
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
@@ -272,6 +266,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   <details><summary>LLM 호출 ${j.llm_calls.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력</th><th>출력</th></tr>${j.llm_calls.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr>`).join('')}</table></details>
   <details><summary>상태 이력</summary><pre>${esc(JSON.stringify(j.history,null,1))}</pre></details></details>`).join('')||'<div class="cap">편집 없음</div>';
+ if(qj){const jj=d.jobs.find(x=>x.job_id===qj);if(jj)setTimeout(()=>compare(jj),300);}
  document.getElementById('rates').innerHTML=d.ratings_list.length?`<table><tr><th>기기</th><th>별점</th><th>version_range</th><th>시각</th><th>피드백</th></tr>${d.ratings_list.map(x=>`<tr><td>${esc(x.device)}</td><td>${x.stars}</td><td>${x.version_range}</td><td>${ts(x.created_at)}</td><td><a href="${x.feedback_uri}">파일</a></td></tr>`).join('')}</table>`:'<div class="cap">평가 없음</div>';
 });
 </script></body></html>"""
