@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from server.app.config import load_env_file
-from server.app.llm_adapter import ClaudeAdapter, LLMInvalid, LLMUnavailable
+from server.app.llm_adapter import _NEG, ClaudeAdapter, LLMInvalid, LLMUnavailable, is_english
 
 MOTO = "a man riding a black motorcycle"
 SNOW = "a snowman with a carrot nose, stick arms and a red scarf"
@@ -73,14 +73,64 @@ CLASSIFY = [
 ]
 
 
+GEN = [("검은 오토바이를 탄 남자", "ko"), ("빨간 목도리를 한 눈사람", "ko"), ("등받이가 높은 나무 의자", "ko"),
+       ("a red pickup truck", "en"), ("a small wooden cottage with a stone chimney", "en"), ("a blue ceramic teapot", "en")]
+
+
+def s4(ad, calls, out):
+    """S4: 생성 프롬프트 변환 6건 + 보정 20건(부정어 수)."""
+    res = {"model": ad.model, "translate": [], "refine": []}
+    for p, lang in GEN:
+        n0 = len(calls)
+        if is_english(p):
+            res["translate"].append({"prompt": p, "lang": lang, "prompt_en": p, "skipped": True})
+            print(f"T {lang} {p} → (영어, 그대로)")
+            continue
+        try:
+            en, err = ad.translate_prompt(p), None
+        except (LLMInvalid, LLMUnavailable) as e:
+            en, err = None, f"{type(e).__name__}: {e}"
+        c = calls[n0]
+        res["translate"].append({"prompt": p, "lang": lang, "prompt_en": en, "error": err, "retried": c["retried"],
+                                 "latency_s": c["latency_s"], "in_tokens": c["in_tokens"], "out_tokens": c["out_tokens"]})
+        print(f"T {lang} {p} → {en} | retry={c['retried']} {c['latency_s']}s {c['in_tokens']}/{c['out_tokens']} {err or ''}")
+    for i, (scene, ins, exp, lang) in enumerate(REFINE, 1):
+        n0 = len(calls)
+        try:
+            o, err = ad.refine(scene, ins, []), None
+        except (LLMInvalid, LLMUnavailable) as e:
+            o, err = None, f"{type(e).__name__}: {e}"
+        c = calls[n0]
+        neg = [m.group(0) for k in ("new_scene_prompt", "replacement") for m in [_NEG.search((o or {}).get(k, ""))] if m]
+        first_neg = any("부정" in (a.get("problem") or "") for a in c.get("attempts", []))
+        res["refine"].append({"i": i, "lang": lang, "instruction": ins, "expected_op": exp, "output": o, "error": err,
+                              "negations_final": neg, "negation_on_first_try": first_neg, "retried": c["retried"],
+                              "latency_s": c["latency_s"], "in_tokens": c["in_tokens"], "out_tokens": c["out_tokens"]})
+        print(f"R{i:02d} {lang} {exp:7s} → {o and o['op']} | {o and o['new_scene_prompt']} | neg={neg} first_neg={first_neg} "
+              f"retry={c['retried']} {c['latency_s']}s {c['in_tokens']}/{c['out_tokens']} {err or ''}")
+    R = res["refine"]
+    res["summary"] = {"refine_ok": sum(x["output"] is not None for x in R), "negations_final": sum(bool(x["negations_final"]) for x in R),
+                      "negation_retries": sum(x["negation_on_first_try"] for x in R), "retried": sum(x["retried"] for x in R),
+                      "op_match": sum(bool(x["output"] and x["output"]["op"] == x["expected_op"]) for x in R),
+                      "latency_avg_s": round(sum(x["latency_s"] for x in R) / len(R), 2),
+                      "tokens_in_out": (sum(x["in_tokens"] for x in R), sum(x["out_tokens"] for x in R))}
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(json.dumps(res, indent=1, ensure_ascii=False))
+    print("SUMMARY", json.dumps(res["summary"], ensure_ascii=False))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--s4", action="store_true", help="S4: 생성 프롬프트 변환 6건 + 보정 20건 부정어 확인")
     a = ap.parse_args()
     load_env_file()
     calls: list = []
     ad = ClaudeAdapter(model=a.model, on_call=calls.append)
+    if a.s4:
+        s4(ad, calls, a.out)
+        return
     res = {"model": a.model, "effort": ad.effort, "started": time.strftime("%Y-%m-%d %H:%M:%S"), "refine": [], "classify": []}
     for i, (scene, ins, exp, lang) in enumerate(REFINE, 1):
         n0 = len(calls)
