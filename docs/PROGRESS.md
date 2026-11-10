@@ -355,6 +355,7 @@ W28 멀티유저 (M6)
 
 | 날짜 | 세션 | 결과 |
 |---|---|---|
+| 11-10 | 3090 app2 | S2 LLM 어댑터(`server/app/llm_adapter.py`): Claude(구조화 출력, effort low)·규칙 기반 폴백, 보정·거절 분류·호출 기록·health llm. 35건 평가 haiku 보정 20/20·op 20/20·분류 14/15, sonnet 20/20·19/20·14/15. 새 코드 `CLASSIFY_FAILED` 는 계약 1.0.1 표에 없음(보고) |
 | 11-10 | 3090 app1b | A5000 실제 연결 완료: 생성(T2I 교대 → `/generate`) 55 s · camera 편집 · discard · DELETE 실제 통과, slat 좌표 A4 경로로 응답. 샘플 6개(21 판본) A5000 과 해시 일치 — 판본 간 바뀐 청크를 **해시로** 가른다(A5000 manifest 는 판본마다 전체를 새 판본으로 적음). 가짜 원천 sample-jeep(계약 7절) |
 | 11-10 | 3090 app1 | A1 실제 연결: camera 렌더 편집 2건(되돌림·유지) 통과, 전송 → 2D 33–34 s(view 57 s). camera 응답 `view: null` 은 앱 내부 기록에만. A2 경로는 A5000 워커에 아직 없어 생성·discard·삭제는 가짜 워커 시험만 |
 | 11-10 | 3090 app1 | 앱 서버 v1(`server/app/`, app-api 1.0.1 · `docs/app-api-v1.md`) — `/app/v1` 전 엔드포인트·SQLite·상태 머신·가짜 모드·디버그 페이지. 시험 23건(가짜 워커 포함), 기존 398 passed·6 failed(test_lasso, 변경 전과 같음). 가짜 모드 종단 18단계·실제 모드 편집 1건(2D 승인 → 3D 유지, view 경로) 통과. contract/ 수정 없음 · 새 의존성 없음 |

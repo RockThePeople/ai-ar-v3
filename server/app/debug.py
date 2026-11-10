@@ -44,7 +44,10 @@ def build_debug(S) -> APIRouter:
                                       "discard_note", "edit_stats", "base_version")} | {
             "n_result_chunks": len(res.get("chunks") or []), "n_removed": len(res.get("removed_chunk_ids") or []),
             "to_version": res.get("to_version"), "device": (j.get("device") or "")[:10] + "…",
-            "previews": [a["attempt"] for a in j.get("attempts", [])]}
+            "previews": [a["attempt"] for a in j.get("attempts", [])],
+            "reject_history": j.get("reject_history"),
+            "llm_calls": [{k: c[k] for k in ("kind", "model", "ok", "retried", "latency_s", "in_tokens", "out_tokens",
+                                             "error", "input", "output")} for c in S.db.llm_calls(job_id)]}
 
     @r.get("/api/assets")
     def assets():

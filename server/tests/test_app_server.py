@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from server.app.config import Settings
 from server.app.main import create_app
+from server.app.llm_adapter import FakeAdapter
 from server.tests.app_fakes import BASE_KEYS, FakeBackend
 
 CAM = {"frame": "normalized_voxel", "position": [0.1, -1.3, 0.4], "forward": [0, 1, 0], "up": [0, 0, 1],
@@ -35,7 +36,7 @@ def _settings(tmp_path, mock=False):
 @pytest.fixture
 def env(tmp_path):
     clock, be = Clock(), FakeBackend()
-    app = create_app(_settings(tmp_path), backend=be, clock=clock, start_thread=False)
+    app = create_app(_settings(tmp_path), backend=be, clock=clock, start_thread=False, llm=FakeAdapter())
     c = TestClient(app)
     c.eng, c.be, c.clock, c.tmp = app.state.app.engine, be, clock, tmp_path
     return c
@@ -318,10 +319,10 @@ def test_delete_keeps_ratings(env):
 # ── 재기동 ─────────────────────────────────────────────────────────
 def test_restart_marks_running_failed(tmp_path):
     clock = Clock()
-    app = create_app(_settings(tmp_path), backend=FakeBackend(), clock=clock, start_thread=False)
+    app = create_app(_settings(tmp_path), backend=FakeBackend(), clock=clock, start_thread=False, llm=FakeAdapter())
     c = TestClient(app)
     r = c.post("/app/v1/qr/q9/asset", json={"prompt": "x"}, headers=A)      # 큐에만 있고 실행 전
-    app2 = create_app(_settings(tmp_path), backend=FakeBackend(), clock=clock, start_thread=False)
+    app2 = create_app(_settings(tmp_path), backend=FakeBackend(), clock=clock, start_thread=False, llm=FakeAdapter())
     c2 = TestClient(app2)
     j = c2.get(f"/app/v1/jobs/{r.json()['job_id']}", headers=A).json()
     assert j["state"] == "failed" and j["error_code"] == "SERVER_RESTART"
@@ -340,7 +341,7 @@ def test_mock_mode(tmp_path):
     fx.mkdir()
     for n in ("render", "mask", "edit"):
         (fx / f"{n}.png").write_bytes(png(8, 8))
-    app = create_app(_settings(tmp_path, mock=True), start_thread=False)
+    app = create_app(_settings(tmp_path, mock=True), start_thread=False, llm=FakeAdapter())
     c = TestClient(app)
     eng = app.state.app.engine
     assert c.get("/app/v1/health").json()["mock"] is True

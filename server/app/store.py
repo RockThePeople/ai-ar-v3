@@ -167,6 +167,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   job_id TEXT PRIMARY KEY, asset_id TEXT, kind TEXT, device TEXT, state TEXT,
   created_at REAL, updated_at REAL, body TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS jobs_asset ON jobs(asset_id);
+CREATE TABLE IF NOT EXISTS llm_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, t REAL, job_id TEXT, kind TEXT, model TEXT, ok INTEGER, retried INTEGER,
+  latency_s REAL, in_tokens INTEGER, out_tokens INTEGER, error TEXT, input TEXT, output TEXT, attempts TEXT);
+CREATE INDEX IF NOT EXISTS llm_job ON llm_calls(job_id);
 CREATE TABLE IF NOT EXISTS ratings (
   rating_id TEXT PRIMARY KEY, asset_id TEXT, device TEXT, stars INTEGER,
   v_from INTEGER, v_to INTEGER, created_at REAL, asset_deleted INTEGER NOT NULL DEFAULT 0, body TEXT);
@@ -207,6 +211,23 @@ class Db:
                "VALUES(?,?,?,?,?,?,?,?)",
                (j["job_id"], j["asset_id"], j["kind"], j["device"], j["state"], j["created_at"],
                 j["updated_at"], json.dumps(j, ensure_ascii=False)))
+
+    def log_llm(self, r: dict) -> None:
+        self.x("INSERT INTO llm_calls(t,job_id,kind,model,ok,retried,latency_s,in_tokens,out_tokens,error,input,output,attempts) "
+               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (time.time(), r.get("job_id"), r["kind"], r["model"], int(bool(r["ok"])), int(bool(r["retried"])),
+                r["latency_s"], r["in_tokens"], r["out_tokens"], r.get("error"),
+                json.dumps(r.get("input"), ensure_ascii=False), json.dumps(r.get("output"), ensure_ascii=False),
+                json.dumps(r.get("attempts") or [], ensure_ascii=False)))
+
+    def llm_calls(self, job_id: str) -> List[dict]:
+        out = []
+        for row in self.q("SELECT * FROM llm_calls WHERE job_id=? ORDER BY id", (job_id,)):
+            d = dict(row)
+            for k in ("input", "output", "attempts"):
+                d[k] = json.loads(d[k]) if d[k] else None
+            out.append(d)
+        return out
 
     def jobs(self, where: str = "1", args: tuple = (), limit: int = 1000) -> List[dict]:
         return [json.loads(r["body"]) for r in

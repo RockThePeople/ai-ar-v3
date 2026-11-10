@@ -20,7 +20,8 @@ import uuid
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from .backends import StageError, fake_classify, fake_refine, fake_translate
+from .backends import StageError, fake_translate
+from .llm_adapter import LLMInvalid, LLMUnavailable, make_adapter
 from .config import Settings
 from .store import ChunkStore, Db
 
@@ -43,8 +44,9 @@ def new_id(prefix: str) -> str:
 
 class Engine:
     def __init__(self, s: Settings, db: Db, store: ChunkStore, backend, clock: Callable[[], float] = time.time,
-                 start_thread: bool = True) -> None:
+                 start_thread: bool = True, llm=None) -> None:
         self.s, self.db, self.store, self.be, self.clock = s, db, store, backend, clock
+        self.llm = llm or make_adapter(s.mock, on_call=db.log_llm)
         self.lock = threading.RLock()
         self.jobs: Dict[str, dict] = {}
         self.q: "queue.Queue[tuple]" = queue.Queue()
@@ -117,7 +119,7 @@ class Engine:
              "max_attempts": self.s.max_attempts if kind == "edit" else None,
              "refine": None, "preview": None, "review": None, "result": None, "expires_at": None,
              "error_code": None, "error_message": None, "history": [{"t": t, "state": "queued"}],
-             "attempts": [], "mock_fail": None, "finished_at": None, **kw}
+             "attempts": [], "mock_fail": None, "finished_at": None, "reject_history": [], **kw}
         with self.lock:
             self.jobs[j["job_id"]] = j
         self._save(j)
@@ -195,12 +197,18 @@ class Engine:
         a = self.db.asset(asset_id)
         return (a["scene_prompt"] if a else "") or ""
 
-    def _run_refine(self, j: dict, reason: Optional[str] = None) -> None:
+    def _run_refine(self, j: dict) -> None:
         self._set(j, "refining", "refining", 0.1)
         self._mock_gate(j)
         if self.be.name == "mock":
             time.sleep(self.be.DUR["refine"] * self.s.mock_time_scale)
-        j["refine"] = fake_refine(self._scene(j["asset_id"]), j["instruction"], reason)
+        try:
+            j["refine"] = self.llm.refine(self._scene(j["asset_id"]), j["instruction"], list(j.get("reject_history") or []),
+                                          job_id=j["job_id"])
+        except LLMInvalid as e:
+            raise StageError("REFINE_INVALID", str(e))
+        except LLMUnavailable as e:
+            raise StageError("LLM_UNAVAILABLE", str(e))
         self._save(j)
         self._run_render_inpaint(j, new_render=True)
 
@@ -274,9 +282,25 @@ class Engine:
                 return j
             if not (reason or "").strip():
                 raise AppError(400, "INVALID_REQUEST", "거절에는 reason 이 필요하다")
-            j["_reject_stage"] = True
+            if j.get("classifying"):
+                raise AppError(409, "WRONG_STATE", "거절 이유를 분류하는 중이다")
+            j["classifying"] = True
             self._set(j, stage="classifying")
-            cat, guide = fake_classify(reason)
+        try:                                             # LLM 호출은 잠금 밖에서
+            out = self.llm.classify(reason, j.get("refine"), list(j.get("reject_history") or []), job_id=j["job_id"])
+            fail = None
+        except LLMInvalid as e:
+            out, fail = None, ("CLASSIFY_FAILED", str(e))
+        except LLMUnavailable as e:
+            out, fail = None, ("LLM_UNAVAILABLE", str(e))
+        with self.lock:
+            j["classifying"] = False
+            if j["state"] != "awaiting_2d_review":       # 그 사이 취소 등
+                return j
+            if fail:
+                self._finish(j, "failed", *fail)
+                return j
+            cat, guide = out["category"], out["guidance"]
             j["review"] = {"reason": reason, "category": cat, "guidance": guide}
             if j["attempt"] >= self.s.max_attempts:
                 self._finish(j, "failed", "RETRY_LIMIT", "2D 거절 3회")
@@ -286,6 +310,7 @@ class Engine:
                 return j
             j["attempt"] += 1
             if cat == "prompt":
+                j.setdefault("reject_history", []).append(guide)
                 self._set(j, "refining", "refining", 0.0)
                 self._enqueue(j, "refine_again")
             else:
@@ -388,7 +413,7 @@ class Engine:
             elif task == "refine":
                 self._run_refine(j)
             elif task == "refine_again":
-                self._run_refine(j, reason=(j.get("review") or {}).get("reason"))
+                self._run_refine(j)
             elif task == "inpaint_again":
                 self._run_render_inpaint(j, new_render=False)
             elif task == "edit3d":
