@@ -417,7 +417,7 @@ def test_preview_bytes_equal_stored(env):
         assert env.get(f"/app/v1/jobs/{jid}/preview/1/{n}.png").content == p.read_bytes()
 
 
-# ── S7: 마스크 주변만 잘라 인페인팅(APP_INPAINT_CROP, 기본 1) ─────────────
+# ── S7: 마스크 주변만 잘라 인페인팅(APP_INPAINT_CROP, 기본 0 — 사용자 결정) ─────
 def _small_mask_render(env):
     import numpy as np
     from server.app.cropinpaint import encode_png
@@ -435,10 +435,20 @@ def _small_mask_render(env):
     return r, m, seen
 
 
-def test_crop_inpaint_on_by_default(env):
+def test_crop_inpaint_off_by_default():
+    import os
+    from unittest import mock
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("APP_INPAINT_CROP", None)
+        assert Settings.from_env().inpaint_crop is False                         # 기본 0
+        os.environ["APP_INPAINT_CROP"] = "1"
+        assert Settings.from_env().inpaint_crop is True
+
+
+def test_crop_inpaint_when_on(env):
     import numpy as np
     from server.app.cropinpaint import decode_png
-    assert env.eng.s.inpaint_crop is True
+    env.eng.s.inpaint_crop = True                                                # APP_INPAINT_CROP=1
     r, m, seen = _small_mask_render(env)
     aid = make_asset(env)
     jid = to_2d(env, aid)
@@ -456,7 +466,7 @@ def test_crop_inpaint_on_by_default(env):
 
 
 def test_crop_inpaint_off_is_old_behavior(env):
-    env.eng.s.inpaint_crop = False                                               # APP_INPAINT_CROP=0
+    assert env.eng.s.inpaint_crop is False                                       # 기본 0 = 예전 동작
     r, m, seen = _small_mask_render(env)
     aid = make_asset(env)
     jid = to_2d(env, aid)
