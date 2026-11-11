@@ -415,3 +415,53 @@ def test_preview_bytes_equal_stored(env):
     for n in ("render", "edit", "mask"):
         p = env.tmp / "jobs" / jid / "1" / f"{n}.png"
         assert env.get(f"/app/v1/jobs/{jid}/preview/1/{n}.png").content == p.read_bytes()
+
+
+# ── S7: 마스크 주변만 잘라 인페인팅(APP_INPAINT_CROP, 기본 1) ─────────────
+def _small_mask_render(env):
+    import numpy as np
+    from server.app.cropinpaint import encode_png
+    m = np.zeros((1024, 1024), np.uint8)
+    m[500:560, 400:460] = 255
+    r = np.full((1024, 1024, 3), 90, np.uint8)
+    seen = []
+    orig = env.be.inpaint
+
+    def inpaint(rp, mp, prompt, seed):
+        seen.append(mp)
+        return orig(rp, mp, prompt, seed)
+    env.be.render = lambda *a: {"render_id": "r-s7", "render_png": encode_png(r), "mask_png": encode_png(m), "record": {}}
+    env.be.inpaint = inpaint
+    return r, m, seen
+
+
+def test_crop_inpaint_on_by_default(env):
+    import numpy as np
+    from server.app.cropinpaint import decode_png
+    assert env.eng.s.inpaint_crop is True
+    r, m, seen = _small_mask_render(env)
+    aid = make_asset(env)
+    jid = to_2d(env, aid)
+    a = env.eng.get(jid)["attempts"][0]
+    assert a["crop"]["box"] == [238, 338, 384] and a["inpaint_s"] >= 0
+    assert decode_png(seen[0]).mean() > m.mean()                                 # 워커에는 키운 마스크
+    out = decode_png(env.get(f"/app/v1/jobs/{jid}/preview/1/edit.png", headers=A).content)
+    assert out.shape == (1024, 1024, 3) and (out[m == 0] == 90).all()            # 마스크 밖 원본 그대로
+    assert (out[520:540, 420:440] == 200).all()                                  # 안쪽은 워커 결과(가짜 = 200)
+    d = env.get(f"/clients/api/assets/{aid}").json()
+    ca = [x for x in d["jobs"] if x["job_id"] == jid][0]["attempts"][0]
+    assert ca["crop"]["box"] == [238, 338, 384]
+    for n in ("crop_render", "crop_mask", "crop_edit"):
+        assert env.get(ca["images"][n]).status_code == 200
+
+
+def test_crop_inpaint_off_is_old_behavior(env):
+    env.eng.s.inpaint_crop = False                                               # APP_INPAINT_CROP=0
+    r, m, seen = _small_mask_render(env)
+    aid = make_asset(env)
+    jid = to_2d(env, aid)
+    a = env.eng.get(jid)["attempts"][0]
+    assert a["crop"] == {"off": True}
+    from server.tests.app_fakes import png
+    assert seen[0] == (env.tmp / "jobs" / jid / "render" / "mask.png").read_bytes()   # 원래 마스크 그대로 보냄
+    assert env.get(f"/app/v1/jobs/{jid}/preview/1/edit.png", headers=A).content == png(v=200)  # 워커 결과 그대로

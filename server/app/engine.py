@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
+from .cropinpaint import crop_inpaint
 from .llm_adapter import LLMInvalid, LLMUnavailable, make_adapter
 
 #: S6: 인페인팅 문장 꼬리. 시점·배경 문구는 넣지 않는다(조건 렌더가 라쏘 시점이다)
@@ -250,10 +251,18 @@ class Engine:
         rpng, mpng = (rd / "render.png").read_bytes(), (rd / "mask.png").read_bytes()
         seed = 0 + j["attempt"] - 1                       # 내부 규약 5절: 기본 seed + attempt − 1
         inpaint_prompt = j["refine"]["new_scene_prompt"].rstrip(" .") + INPAINT_SUFFIX
-        edit = self.be.inpaint(rpng, mpng, inpaint_prompt, seed)
+        crop, crop_files = None, None
+        t0 = time.perf_counter()
+        if self.s.inpaint_crop:                           # S7: 마스크 주변만 잘라 1024² 로 키워 보내고 원래 자리에 붙인다
+            edit, crop, crop_files = crop_inpaint(rpng, mpng, lambda r, m: self.be.inpaint(r, m, inpaint_prompt, seed))
+        else:
+            edit = self.be.inpaint(rpng, mpng, inpaint_prompt, seed)
+        inpaint_s = round(time.perf_counter() - t0, 3)
         if j["state"] != "inpainting":
             return
         d.mkdir(parents=True, exist_ok=True)
+        for n, b in (crop_files or {}).items():
+            (d / n).write_bytes(b)
         (d / "render.png").write_bytes(rpng)
         (d / "mask.png").write_bytes(mpng)
         (d / "edit.png").write_bytes(edit)
@@ -262,7 +271,8 @@ class Engine:
                         "edit_url": f"{base}/edit.png", "mask_url": f"{base}/mask.png"}
         j["attempts"].append({"attempt": j["attempt"], "seed": seed, "prompt": inpaint_prompt,
                               "new_scene_prompt": j["refine"]["new_scene_prompt"], "instruction": j["instruction"],
-                              "render_id": j["render"]["render_id"], "t": self.clock()})
+                              "render_id": j["render"]["render_id"], "t": self.clock(), "inpaint_s": inpaint_s,
+                              "crop": crop if self.s.inpaint_crop else {"off": True}})
         self._set(j, "awaiting_2d_review", "inpainting", 1.0)
 
     def _run_edit3d(self, j: dict) -> None:

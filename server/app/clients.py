@@ -44,6 +44,9 @@ def _dur(log: List[dict], end: Optional[float]) -> Dict[str, float]:
     return out
 
 
+CROP_IMGS = ("crop_render", "crop_mask", "crop_edit")    # S7 잘라 인페인팅 이미지
+
+
 def build_clients(S) -> APIRouter:
     r = APIRouter(prefix="/clients")
     data = S.settings.data_dir
@@ -75,9 +78,10 @@ def build_clients(S) -> APIRouter:
         attempts = []
         for a in j.get("attempts", []):
             attempts.append({**{k: a.get(k) for k in ("attempt", "seed", "prompt", "new_scene_prompt", "instruction",
-                                                      "render_id", "rejected", "reason", "category", "guidance")},
+                                                      "render_id", "rejected", "reason", "category", "guidance",
+                                                      "crop", "inpaint_s")},
                              "images": {n: f"/clients/img/{j['job_id']}/{a['attempt']}/{n}.png" for n in
-                                        ("render", "edit", "mask")}})
+                                        ("render", "edit", "mask") + (CROP_IMGS if (a.get("crop") or {}).get("box") else ())}})
         outcome = {"committed": "유지", "discarded": "되돌리기" if "자동" not in (j.get("discard_note") or "") else "자동 폐기",
                    "cancelled": "취소", "failed": "실패", "needs_redraw": "영역 다시"}.get(j["state"], j["state"])
         return {"job_id": j["job_id"], "kind": j["kind"], "state": j["state"], "outcome": outcome,
@@ -124,7 +128,7 @@ def build_clients(S) -> APIRouter:
     @r.get("/img/{job_id}/{attempt}/{name}.png")
     def img(job_id: str, attempt: int, name: str, req: Request):
         guard(req)
-        if name not in ("render", "edit", "mask") or S.engine.get(job_id) is None:
+        if name not in ("render", "edit", "mask") + CROP_IMGS or S.engine.get(job_id) is None:
             raise AppError(404, "JOB_NOT_FOUND", job_id)
         p = data / "jobs" / job_id / str(int(attempt)) / f"{name}.png"
         if not p.is_file():
@@ -232,6 +236,8 @@ DETAIL_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><met
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script>
 const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function cropView(a){const c=a.crop;if(!c)return '';if(c.off)return '<div class="cap">잘라 인페인팅 꺼짐(APP_INPAINT_CROP=0)</div>';if(!c.box)return `<div class="cap">자르지 않음: ${esc(c.reason||'')}</div>`;
+return `<div class="cap">잘라 인페인팅(S7): 상자 x=${c.box[0]} y=${c.box[1]} 한 변 ${c.box[2]} px → 1024² (×${c.scale}) · 마스크 상자 ${c.mask_bbox.join(',')} · 마스크 ${c.mask_px} px → 보낸 ${c.mask_px_sent} px · 자르기 ${c.pre_s}s · 붙이기 ${c.post_s}s · 인페인팅 전체 ${a.inpaint_s}s</div><div class="imgs">${['crop_render','crop_mask','crop_edit'].map(n=>`<a href="${a.images[n]}" target="_blank"><img src="${a.images[n]}" title="${n}"></a>`).join('')}</div><div class="cap">[자른 입력 | 자른 마스크 | 자른 결과(워커 출력)]</div>`}
 const ts=t=>t?new Date(t*1000).toLocaleString('ko-KR'):'';const aid=location.pathname.split('/').pop();
 // NORMALIZED(복셀 축) → three 월드: glbbuild 의 VOXEL_TO_GLB 와 같은 (x, z, −y). common.js:voxelToWorld 에서 xf 가 항등인 경우.
 const toW=v=>new THREE.Vector3(v[0],v[2],-v[1]);
@@ -264,7 +270,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n}">`).join('')}</div></div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n}">`).join('')}</div>${cropView(a)}</div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   <details><summary>LLM 호출 ${j.llm_calls.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력</th><th>출력</th></tr>${j.llm_calls.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr>`).join('')}</table></details>
   <details><summary>상태 이력</summary><pre>${esc(JSON.stringify(j.history,null,1))}</pre></details></details>`).join('')||'<div class="cap">편집 없음</div>';

@@ -54,6 +54,7 @@ class Settings:
     timeout_s: float = 600.0  # 실행 상태 10분
     review3d_s: float = 1800.0  # 3D 확인 30분
     max_attempts: int = 3
+    inpaint_crop: bool = True   # S7 APP_INPAINT_CROP: 마스크 주변만 잘라 인페인팅(기본 1)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -70,4 +71,5 @@ class Settings:
             render_mode=(os.environ.get("APP_RENDER_MODE") or "camera").strip(),
             mock_time_scale=float(os.environ.get("APP_MOCK_TIME_SCALE") or 1.0),
             mock_source=os.environ.get("APP_MOCK_SOURCE") or "sample-jeep",
+            inpaint_crop=_flag("APP_INPAINT_CROP", "1"),
         )
