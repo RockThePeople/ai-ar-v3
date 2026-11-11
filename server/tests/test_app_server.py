@@ -79,7 +79,7 @@ ALWAYS = ("job_id", "kind", "state", "stage", "asset_id", "is_mine", "progress",
 # ── health · 헤더 ──────────────────────────────────────────────────
 def test_health(env):
     h = env.get("/app/v1/health").json()
-    assert h["app_api"] == "1.0.3" and h["ok"] is True and h["contract_version"] == 4 and h["mock"] is False
+    assert h["app_api"] == "1.0.4" and h["ok"] is True and h["contract_version"] == 4 and h["mock"] is False
     assert set(h["workers"]) == {"a5000", "inpaint", "llm"}
 
 
@@ -407,28 +407,10 @@ def test_clients_cidr(env, monkeypatch):
     assert env.get("/clients").status_code == 200
 
 
-# ── S5: 앱 미리보기 좌우 반전(V1) ──────────────────────────────────
-def _png_rgb(w, h, f):
-    import struct
-    import zlib
-    raw = b"".join(b"\x00" + bytes(v for x in range(w) for v in f(x, y)) for y in range(h))
-    ch = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)  # noqa: E731
-    return b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + \
-        ch(b"IDAT", zlib.compress(raw)) + ch(b"IEND", b"")
-
-
-def test_preview_mirrored_for_app(env, monkeypatch):
-    from server.app.pngflip import decode_png, mirror_png
+# ── S5b: 미리보기는 저장본 그대로(app-api 1.0.4, V1 은 앱이 (x, z, y) 로 처리) ──
+def test_preview_bytes_equal_stored(env):
     aid = make_asset(env)
     jid = to_2d(env, aid)
-    p = env.tmp / "jobs" / jid / "1" / "render.png"
-    p.write_bytes(_png_rgb(8, 2, lambda x, y: (x * 30, y * 100, 7)))           # 왼쪽 어둡고 오른쪽 밝음
-    orig = decode_png(p.read_bytes())
-    got = decode_png(env.get(f"/app/v1/jobs/{jid}/preview/1/render.png").content)
-    assert (got == orig[:, ::-1, :]).all()                                      # 앱에는 좌우 반전
-    assert (decode_png(p.read_bytes()) == orig).all()                           # 저장 원본은 그대로
-    assert (decode_png(env.get(f"/clients/img/{jid}/1/render.png").content) == orig).all()
-    assert (decode_png(env.get(f"/clients/img/{jid}/1/render.png?mirror=1").content) == orig[:, ::-1, :]).all()
-    assert (decode_png(mirror_png(mirror_png(p.read_bytes()))) == orig).all()  # 두 번 뒤집으면 원래대로
-    env.eng.s.preview_mirror = False                                            # APP_PREVIEW_MIRROR=0
-    assert (decode_png(env.get(f"/app/v1/jobs/{jid}/preview/1/render.png").content) == orig).all()
+    for n in ("render", "edit", "mask"):
+        p = env.tmp / "jobs" / jid / "1" / f"{n}.png"
+        assert env.get(f"/app/v1/jobs/{jid}/preview/1/{n}.png").content == p.read_bytes()

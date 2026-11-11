@@ -208,11 +208,6 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         p = S.settings.data_dir / "jobs" / job_id / str(int(attempt)) / f"{name}.png"
         if not p.is_file():
             raise AppError(404, "JOB_NOT_FOUND", "미리보기 없음")
-        if S.settings.preview_mirror:
-            # S5(V1): 폰(Unity, 왼손)은 서버 렌더(Blender, 오른손)의 좌우 거울상이다. 보낼 때만 뒤집는다.
-            # 저장 원본은 서버 내부 방향 그대로 두고(인페인팅·A5000 편집 입력), 반전본은 mirror_cache 에 둔다.
-            from .pngflip import mirrored_file
-            p = mirrored_file(p, S.settings.data_dir / "mirror_cache", f"{job_id}/{int(attempt)}/{name}.png")
         return FileResponse(p, media_type="image/png")
 
     # ── 평가 ───────────────────────────────────────────────────────
