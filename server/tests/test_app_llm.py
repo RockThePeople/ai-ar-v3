@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from server.app.llm_adapter import ClaudeAdapter, FakeAdapter, LLMInvalid, LLMUnavailable, make_adapter
 from server.app.main import create_app
+from server.tests.test_app_server import env  # noqa: F401  (S8 시험이 같은 fixture 사용)
 from server.tests.app_fakes import FakeBackend
 from server.tests.test_app_server import A, Clock, _settings, edit, err, job, make_asset
 
@@ -229,3 +230,57 @@ def test_detail_example_is_not_the_jeep():
     """S6 추가: 예시가 지프면 'A compact off-road jeep' 입력에서 예시를 그대로 베낀다(Haiku 실측) → 다른 물체로."""
     from server.app.llm_adapter import DETAIL_SYSTEM
     assert "jeep" not in DETAIL_SYSTEM.lower() and "winch" not in DETAIL_SYSTEM.lower()
+
+
+# ── S8: prompt 거절 뒤 같은 문장이면 1회 더 ──────────────────────────────
+def _s8(c, outputs):
+    """refine 출력을 차례로 돌려주는 가짜. 첫 시도용 1개 + 거절 뒤 출력들."""
+    calls = []
+    seq = list(outputs)
+
+    def refine(scene, instruction, hist, job_id="", changed_from=None):
+        calls.append(changed_from)
+        nsp = seq.pop(0)
+        return {"target_element": "the man", "replacement": "Ironman", "op": "replace", "new_scene_prompt": nsp}
+    c.eng.llm.refine = refine
+    return calls
+
+
+def _reject_prompt(c, jid):
+    from server.tests.test_app_server import A
+    j = c.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "프롬프트를 잘못 이해함"}, headers=A).json()
+    assert j["review"]["category"] == "prompt"
+    c.eng.drain()
+    return c.eng.get(jid)
+
+
+def test_s8_same_sentence_retried_and_changes(env):
+    from server.tests.test_app_server import make_asset, to_2d
+    calls = _s8(env, ["An Ironman riding.", "an ironman  riding", "A man in red Ironman armor riding"])
+    jid = to_2d(env, make_asset(env))
+    j = _reject_prompt(env, jid)
+    assert calls[0] is None and calls[1] is None and calls[2]["prev"] == "An Ironman riding."
+    assert calls[2]["reason"] == "프롬프트를 잘못 이해함" and calls[2]["guidance"]
+    a = j["attempts"][-1]
+    assert a["new_scene_prompt"] == "A man in red Ironman armor riding" and a["refine_retry"] and not a["refine_unchanged"]
+    assert not j.get("refine_unchanged")
+
+
+def test_s8_still_same_proceeds_and_marks(env):
+    from server.tests.test_app_server import make_asset, to_2d
+    _s8(env, ["An Ironman riding", "An Ironman riding.", "AN IRONMAN RIDING"])
+    jid = to_2d(env, make_asset(env))
+    j = _reject_prompt(env, jid)
+    assert j["state"] == "awaiting_2d_review" and j["attempt"] == 2
+    a = j["attempts"][-1]
+    assert a["refine_unchanged"] is True and a["seed"] == 1 and j["refine_unchanged"] is True
+    d = env.get(f"/clients/api/assets/{j['asset_id']}").json()
+    assert [x for x in d["jobs"] if x["job_id"] == jid][0]["attempts"][-1]["refine_unchanged"] is True
+
+
+def test_s8_changed_sentence_no_extra_call(env):
+    from server.tests.test_app_server import make_asset, to_2d
+    calls = _s8(env, ["An Ironman riding", "A golden Ironman riding"])
+    jid = to_2d(env, make_asset(env))
+    j = _reject_prompt(env, jid)
+    assert len(calls) == 2 and "refine_retry" not in j["attempts"][-1]

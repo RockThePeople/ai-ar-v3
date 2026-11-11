@@ -79,7 +79,7 @@ def build_clients(S) -> APIRouter:
         for a in j.get("attempts", []):
             attempts.append({**{k: a.get(k) for k in ("attempt", "seed", "prompt", "new_scene_prompt", "instruction",
                                                       "render_id", "rejected", "reason", "category", "guidance",
-                                                      "crop", "inpaint_s")},
+                                                      "crop", "inpaint_s", "refine_retry", "refine_unchanged")},
                              "images": {n: f"/clients/img/{j['job_id']}/{a['attempt']}/{n}.png" for n in
                                         ("render", "edit", "mask") + (CROP_IMGS if (a.get("crop") or {}).get("box") else ())}})
         outcome = {"committed": "유지", "discarded": "되돌리기" if "자동" not in (j.get("discard_note") or "") else "자동 폐기",
@@ -270,7 +270,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n}">`).join('')}</div>${cropView(a)}</div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n}">`).join('')}</div>${cropView(a)}</div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   <details><summary>LLM 호출 ${j.llm_calls.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력</th><th>출력</th></tr>${j.llm_calls.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr>`).join('')}</table></details>
   <details><summary>상태 이력</summary><pre>${esc(JSON.stringify(j.history,null,1))}</pre></details></details>`).join('')||'<div class="cap">편집 없음</div>';

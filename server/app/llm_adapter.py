@@ -144,10 +144,12 @@ class FakeAdapter:
         self.on_call = on_call or (lambda r: None)
         self.last_ok: Optional[bool] = None
 
-    def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "") -> dict:
+    def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "",
+               changed_from: Optional[dict] = None) -> dict:
         out = fake_refine(scene_prompt, instruction, reject_history[-1] if reject_history else None)
-        self.on_call({"job_id": job_id, "kind": "refine", "model": self.model, "input": {"scene": scene_prompt,
-                      "instruction": instruction, "history": reject_history}, "output": out, "latency_s": 0.0,
+        self.on_call({"job_id": job_id, "kind": "refine_changed" if changed_from else "refine", "model": self.model,
+                      "input": {"scene": scene_prompt, "instruction": instruction, "history": reject_history,
+                                "changed_from": changed_from}, "output": out, "latency_s": 0.0,
                       "in_tokens": 0, "out_tokens": 0, "retried": False, "ok": True, "error": None})
         return out
 
@@ -254,13 +256,23 @@ class ClaudeAdapter:
                 return f"{k} 에 좌표 꼴 숫자가 있다"
         return None
 
-    def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "") -> dict:
+    def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "",
+               changed_from: Optional[dict] = None) -> dict:
+        """changed_from = {prev, reason, guidance}: S8 — prompt 거절 뒤 같은 문장이 나와 다시 부를 때."""
         hist = "\n".join(f"- {h}" for h in reject_history) if reject_history else "(none)"
         user = (f"current scene: {json.dumps(scene_prompt or '', ensure_ascii=False)}\n"
                 f"instruction: {json.dumps(instruction, ensure_ascii=False)}\n"
                 f"rejection feedback from earlier attempts:\n{hist}")
-        return self._call("refine", REFINE_SYSTEM, user, REFINE_SCHEMA, self.check_refine, job_id,
-                          {"scene": scene_prompt, "instruction": instruction, "history": reject_history})
+        if changed_from:
+            user += ("\n\nThe previous new_scene_prompt "
+                     f"{json.dumps(changed_from.get('prev') or '', ensure_ascii=False)} was REJECTED by the user. "
+                     f"Rejection reason: {json.dumps(changed_from.get('reason') or '', ensure_ascii=False)}. "
+                     f"Guidance: {json.dumps(changed_from.get('guidance') or '', ensure_ascii=False)}. "
+                     "Write a different new_scene_prompt that actually changes how the target element is described, "
+                     "reflecting the reason and guidance. Keep the same detail level and keep the rest of the scene.")
+        return self._call("refine_changed" if changed_from else "refine", REFINE_SYSTEM, user, REFINE_SCHEMA,
+                          self.check_refine, job_id, {"scene": scene_prompt, "instruction": instruction,
+                                                      "history": reject_history, "changed_from": changed_from})
 
     # ── S6 생성 프롬프트 상세화(S4 영어 변환을 대체, 영어 입력도 항상 거친다) ──
     @staticmethod

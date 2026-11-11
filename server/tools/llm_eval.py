@@ -189,6 +189,39 @@ def jeep_repeat(ad, calls, out, n):
     Path(out).write_text(json.dumps({"model": ad.model, "input": p, "runs": rows}, indent=1, ensure_ascii=False))
 
 
+# S8: Unity C4 j-85929860efd1 시도 2(prompt 거절) 상황
+S8_SCENE = ("A wooden storage crate, a large white painted letter R on the front panel, slatted wooden sides, "
+            "a flat rectangular lid, sturdy corner posts, metal corner brackets, natural brown wood")
+S8_INS = "make the letter R red"
+S8_PREV = ("A wooden storage crate, a large letter R painted in red on the front panel, slatted wooden sides, a flat "
+           "rectangular lid, sturdy corner posts, metal corner brackets, natural brown wood")
+S8_REASON = "this version is totally not what I asked"
+S8_GUIDE = ("The user says the preview is not what they asked for, with no specific detail. Re-read the original request "
+            "and keep the edit closely tied to it: recolor only the existing white letter R to red, keep it large and on "
+            "the front panel, and avoid adding unrequested elements like the extra crate description or changed wood styling.")
+
+
+def s8(ad, calls, out, n, scene, force=False):
+    from server.app.engine import _norm
+    rows = []
+    for i in range(1, n + 1):
+        n0 = len(calls)
+        first = ad.refine(scene, S8_INS, [S8_GUIDE])
+        same1 = _norm(first["new_scene_prompt"]) == _norm(S8_PREV)
+        second = same2 = None
+        if same1 or force:
+            second = ad.refine(scene, S8_INS, [S8_GUIDE], changed_from={"prev": S8_PREV, "reason": S8_REASON,
+                                                                        "guidance": S8_GUIDE})
+            same2 = _norm(second["new_scene_prompt"]) == _norm(S8_PREV)
+        cs = calls[n0:]
+        rows.append({"i": i, "first": first, "first_same": same1, "second": second, "second_same": same2,
+                     "calls": [{k: c[k] for k in ("kind", "latency_s", "in_tokens", "out_tokens", "retried")} for c in cs]})
+        print(f"S8-{i} same1={same1} same2={same2}\n  1: {first['new_scene_prompt']}\n  2: {second and second['new_scene_prompt']}")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(json.dumps({"model": ad.model, "scene": scene, "instruction": S8_INS, "prev": S8_PREV,
+                                     "reason": S8_REASON, "guidance": S8_GUIDE, "runs": rows}, indent=1, ensure_ascii=False))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -196,10 +229,16 @@ def main() -> None:
     ap.add_argument("--s4", action="store_true", help="S4: 보정 20건 부정어 확인(+ 생성 6건)")
     ap.add_argument("--s6", action="store_true", help="S6: 거친 입력 6건 상세화·보정")
     ap.add_argument("--jeep-repeat", type=int, default=0, help="S6 추가: 'A compact off-road jeep' 상세화 n 회")
+    ap.add_argument("--s8", type=int, default=0, help="S8: j-85929860efd1 시도 2 상황 재현 n 회")
+    ap.add_argument("--s8-scene", default=S8_SCENE)
+    ap.add_argument("--s8-force", action="store_true", help="첫 문장이 달라도 재요청 경로를 부른다(경로 확인용)")
     a = ap.parse_args()
     load_env_file()
     calls: list = []
     ad = ClaudeAdapter(model=a.model, on_call=calls.append)
+    if a.s8:
+        s8(ad, calls, a.out, a.s8, a.s8_scene, a.s8_force)
+        return
     if a.jeep_repeat:
         jeep_repeat(ad, calls, a.out, a.jeep_repeat)
         return
