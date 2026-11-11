@@ -103,7 +103,7 @@ def test_quality_and_region(tmp_path):
     j = c.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "흐릿함"}, headers=A).json()
     assert j["state"] == "inpainting" and j["attempt"] == 2
     c.eng.drain()
-    assert ("inpaint_args", "An Ironman riding", 1) in c.eng.be.calls             # 같은 프롬프트, seed + 1
+    assert ("inpaint_args", "An Ironman riding" + INPAINT_SUFFIX, 1) in c.eng.be.calls   # 같은 프롬프트, seed + 1
     j = c.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "다른 바퀴"}, headers=A).json()
     assert j["state"] == "needs_redraw"
 
@@ -138,17 +138,24 @@ def test_llm_calls_logged(tmp_path, monkeypatch):
     assert [x["kind"] for x in calls] == ["refine"] and calls[0]["model"] == "rule-based"
 
 
-# ── S4: 생성 프롬프트 영어 변환, 부정 표현 금지 ─────────────────────
-from server.app.llm_adapter import is_english  # noqa: E402
+# ── S4·S6: 생성 프롬프트 상세화(영어도 거침), 부정 표현 금지, 길이 상한 ──────────
+from server.app.engine import INPAINT_SUFFIX  # noqa: E402
+from server.app.llm_adapter import MAX_TEXT, is_english  # noqa: E402
+
+PAPER = ("A compact off-road jeep, three-quarter front view, centered, full object visible, chunky all-terrain tires, "
+         "a black front winch bumper, a side air-intake snorkel on the right front pillar, a spare tire mounted on the "
+         "rear door, olive green paint, simple clean 3D game asset style, pure white background, no shadow")
+DETAILED = ("A compact off-road jeep, chunky all-terrain tires, a black front winch bumper, a side air-intake snorkel on "
+            "the right front pillar, a spare tire mounted on the rear door, olive green paint")
 
 
-class TransLLM(StubLLM):
-    def __init__(self, result):
-        super().__init__()
+class DetailLLM(StubLLM):
+    def __init__(self, result, refines=()):
+        super().__init__(refines=refines)
         self.result = result
 
-    def translate_prompt(self, prompt, job_id=""):
-        self.calls.append(("translate", prompt))
+    def detail_prompt(self, prompt, job_id=""):
+        self.calls.append(("detail", prompt))
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
@@ -160,26 +167,39 @@ def _gen(c, prompt):
     return job(c, r.json()["job_id"]), c.eng.get(r.json()["job_id"])
 
 
-def test_translate_korean_prompt(tmp_path):
-    llm = TransLLM("a blue ceramic teapot")
+def test_detail_always_runs_and_sets_scene(tmp_path):
+    llm = DetailLLM(DETAILED)
     c = _env(tmp_path, llm)
-    j, raw = _gen(c, "파란 도자기 찻주전자")
-    assert j["state"] == "committed" and ("translate", "파란 도자기 찻주전자") in llm.calls
-    assert raw["prompt_en"] == "a blue ceramic teapot" and raw["translate"] == {"ok": True}
-    assert c.get("/app/v1/qr/st-01", headers=A).json()["scene_prompt"] == "a blue ceramic teapot"
+    j, raw = _gen(c, "A compact off-road jeep")                                   # 영어도 거친다
+    assert j["state"] == "committed" and ("detail", "A compact off-road jeep") in llm.calls
+    assert raw["prompt_en"] == DETAILED and raw["translate"] == {"ok": True, "mode": "detail"}
+    assert c.get("/app/v1/qr/st-01", headers=A).json()["scene_prompt"] == DETAILED   # 꼬리 없이
 
 
-def test_translate_skips_english_and_survives_failure(tmp_path):
-    llm = TransLLM(LLMUnavailable("down"))
-    c = _env(tmp_path, llm)
-    j, raw = _gen(c, "a red pickup truck")
-    assert raw["translate"] == {"skipped": "english"} and not [x for x in llm.calls if x[0] == "translate"]
-    c.delete("/app/v1/qr/st-01", headers=A)
-    j, raw = _gen(c, "빨간 트럭")                                                 # LLM 실패 → 원문으로 생성 계속
+def test_detail_failure_falls_back_to_raw(tmp_path):
+    c = _env(tmp_path, DetailLLM(LLMUnavailable("down")))
+    j, raw = _gen(c, "빨간 트럭")
     assert j["state"] == "committed" and raw["prompt_en"] == "빨간 트럭" and raw["translate"]["ok"] is False
 
 
-def test_negation_rejected():
+def test_inpaint_prompt_gets_style_suffix(tmp_path):
+    r = {"target_element": "the bumper", "replacement": "a chrome bull bar", "op": "replace",
+         "new_scene_prompt": DETAILED.replace("a black front winch bumper", "a chrome steel bull bar")}
+    llm = DetailLLM(DETAILED, refines=[r])
+    c = _env(tmp_path, llm)
+    c.eng.llm, keep = FakeAdapter(), llm
+    aid = make_asset(c)
+    c.eng.llm = keep
+    jid = edit(c, aid).json()["job_id"]
+    c.eng.drain()
+    want = r["new_scene_prompt"] + INPAINT_SUFFIX
+    assert ("inpaint_args", want, 0) in c.eng.be.calls
+    a = c.eng.get(jid)["attempts"][0]
+    assert a["prompt"] == want and a["new_scene_prompt"] == r["new_scene_prompt"]
+    assert "view" not in INPAINT_SUFFIX and "background" not in INPAINT_SUFFIX
+
+
+def test_negation_style_and_length_checks():
     ok = {"target_element": "the armrests", "replacement": "plain open seat sides", "op": "remove",
           "new_scene_prompt": "a wooden chair with plain open sides and a knob on the north side"}
     assert ClaudeAdapter.check_refine(ok) is None                                  # knob·north 는 통과
@@ -187,6 +207,19 @@ def test_negation_rejected():
                 "slats instead of a panel"):
         assert "부정" in ClaudeAdapter.check_refine({**ok, "new_scene_prompt": bad}), bad
     assert "부정" in ClaudeAdapter.check_refine({**ok, "replacement": "nothing"})
-    assert ClaudeAdapter.check_translate({"prompt_en": "a teapot with no lid"}) and \
-        ClaudeAdapter.check_translate({"prompt_en": "a blue teapot"}) is None
-    assert is_english("a man’s red car — 2 doors") and not is_english("빨간 차")
+    long313 = PAPER.replace(", no shadow", "")                                    # 꼬리의 'no shadow' 는 서버 문구
+    assert len(PAPER) >= 313 and ClaudeAdapter.check_refine({**ok, "new_scene_prompt": long313}) is None
+    assert ClaudeAdapter.check_refine({**ok, "new_scene_prompt": "x " * 401})     # 800자 초과
+    assert ClaudeAdapter.check_detail({"subject_detailed": DETAILED}) is None
+    assert "스타일" in ClaudeAdapter.check_detail({"subject_detailed": DETAILED + ", pure white background"})
+    assert "부정" in ClaudeAdapter.check_detail({"subject_detailed": "a teapot with no lid"})
+    assert ClaudeAdapter.check_detail({"subject_detailed": "a " * 401})
+    assert MAX_TEXT == 800 and is_english("a man’s red car — 2 doors") and not is_english("빨간 차")
+
+
+def test_t2i_template_tail():
+    from server import t2i
+    eff = t2i.DEFAULT_TEMPLATE.replace("{subject}", DETAILED)
+    parts = lambda x: sorted(t.strip() for t in x.split(","))                      # noqa: E731
+    assert parts(eff) == parts(PAPER)                                              # 논문 X3 문장과 같은 구절(순서만 다름)
+    assert eff.endswith("simple clean 3D game asset style, pure white background, no shadow")

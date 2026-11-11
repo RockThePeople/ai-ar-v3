@@ -74,8 +74,8 @@ def build_clients(S) -> APIRouter:
         res = j.get("result") or {}
         attempts = []
         for a in j.get("attempts", []):
-            attempts.append({**{k: a.get(k) for k in ("attempt", "seed", "prompt", "render_id", "rejected", "reason",
-                                                      "category", "guidance")},
+            attempts.append({**{k: a.get(k) for k in ("attempt", "seed", "prompt", "new_scene_prompt", "instruction",
+                                                      "render_id", "rejected", "reason", "category", "guidance")},
                              "images": {n: f"/clients/img/{j['job_id']}/{a['attempt']}/{n}.png" for n in
                                         ("render", "edit", "mask")}})
         outcome = {"committed": "유지", "discarded": "되돌리기" if "자동" not in (j.get("discard_note") or "") else "자동 폐기",
@@ -86,6 +86,7 @@ def build_clients(S) -> APIRouter:
                 "elapsed_s": round(end - j["created_at"], 1), "device": (j.get("device") or "")[:10],
                 "instruction": j.get("instruction"), "prompt": j.get("prompt"), "prompt_en": j.get("prompt_en"),
                 "translate": j.get("translate"),
+                "t2i_effective": ((j.get("t2i") or {}).get("timing") or {}).get("prompt_effective"),
                 "seed": j.get("seed"), "t2i": bool(j.get("t2i")),
                 "refine": j.get("refine"), "camera": j.get("camera"), "n_cells": len(j.get("cells") or []),
                 "attempts": attempts, "base_version": j.get("base_version") or res.get("base_version"),
@@ -255,7 +256,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
  document.getElementById('title').textContent=`${d.asset_id} · QR ${d.qr_id??'-'} · ${d.status}`;
  document.getElementById('meta').innerHTML=`생성 ${ts(d.created_at)} · 생성자 ${esc(d.creator)} · 판본 ${d.version} · 편집 ${d.commits}/${d.edits} · 평가 ${d.rating_avg??'-'} (${d.ratings})${d.deleted_at?' · 삭제 '+ts(d.deleted_at):''}<br>장면 문장: ${esc(d.scene_prompt)}`;
  const g=d.jobs.find(j=>j.kind==='generate');
- document.getElementById('gen').innerHTML=g?`<div>프롬프트 원문: <b>${esc(g.prompt)}</b> · 영어: ${esc(g.prompt_en)} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM 변환':'변환 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span> · seed ${g.seed} · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
+ document.getElementById('gen').innerHTML=g?`<div>원문: <b>${esc(g.prompt)}</b> · seed ${g.seed} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM '+(g.translate.mode==='detail'?'상세화':'변환'):'LLM 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span></div><div>→ subject_detailed: ${esc(g.prompt_en)}</div><div>→ 실제 T2I 문장: <span class="cap">${esc(g.t2i_effective||'(기록 없음 — S6 이전 생성)')}</span></div><div> · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
  init3d();const o=opts();['selA','selB'].forEach((id,i)=>{const s=document.getElementById(id);s.innerHTML=o.map(x=>`<option value="${x.k}">${esc(x.cap)}</option>`).join('');s.onchange=()=>pick(i);});
  if(o.length){document.getElementById('selA').value=o[0].k;document.getElementById('selB').value=o[o.length-1].k;pick(0);pick(1);}
  const qj=new URLSearchParams(location.search).get('job');
@@ -263,7 +264,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n}">`).join('')}</div></div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n}">`).join('')}</div></div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   <details><summary>LLM 호출 ${j.llm_calls.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력</th><th>출력</th></tr>${j.llm_calls.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr>`).join('')}</table></details>
   <details><summary>상태 이력</summary><pre>${esc(JSON.stringify(j.history,null,1))}</pre></details></details>`).join('')||'<div class="cap">편집 없음</div>';

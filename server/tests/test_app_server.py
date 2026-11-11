@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.app.config import Settings
+from server.app.engine import INPAINT_SUFFIX
 from server.app.main import create_app
 from server.app.llm_adapter import FakeAdapter
 from server.tests.app_fakes import BASE_KEYS, FakeBackend
@@ -131,7 +132,7 @@ def test_edit_to_2d_review_and_preview(env):
     for n in ("render", "edit", "mask"):
         r = env.get(j["preview"][f"{n}_url"])
         assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
-    assert ("inpaint_args", j["refine"]["new_scene_prompt"], 0) in env.be.calls
+    assert ("inpaint_args", j["refine"]["new_scene_prompt"] + INPAINT_SUFFIX, 0) in env.be.calls
 
 
 def test_reject_quality_prompt_then_retry_limit(env):
@@ -142,7 +143,7 @@ def test_reject_quality_prompt_then_retry_limit(env):
     assert j["state"] == "inpainting" and j["review"]["category"] == "quality" and j["attempt"] == 2
     env.eng.drain()
     assert sum(1 for c in env.be.calls if c == ("render",)) == n_render          # 품질 재시도는 렌더 재사용
-    assert ("inpaint_args", job(env, jid)["refine"]["new_scene_prompt"], 1) in env.be.calls   # seed = 0 + attempt − 1
+    assert ("inpaint_args", job(env, jid)["refine"]["new_scene_prompt"] + INPAINT_SUFFIX, 1) in env.be.calls   # seed = 0 + attempt − 1
     assert job(env, jid)["preview"]["attempt"] == 2
     j = env.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "프롬프트를 잘못 이해함"}, headers=A).json()
     assert j["state"] == "refining" and j["review"]["category"] == "prompt" and j["attempt"] == 3
