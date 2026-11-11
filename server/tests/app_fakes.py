@@ -69,14 +69,16 @@ class FakeBackend:
         self._f("render")
         return {"render_id": f"r-{len(self.calls)}", "render_png": png(v=10), "mask_png": png(v=255), "record": {}}
 
-    def inpaint(self, render_png, mask_png, prompt, seed):
+    def inpaint(self, render_png, mask_png, prompt, seed, info=None):
+        if info is not None:
+            info.update({"form": {"prompt": prompt, "seed": str(seed)}, "settings": {"steps": 50}, "settings_source": "fake"})
         self._f("inpaint")
         self.calls.append(("inpaint_args", prompt, seed))
         return png(v=200 + seed)
 
     def edit3d(self, asset_id, base_version, render, edit_png, cells, idem, progress):
         self._f("edit3d")
-        return {"to_version": base_version + 1, "worker_job_id": "wj-1", "stats": {},
+        return {"to_version": base_version + 1, "worker_job_id": "wj-1", "stats": {}, "raw": {"meta": {"seed": 0}, "text": "텍스트 입력 없음(이미지 조건)"},
                 "blobs": {"8_8_8": cbin("8_8_8", base_version), "10_8_8": cbin("10_8_8")}, "removed": ["9_8_8"]}
 
     def commit(self, asset_id, to_version, idem):

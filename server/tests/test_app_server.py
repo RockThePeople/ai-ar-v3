@@ -427,9 +427,9 @@ def _small_mask_render(env):
     seen = []
     orig = env.be.inpaint
 
-    def inpaint(rp, mp, prompt, seed):
+    def inpaint(rp, mp, prompt, seed, info=None):
         seen.append(mp)
-        return orig(rp, mp, prompt, seed)
+        return orig(rp, mp, prompt, seed, info=info)
     env.be.render = lambda *a: {"render_id": "r-s7", "render_png": encode_png(r), "mask_png": encode_png(m), "record": {}}
     env.be.inpaint = inpaint
     return r, m, seen
@@ -465,3 +465,38 @@ def test_crop_inpaint_off_is_old_behavior(env):
     from server.tests.app_fakes import png
     assert seen[0] == (env.tmp / "jobs" / jid / "render" / "mask.png").read_bytes()   # 원래 마스크 그대로 보냄
     assert env.get(f"/app/v1/jobs/{jid}/preview/1/edit.png", headers=A).content == png(v=200)  # 워커 결과 그대로
+
+
+# ── S9: /clients 실제 입력 전문 ─────────────────────────────────────
+def test_clients_raw_fields(env):
+    aid = make_asset(env)
+    jid = to_2d(env, aid)
+    env.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": True}, headers=A)
+    env.eng.drain()
+    d = env.get(f"/clients/api/assets/{aid}").json()
+    e = [x for x in d["jobs"] if x["job_id"] == jid][0]
+    a = e["attempts"][0]["inpaint_raw"]
+    assert a["form"]["prompt"].endswith(INPAINT_SUFFIX) and a["settings"] and a["settings_source"]
+    assert e["raw_edit3d"]["text"].startswith("텍스트 입력 없음") and e["raw_edit3d"]["attempt"] == 1
+    assert all("attempts" in c for c in e["llm_calls"])
+    full = env.get(e["job_json"]).json()
+    assert full["job"]["job_id"] == jid and isinstance(full["llm_calls"], list)
+    page = env.get(f"/clients/{aid}").text
+    assert "llmRaw" in page and "e3Raw" in page and "inpRaw" in page
+
+
+def test_clients_page_js_parses(env, tmp_path):
+    """S9: 페이지 JS 문법 검사(Python 문자열 안 JS 의 \\n·\\s 이스케이프 실수 방지). node 가 없으면 건너뜀."""
+    import re
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    aid = make_asset(env)
+    for url in ("/clients", f"/clients/{aid}"):
+        js = "\n;\n".join(re.findall(r"<script>(.*?)</script>", env.get(url).text, re.S))
+        f = tmp_path / "p.js"
+        f.write_text(js)
+        r = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
