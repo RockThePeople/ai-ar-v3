@@ -177,7 +177,12 @@ class Engine:
             prompt_en, j["translate"] = raw, {"ok": False, "mode": "detail", "error": f"{type(e).__name__}: {e}"}
         j["prompt_en"] = prompt_en                      # = subject_detailed(꼬리 없음), 첫 scene_prompt
         self._save(j)
-        out = self.be.generate(j["asset_id"], prompt_en, int(j["seed"]), self._progress(j))
+        trace: dict = {}                                  # S10: A5000 접수·폴링 회차 기록(실패해도 남긴다)
+        j.setdefault("a5000_trace", {})["generate"] = trace
+        try:
+            out = self.be.generate(j["asset_id"], prompt_en, int(j["seed"]), self._progress(j), trace=trace)
+        finally:
+            self._save(j)
         if out.get("png"):                               # T2I RGBA 보관(S3)
             d = self.s.data_dir / "jobs" / j["job_id"]
             d.mkdir(parents=True, exist_ok=True)
@@ -304,8 +309,13 @@ class Engine:
         d = self._preview_dir(j, j["attempt"])
         render = {"render_id": j["render"]["render_id"], "render_png": (d / "render.png").read_bytes(),
                   "mask_png": (d / "mask.png").read_bytes()}
-        out = self.be.edit3d(j["asset_id"], j["base_version"], render, (d / "edit.png").read_bytes(), j["cells"],
-                             j["idem"], self._progress(j))
+        trace: dict = {"attempt": j["attempt"]}           # S10: A5000 접수·폴링 회차 기록(실패해도 남긴다)
+        j.setdefault("a5000_trace", {})["edit3d"] = trace
+        try:
+            out = self.be.edit3d(j["asset_id"], j["base_version"], render, (d / "edit.png").read_bytes(), j["cells"],
+                                 j["idem"], self._progress(j), trace=trace)
+        finally:
+            self._save(j)
         if j["state"] != "editing_3d":
             return
         self._set(j, stage="chunking", progress=0.95)
