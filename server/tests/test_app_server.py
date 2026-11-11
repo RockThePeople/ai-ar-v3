@@ -500,3 +500,19 @@ def test_clients_page_js_parses(env, tmp_path):
         f.write_text(js)
         r = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
+
+
+def test_clients_raw_links_crop_and_refine_retry(env):
+    """S9 + S7: 잘라 보냈으면 전문에 자른 입력이 남는다. S9 + S8: 재요청 시도 표시와 llm 호출 기록이 함께 보인다."""
+    import hashlib
+    env.eng.s.inpaint_crop = True
+    _small_mask_render(env)
+    aid = make_asset(env)
+    jid = to_2d(env, aid)
+    d = env.get(f"/clients/api/assets/{aid}").json()
+    a = [x for x in d["jobs"] if x["job_id"] == jid][0]["attempts"][0]
+    sent = env.get(a["images"]["crop_render"]).content
+    assert a["crop"]["box"] and a["inpaint_raw"]["form"]["seed"] == "0"
+    assert ("crop_render" in a["images"]) and hashlib.sha256(sent).hexdigest()   # 자른 입력 이미지가 보인다
+    page = env.get(f"/clients/{aid}").text
+    assert "cropView(a)}${inpRaw(a,j)}" in page and "refine_retry" in page
