@@ -21,7 +21,10 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
-from .llm_adapter import LLMInvalid, LLMUnavailable, is_english, make_adapter
+from .llm_adapter import LLMInvalid, LLMUnavailable, make_adapter
+
+#: S6: 인페인팅 문장 꼬리. 시점·배경 문구는 넣지 않는다(조건 렌더가 라쏘 시점이다)
+INPAINT_SUFFIX = ", simple clean 3D game asset style"
 from .config import Settings
 from .store import ChunkStore, Db
 
@@ -158,17 +161,15 @@ class Engine:
 
     def _run_generate(self, j: dict) -> None:
         self._set(j, "generating", "t2i", 0.0)
-        # S4: 계약 3.2 "서버가 영어로 바꾼다". 이미 영어면 그대로, LLM 실패면 원문으로 진행(생성은 막지 않는다)
+        # S6: 거친 입력을 상세 물체 묘사(subject_detailed)로 바꾼다. 영어 입력도 항상 거친다(계약 3.2 영어 변환 포함).
+        # T2I 는 여기에 서버 고정 꼬리를 붙인다(server/t2i.py DEFAULT_TEMPLATE). LLM 실패면 원문으로 진행(생성은 막지 않는다)
         raw = j["prompt"].strip()
-        if is_english(raw):
-            prompt_en, j["translate"] = raw, {"skipped": "english"}
-        else:
-            try:
-                prompt_en = self.llm.translate_prompt(raw, job_id=j["job_id"])
-                j["translate"] = {"ok": True}
-            except (LLMInvalid, LLMUnavailable) as e:
-                prompt_en, j["translate"] = raw, {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        j["prompt_en"] = prompt_en
+        try:
+            prompt_en = self.llm.detail_prompt(raw, job_id=j["job_id"])
+            j["translate"] = {"ok": True, "mode": "detail"}
+        except (LLMInvalid, LLMUnavailable) as e:
+            prompt_en, j["translate"] = raw, {"ok": False, "mode": "detail", "error": f"{type(e).__name__}: {e}"}
+        j["prompt_en"] = prompt_en                      # = subject_detailed(꼬리 없음), 첫 scene_prompt
         self._save(j)
         out = self.be.generate(j["asset_id"], prompt_en, int(j["seed"]), self._progress(j))
         if out.get("png"):                               # T2I RGBA 보관(S3)
@@ -248,7 +249,8 @@ class Engine:
         rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
         rpng, mpng = (rd / "render.png").read_bytes(), (rd / "mask.png").read_bytes()
         seed = 0 + j["attempt"] - 1                       # 내부 규약 5절: 기본 seed + attempt − 1
-        edit = self.be.inpaint(rpng, mpng, j["refine"]["new_scene_prompt"], seed)
+        inpaint_prompt = j["refine"]["new_scene_prompt"].rstrip(" .") + INPAINT_SUFFIX
+        edit = self.be.inpaint(rpng, mpng, inpaint_prompt, seed)
         if j["state"] != "inpainting":
             return
         d.mkdir(parents=True, exist_ok=True)
@@ -258,7 +260,8 @@ class Engine:
         base = f"/app/v1/jobs/{j['job_id']}/preview/{j['attempt']}"
         j["preview"] = {"attempt": j["attempt"], "render_url": f"{base}/render.png",
                         "edit_url": f"{base}/edit.png", "mask_url": f"{base}/mask.png"}
-        j["attempts"].append({"attempt": j["attempt"], "seed": seed, "prompt": j["refine"]["new_scene_prompt"],
+        j["attempts"].append({"attempt": j["attempt"], "seed": seed, "prompt": inpaint_prompt,
+                              "new_scene_prompt": j["refine"]["new_scene_prompt"], "instruction": j["instruction"],
                               "render_id": j["render"]["render_id"], "t": self.clock()})
         self._set(j, "awaiting_2d_review", "inpainting", 1.0)
 

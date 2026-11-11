@@ -87,7 +87,7 @@ def s4(ad, calls, out):
             print(f"T {lang} {p} → (영어, 그대로)")
             continue
         try:
-            en, err = ad.translate_prompt(p), None
+            en, err = ad.detail_prompt(p), None
         except (LLMInvalid, LLMUnavailable) as e:
             en, err = None, f"{type(e).__name__}: {e}"
         c = calls[n0]
@@ -119,15 +119,93 @@ def s4(ad, calls, out):
     print("SUMMARY", json.dumps(res["summary"], ensure_ascii=False))
 
 
+S6_GEN = [("A compact off-road jeep", "en"), ("a golden tea pot", "en"), ("검은 오토바이를 탄 남자", "ko"),
+          ("빨간 목도리를 한 눈사람", "ko")]
+S6_EDIT = [("a golden tea pot", "handle into the red tennis ball"),
+           ("A compact off-road jeep", "change the front bumper into a chrome bull bar")]
+
+
+def s6(ad, calls, out):
+    """S6: 거친 생성 입력 → subject_detailed → T2I 문장, 편집 지시 → new_scene_prompt → 인페인팅 문장."""
+    from server import t2i
+    from server.app.engine import INPAINT_SUFFIX
+    res = {"model": ad.model, "template": t2i.DEFAULT_TEMPLATE, "inpaint_suffix": INPAINT_SUFFIX, "generate": [], "edit": []}
+    details = {}
+    for p, lang in S6_GEN:
+        n0 = len(calls)
+        try:
+            d, err = ad.detail_prompt(p), None
+        except (LLMInvalid, LLMUnavailable) as e:
+            d, err = p, f"{type(e).__name__}: {e}"
+        c = calls[n0]
+        details[p] = d
+        row = {"input": p, "lang": lang, "subject_detailed": d, "t2i_prompt": t2i.DEFAULT_TEMPLATE.replace("{subject}", d),
+               "chars": len(d), "error": err, "retried": c["retried"], "latency_s": c["latency_s"],
+               "in_tokens": c["in_tokens"], "out_tokens": c["out_tokens"],
+               "problems": [a.get("problem") for a in c.get("attempts", []) if a.get("problem")]}
+        res["generate"].append(row)
+        print(f"G {lang} {p!r} → {d!r} ({len(d)}자) retry={c['retried']} {c['latency_s']}s {c['in_tokens']}/{c['out_tokens']} {err or ''}")
+    for base, ins in S6_EDIT:
+        scene = details.get(base) or base
+        n0 = len(calls)
+        try:
+            o, err = ad.refine(scene, ins, []), None
+        except (LLMInvalid, LLMUnavailable) as e:
+            o, err = None, f"{type(e).__name__}: {e}"
+        c = calls[n0]
+        nsp = (o or {}).get("new_scene_prompt", "")
+        row = {"scene": scene, "instruction": ins, "output": o, "inpaint_prompt": nsp.rstrip(" .") + INPAINT_SUFFIX if o else None,
+               "error": err, "retried": c["retried"], "latency_s": c["latency_s"], "in_tokens": c["in_tokens"],
+               "out_tokens": c["out_tokens"]}
+        res["edit"].append(row)
+        print(f"E {ins!r} → {nsp!r} retry={c['retried']} {c['latency_s']}s {c['in_tokens']}/{c['out_tokens']} {err or ''}")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(json.dumps(res, indent=1, ensure_ascii=False))
+
+
+OLD_JEEP_EXAMPLE = ("chunky all-terrain tires", "black front winch bumper", "side air-intake snorkel",
+                    "spare tire mounted on the rear door", "olive green paint")
+NEW_EXAMPLE = ("rounded top", "red side flag", "pull-down door", "brass handle", "wooden post", "dark blue")
+
+
+def jeep_repeat(ad, calls, out, n):
+    """S6 추가: 'A compact off-road jeep' n 회 — 예전 지프 예시·새 예시 문구를 그대로 베끼는지."""
+    p, rows = "A compact off-road jeep", []
+    for i in range(1, n + 1):
+        n0 = len(calls)
+        try:
+            d, err = ad.detail_prompt(p), None
+        except (LLMInvalid, LLMUnavailable) as e:
+            d, err = p, f"{type(e).__name__}: {e}"
+        c, low = calls[n0], d.lower()
+        rows.append({"i": i, "subject_detailed": d, "chars": len(d), "error": err, "retried": c["retried"],
+                     "old_jeep_example_phrases": [x for x in OLD_JEEP_EXAMPLE if x in low],
+                     "new_example_phrases": [x for x in NEW_EXAMPLE if x in low],
+                     "latency_s": c["latency_s"], "in_tokens": c["in_tokens"], "out_tokens": c["out_tokens"]})
+        r = rows[-1]
+        print(f"J{i} {d!r} ({len(d)}자) old={r['old_jeep_example_phrases']} new={r['new_example_phrases']} "
+              f"retry={c['retried']} {c['latency_s']}s {c['in_tokens']}/{c['out_tokens']} {err or ''}")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(json.dumps({"model": ad.model, "input": p, "runs": rows}, indent=1, ensure_ascii=False))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--s4", action="store_true", help="S4: 생성 프롬프트 변환 6건 + 보정 20건 부정어 확인")
+    ap.add_argument("--s4", action="store_true", help="S4: 보정 20건 부정어 확인(+ 생성 6건)")
+    ap.add_argument("--s6", action="store_true", help="S6: 거친 입력 6건 상세화·보정")
+    ap.add_argument("--jeep-repeat", type=int, default=0, help="S6 추가: 'A compact off-road jeep' 상세화 n 회")
     a = ap.parse_args()
     load_env_file()
     calls: list = []
     ad = ClaudeAdapter(model=a.model, on_call=calls.append)
+    if a.jeep_repeat:
+        jeep_repeat(ad, calls, a.out, a.jeep_repeat)
+        return
+    if a.s6:
+        s6(ad, calls, a.out)
+        return
     if a.s4:
         s4(ad, calls, a.out)
         return

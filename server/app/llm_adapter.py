@@ -70,7 +70,10 @@ Return JSON with:
 - replacement: what it becomes, described positively. For "remove", describe what is visible in its place (e.g. "plain open seat sides"). For "recolor", the element with its new color.
 - op: "replace" (swap one element for another), "add" (add a new element), "remove" (take an element away), "recolor" (change only color/material color).
 - new_scene_prompt: the WHOLE current scene sentence, kept as it is except for the target element, which is changed as instructed.
+  Keep every detail of the current scene (all listed parts, colors and materials) word for word where unchanged.
+  Describe the changed element at the same level of detail as the rest (its parts, color, material).
   Do not drop other elements of the scene. Do not append the instruction text. One sentence, English.
+  No camera, view, background, lighting or style words (those are added by the server).
 
 Rules:
 - Use only positive descriptions. Never write negations in new_scene_prompt or replacement: no "not", "no", "without",
@@ -99,18 +102,33 @@ Classify the reason into exactly one category and write short English guidance.
 Return JSON {"category": ..., "guidance": ...}."""
 
 
-TRANSLATE_SCHEMA = {
+DETAIL_SCHEMA = {
     "type": "object",
-    "properties": {"prompt_en": {"type": "string"}},
-    "required": ["prompt_en"],
+    "properties": {"subject_detailed": {"type": "string"}},
+    "required": ["subject_detailed"],
     "additionalProperties": False,
 }
 
-TRANSLATE_SYSTEM = """Translate a user's request for a 3D object into one short English sentence for a text-to-image model.
-Describe a single object (the subject) with its key visual attributes. Keep the user's meaning; add nothing unrelated.
-Use only positive descriptions (no negations). No camera, background, lighting or style words — those are added later.
-Return JSON {"prompt_en": ...}.
-Example: "검은 오토바이를 탄 남자" → {"prompt_en": "a man riding a black motorcycle"}"""
+# S6: 거친 입력 → 논문 X3 형식의 물체 묘사(물체 한 줄 + 보이는 부품 3–5개 + 주 색·재질). 시점·배경·조명·스타일은 서버 꼬리.
+DETAIL_SYSTEM = """You expand a user's short request for a single 3D object into a detailed English object description
+for a text-to-image model that produces a 3D game asset.
+
+Write subject_detailed as one line:
+  the object in a few words, then everything the user asked for, then 3 to 5 plausible visible parts
+  (concrete shapes on the object), then the main color and material.
+Rules:
+- Keep every attribute the user stated (object type, colors, parts, materials, count). Never contradict or drop them.
+- The request may be in Korean or any language; always write English.
+- Use only positive descriptions: never "not", "no", "without", "instead of", "never", "nothing".
+- No camera/view, background, lighting, shadow, render or style words. The server appends those.
+- Describe one object only. Comma-separated phrases, under 400 characters.
+Return JSON {"subject_detailed": ...}.
+Example (format only; invent parts that fit the actual object): "a mailbox" → {"subject_detailed": "A small curbside mailbox,
+a rounded top, a red side flag, a front pull-down door with a brass handle, a square wooden post, dark blue painted metal"}"""
+
+MAX_TEXT = 800        # 서버 안 LLM 출력·장면 문장 상한(S6). 앱 입력 1–300자는 계약대로 라우트가 검사한다
+_STYLE_WORDS = re.compile(r"\b(background|lighting|studio|three-quarter|front view|side view|top view|camera|render(ed|ing)?|"
+                          r"game asset|photograph(y|ic)?|shadows?|centered|white background)\b", re.I)
 
 
 def is_english(text: str) -> bool:
@@ -133,7 +151,7 @@ class FakeAdapter:
                       "in_tokens": 0, "out_tokens": 0, "retried": False, "ok": True, "error": None})
         return out
 
-    def translate_prompt(self, prompt: str, job_id: str = "") -> str:
+    def detail_prompt(self, prompt: str, job_id: str = "") -> str:
         return prompt.strip()
 
     def classify(self, reason: str, refine: Optional[dict], history: List[str], job_id: str = "") -> dict:
@@ -223,6 +241,8 @@ class ClaudeAdapter:
         for k in ("target_element", "new_scene_prompt"):
             if not str(o[k]).strip():
                 return f"{k} 가 비었다"
+        if len(str(o["new_scene_prompt"])) > MAX_TEXT:
+            return f"new_scene_prompt 가 너무 길다({MAX_TEXT}자 초과)"
         for k in ("new_scene_prompt", "replacement"):
             m = _NEG.search(str(o[k]))
             if m:
@@ -242,24 +262,27 @@ class ClaudeAdapter:
         return self._call("refine", REFINE_SYSTEM, user, REFINE_SCHEMA, self.check_refine, job_id,
                           {"scene": scene_prompt, "instruction": instruction, "history": reject_history})
 
-    # ── S4 생성 프롬프트 영어 변환 ─────────────────────────────────
+    # ── S6 생성 프롬프트 상세화(S4 영어 변환을 대체, 영어 입력도 항상 거친다) ──
     @staticmethod
-    def check_translate(o: dict) -> Optional[str]:
-        t = str(o.get("prompt_en", "")).strip()
-        if set(o) != {"prompt_en"} or not t:
-            return "prompt_en 이 없거나 비었다"
+    def check_detail(o: dict) -> Optional[str]:
+        t = str(o.get("subject_detailed", "")).strip()
+        if set(o) != {"subject_detailed"} or not t:
+            return "subject_detailed 가 없거나 비었다"
         if not is_english(t):
             return "영어가 아닌 글자가 있다"
         if _NEG.search(t):
             return "부정 표현이 있다"
-        if len(t) > 300:
-            return "너무 길다(300자 초과)"
+        m = _STYLE_WORDS.search(t)
+        if m:
+            return f"시점·배경·조명·스타일 단어 {m.group(0)!r} 가 있다(서버 꼬리가 붙인다)"
+        if len(t) > MAX_TEXT:
+            return f"너무 길다({MAX_TEXT}자 초과)"
         return None
 
-    def translate_prompt(self, prompt: str, job_id: str = "") -> str:
-        out = self._call("translate", TRANSLATE_SYSTEM, f"request: {json.dumps(prompt, ensure_ascii=False)}",
-                         TRANSLATE_SCHEMA, self.check_translate, job_id, {"prompt": prompt})
-        return out["prompt_en"].strip()
+    def detail_prompt(self, prompt: str, job_id: str = "") -> str:
+        out = self._call("detail", DETAIL_SYSTEM, f"request: {json.dumps(prompt, ensure_ascii=False)}",
+                         DETAIL_SCHEMA, self.check_detail, job_id, {"prompt": prompt})
+        return out["subject_detailed"].strip()
 
     # ── A4 분류 ────────────────────────────────────────────────────
     @staticmethod

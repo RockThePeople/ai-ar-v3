@@ -62,10 +62,12 @@ def tools_ready() -> bool:
 
 #: 구도 강제. 슬롯마다 꼬리말을 다시 쓰면 한 군데서 빠뜨려도 증상이 없고
 #: 그 자산만 조용히 다른 구도로 나온다 (W17 에서 템플릿으로 뺀 이유).
+#: S6(2026-11-11): 논문 X3 형식의 고정 꼬리로 바꿨다. 앞부분 {subject} 는 앱 서버가 LLM 으로 상세화한 물체 묘사다.
+#: `no shadow` 는 서버 고정 문구라 LLM 출력 부정어 검사 대상이 아니다.
 DEFAULT_TEMPLATE = os.environ.get(
     "T2I_PROMPT_TEMPLATE",
-    "{subject}, product photography, studio lighting, plain white background, "
-    "centered, entire subject fully visible with margin, no text, no watermark")
+    "{subject}, three-quarter front view, centered, full object visible, "
+    "simple clean 3D game asset style, pure white background, no shadow")
 
 
 def render_rgba(prompt: str, *, seed: int = 42,
@@ -83,7 +85,7 @@ def render_rgba(prompt: str, *, seed: int = 42,
     effective = DEFAULT_TEMPLATE.replace("{subject}", prompt)
     (work / "prompt.effective.txt").write_text(effective, encoding="utf-8")
 
-    timing: dict = {"prompt_effective_chars": len(effective)}
+    timing: dict = {"prompt_effective_chars": len(effective), "prompt_effective": effective}
     try:
         t0 = time.time()
         subprocess.run([str(zpy), str(tools / "zimage_gen.py"),
