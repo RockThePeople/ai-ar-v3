@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-APP_API = "1.0.3"
+APP_API = "1.0.4"
 
 
 def default_env_file() -> Path:
@@ -51,7 +51,6 @@ class Settings:
     render_mode: str          # "camera"(계약 D8) | "view"(A1 전 임시: view 생략 → A5000 이 시점 선택)
     mock_time_scale: float    # 가짜 모드 단계 시간 배율(시험용 0)
     mock_source: str          # 가짜 모드 원천 자산(앱 저장소의 asset_id)
-    preview_mirror: bool = True  # S5: 앱에 보내는 2D 미리보기를 좌우 반전(V1). APP_PREVIEW_MIRROR=0 이면 원본
     timeout_s: float = 600.0  # 실행 상태 10분
     review3d_s: float = 1800.0  # 3D 확인 30분
     max_attempts: int = 3
@@ -71,5 +70,4 @@ class Settings:
             render_mode=(os.environ.get("APP_RENDER_MODE") or "camera").strip(),
             mock_time_scale=float(os.environ.get("APP_MOCK_TIME_SCALE") or 1.0),
             mock_source=os.environ.get("APP_MOCK_SOURCE") or "sample-jeep",
-            preview_mirror=(os.environ.get("APP_PREVIEW_MIRROR") or "1").strip() != "0",
         )
