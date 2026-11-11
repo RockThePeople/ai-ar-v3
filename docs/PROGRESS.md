@@ -355,6 +355,7 @@ W28 멀티유저 (M6)
 
 | 날짜 | 세션 | 결과 |
 |---|---|---|
+| 11-11 | 3090 app10 | S8: prompt 거절 뒤 재보정 new_scene_prompt 가 직전과 같으면(소문자·공백·끝 마침표 정규화) 보정 LLM 1회 더(`refine_changed`, 직전 문장·거절 이유·guidance 전달). 그래도 같으면 진행하고 `refine_unchanged` 기록·/clients 표시 |
 | 11-11 | 3090 app9 | S7 잘라 인페인팅(`APP_INPAINT_CROP`, 기본 1): 마스크 상자 ×2(최소 384) 정사각을 1024² 로 키워 워커에 보내고 결과를 원래 자리에 붙임(마스크 밖 = 워커 합성과 같은 흰 배경 RGB, 경계 4 px 안쪽 섞기). numpy+zlib(`server/app/cropinpaint.py`). `/clients` 에 상자·자른 입력/결과 |
 | 11-11 | 3090 app7 | S6 상세 프롬프트: 생성 입력을 subject_detailed(물체 + 부품 3–5 + 색·재질)로 상세화(영어도), T2I 고정 꼬리를 논문 X3 형식으로, 편집 new_scene_prompt 상세 유지 + 인페인팅 꼬리 `simple clean 3D game asset style`, 서버 문장 상한 800자. /clients 에 문장 사슬 표시 |
 | 11-11 | 3090 app8 | S5b: S5(미리보기 좌우 반전) 되돌림, app-api 1.0.4. V1 은 앱이 `ToUnity`/`ToVoxel` = `(x, z, y)` 로 처리(사용자 결정). 앱 미리보기 = 저장본 바이트 그대로(시험 1건) |

@@ -46,6 +46,11 @@ def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+def _norm(t: Optional[str]) -> str:
+    """S8 비교용: 소문자·공백 하나·끝 마침표 제거."""
+    return " ".join((t or "").lower().split()).rstrip(" .")
+
+
 class Engine:
     def __init__(self, s: Settings, db: Db, store: ChunkStore, backend, clock: Callable[[], float] = time.time,
                  start_thread: bool = True, llm=None) -> None:
@@ -224,8 +229,19 @@ class Engine:
         if self.be.name == "mock":
             time.sleep(self.be.DUR["refine"] * self.s.mock_time_scale)
         try:
-            j["refine"] = self.llm.refine(self._scene(j["asset_id"]), j["instruction"], list(j.get("reject_history") or []),
-                                          job_id=j["job_id"])
+            scene, hist = self._scene(j["asset_id"]), list(j.get("reject_history") or [])
+            j["refine"] = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"])
+            j["refine_meta"] = {}
+            last = (j.get("attempts") or [None])[-1]
+            if last and last.get("rejected") and last.get("category") == "prompt" and \
+                    _norm(j["refine"]["new_scene_prompt"]) == _norm(last.get("new_scene_prompt")):
+                # S8: prompt 거절인데 같은 문장 → 1회 더(그래도 같으면 진행하고 기록)
+                again = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"],
+                                        changed_from={"prev": last.get("new_scene_prompt"), "reason": last.get("reason"),
+                                                      "guidance": last.get("guidance")})
+                same = _norm(again["new_scene_prompt"]) == _norm(last.get("new_scene_prompt"))
+                j["refine"] = again
+                j["refine_meta"] = {"refine_retry": True, "refine_unchanged": same}
         except LLMInvalid as e:
             raise StageError("REFINE_INVALID", str(e))
         except LLMUnavailable as e:
@@ -272,7 +288,9 @@ class Engine:
         j["attempts"].append({"attempt": j["attempt"], "seed": seed, "prompt": inpaint_prompt,
                               "new_scene_prompt": j["refine"]["new_scene_prompt"], "instruction": j["instruction"],
                               "render_id": j["render"]["render_id"], "t": self.clock(), "inpaint_s": inpaint_s,
-                              "crop": crop if self.s.inpaint_crop else {"off": True}})
+                              "crop": crop if self.s.inpaint_crop else {"off": True}, **(j.get("refine_meta") or {})})
+        if (j.get("refine_meta") or {}).get("refine_unchanged"):
+            j["refine_unchanged"] = True
         self._set(j, "awaiting_2d_review", "inpainting", 1.0)
 
     def _run_edit3d(self, j: dict) -> None:
@@ -348,6 +366,7 @@ class Engine:
                 self._set(j, "refining", "refining", 0.0)
                 self._enqueue(j, "refine_again")
             else:
+                j["refine_meta"] = {}                    # 품질 재시도는 보정을 다시 부르지 않는다
                 self._set(j, "inpainting", "inpainting", 0.0)
                 self._enqueue(j, "inpaint_again")
             return j
