@@ -123,8 +123,8 @@ Rules:
 - No camera/view, background, lighting, shadow, render or style words. The server appends those.
 - Describe one object only. Comma-separated phrases, under 400 characters.
 Return JSON {"subject_detailed": ...}.
-Example: "A compact off-road jeep" → {"subject_detailed": "A compact off-road jeep, chunky all-terrain tires, a black
-front winch bumper, a side air-intake snorkel on the right front pillar, a spare tire mounted on the rear door, olive green paint"}"""
+Example (format only; invent parts that fit the actual object): "a mailbox" → {"subject_detailed": "A small curbside mailbox,
+a rounded top, a red side flag, a front pull-down door with a brass handle, a square wooden post, dark blue painted metal"}"""
 
 MAX_TEXT = 800        # 서버 안 LLM 출력·장면 문장 상한(S6). 앱 입력 1–300자는 계약대로 라우트가 검사한다
 _STYLE_WORDS = re.compile(r"\b(background|lighting|studio|three-quarter|front view|side view|top view|camera|render(ed|ing)?|"

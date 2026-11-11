@@ -163,16 +163,46 @@ def s6(ad, calls, out):
     Path(out).write_text(json.dumps(res, indent=1, ensure_ascii=False))
 
 
+OLD_JEEP_EXAMPLE = ("chunky all-terrain tires", "black front winch bumper", "side air-intake snorkel",
+                    "spare tire mounted on the rear door", "olive green paint")
+NEW_EXAMPLE = ("rounded top", "red side flag", "pull-down door", "brass handle", "wooden post", "dark blue")
+
+
+def jeep_repeat(ad, calls, out, n):
+    """S6 추가: 'A compact off-road jeep' n 회 — 예전 지프 예시·새 예시 문구를 그대로 베끼는지."""
+    p, rows = "A compact off-road jeep", []
+    for i in range(1, n + 1):
+        n0 = len(calls)
+        try:
+            d, err = ad.detail_prompt(p), None
+        except (LLMInvalid, LLMUnavailable) as e:
+            d, err = p, f"{type(e).__name__}: {e}"
+        c, low = calls[n0], d.lower()
+        rows.append({"i": i, "subject_detailed": d, "chars": len(d), "error": err, "retried": c["retried"],
+                     "old_jeep_example_phrases": [x for x in OLD_JEEP_EXAMPLE if x in low],
+                     "new_example_phrases": [x for x in NEW_EXAMPLE if x in low],
+                     "latency_s": c["latency_s"], "in_tokens": c["in_tokens"], "out_tokens": c["out_tokens"]})
+        r = rows[-1]
+        print(f"J{i} {d!r} ({len(d)}자) old={r['old_jeep_example_phrases']} new={r['new_example_phrases']} "
+              f"retry={c['retried']} {c['latency_s']}s {c['in_tokens']}/{c['out_tokens']} {err or ''}")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(json.dumps({"model": ad.model, "input": p, "runs": rows}, indent=1, ensure_ascii=False))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--s4", action="store_true", help="S4: 보정 20건 부정어 확인(+ 생성 6건)")
     ap.add_argument("--s6", action="store_true", help="S6: 거친 입력 6건 상세화·보정")
+    ap.add_argument("--jeep-repeat", type=int, default=0, help="S6 추가: 'A compact off-road jeep' 상세화 n 회")
     a = ap.parse_args()
     load_env_file()
     calls: list = []
     ad = ClaudeAdapter(model=a.model, on_call=calls.append)
+    if a.jeep_repeat:
+        jeep_repeat(ad, calls, a.out, a.jeep_repeat)
+        return
     if a.s6:
         s6(ad, calls, a.out)
         return

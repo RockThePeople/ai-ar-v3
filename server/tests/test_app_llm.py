@@ -223,3 +223,9 @@ def test_t2i_template_tail():
     parts = lambda x: sorted(t.strip() for t in x.split(","))                      # noqa: E731
     assert parts(eff) == parts(PAPER)                                              # 논문 X3 문장과 같은 구절(순서만 다름)
     assert eff.endswith("simple clean 3D game asset style, pure white background, no shadow")
+
+
+def test_detail_example_is_not_the_jeep():
+    """S6 추가: 예시가 지프면 'A compact off-road jeep' 입력에서 예시를 그대로 베낀다(Haiku 실측) → 다른 물체로."""
+    from server.app.llm_adapter import DETAIL_SYSTEM
+    assert "jeep" not in DETAIL_SYSTEM.lower() and "winch" not in DETAIL_SYSTEM.lower()
