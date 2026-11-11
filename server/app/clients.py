@@ -121,13 +121,16 @@ def build_clients(S) -> APIRouter:
 
     # ── 이미지 ─────────────────────────────────────────────────────
     @r.get("/img/{job_id}/{attempt}/{name}.png")
-    def img(job_id: str, attempt: int, name: str, req: Request):
+    def img(job_id: str, attempt: int, name: str, req: Request, mirror: int = 0):
         guard(req)
         if name not in ("render", "edit", "mask") or S.engine.get(job_id) is None:
             raise AppError(404, "JOB_NOT_FOUND", job_id)
         p = data / "jobs" / job_id / str(int(attempt)) / f"{name}.png"
         if not p.is_file():
             raise AppError(404, "JOB_NOT_FOUND", "이미지 없음")
+        if mirror:                                        # S5: 앱 화면 방향(좌우 반전), 앱 API 와 같은 함수
+            from .pngflip import mirrored_file
+            p = mirrored_file(p, data / "mirror_cache", f"{job_id}/{int(attempt)}/{name}.png")
         return FileResponse(p, media_type="image/png")
 
     @r.get("/img/{job_id}/t2i.png")
@@ -199,7 +202,7 @@ td,th{border-bottom:1px solid #eee;padding:4px 6px;text-align:left;font-size:13p
 tr.row:hover{background:#f3f7ff;cursor:pointer} .del{color:#999} .bad{color:#b00} .ok{color:#070}
 input{padding:4px 8px;width:260px} details{background:#fff;border:1px solid #ddd;margin:6px 0;padding:6px}
 summary{cursor:pointer;font-weight:600} pre{white-space:pre-wrap;font:12px monospace;background:#f6f6f6;padding:6px;max-height:260px;overflow:auto}
-.imgs img{width:31%;margin-right:1%;border:1px solid #ccc;background:#000} .views{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.imgs img{width:31%;margin-right:1%;border:1px solid #ccc;background:#000} .imgs .lab{font-size:11px;color:#666;margin:2px 0} .views{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .view{height:360px;background:#223} .cap{font-size:12px;color:#555} @media(max-width:900px){.views{grid-template-columns:1fr}}
 </style>"""
 
@@ -263,7 +266,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n}">`).join('')}</div></div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs"><div class="lab">저장 원본(서버 내부 방향)</div>${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n} 원본">`).join('')}<div class="lab">앱 화면 방향(좌우 반전)</div>${['render','edit','mask'].map(n=>`<img src="${a.images[n]}?mirror=1" title="${n} 앱 방향">`).join('')}</div></div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   <details><summary>LLM 호출 ${j.llm_calls.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력</th><th>출력</th></tr>${j.llm_calls.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr>`).join('')}</table></details>
   <details><summary>상태 이력</summary><pre>${esc(JSON.stringify(j.history,null,1))}</pre></details></details>`).join('')||'<div class="cap">편집 없음</div>';
