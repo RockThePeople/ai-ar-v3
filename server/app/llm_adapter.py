@@ -165,6 +165,16 @@ class FakeAdapter:
         return out
 
 
+def _raw_response(r) -> dict:
+    """S9: 받은 응답 원문(파싱 전 content 블록·stop_reason·usage). SDK 객체를 JSON 으로."""
+    try:
+        d = r.model_dump(mode="json")
+    except Exception:                                       # noqa: BLE001 — SDK 버전 차이 대비
+        d = {"stop_reason": getattr(r, "stop_reason", None), "content": [getattr(b, "text", str(b)) for b in r.content],
+             "usage": {"input_tokens": r.usage.input_tokens, "output_tokens": r.usage.output_tokens}}
+    return d
+
+
 class ClaudeAdapter:
     name = "claude"
 
@@ -184,15 +194,19 @@ class ClaudeAdapter:
               job_id: str, log_input: dict) -> dict:
         rec = {"job_id": job_id, "kind": kind, "model": self.model, "input": log_input, "output": None,
                "latency_s": 0.0, "in_tokens": 0, "out_tokens": 0, "retried": False, "ok": False, "error": None,
-               "attempts": []}
+               "attempts": [], "client": {"sdk": "anthropic " + getattr(self.anthropic, "__version__", "?"),
+                                          "endpoint": "POST /v1/messages", "timeout_s": 30.0, "max_retries": 2,
+                                          "auth": "x-api-key 헤더(값은 기록하지 않음)"}}
         t0 = time.time()
         msgs = [{"role": "user", "content": user}]
         try:
             for attempt in (1, 2):
+                req = {"model": self.model, "max_tokens": 2048, "system": system, "messages": msgs,
+                       "output_config": {"effort": self.effort, "format": {"type": "json_schema", "schema": schema}}}
+                # S9: 실제로 보낸 요청 본문 전문(키는 헤더라 여기 없다). 회차마다 남긴다
+                raw_req = json.loads(json.dumps(req, ensure_ascii=False))
                 try:
-                    r = self.client.messages.create(
-                        model=self.model, max_tokens=2048, system=system, messages=msgs,
-                        output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": schema}})
+                    r = self.client.messages.create(**req)
                 except self.anthropic.AuthenticationError as e:
                     raise LLMUnavailable(f"인증 실패: {e}") from e
                 except self.anthropic.RateLimitError as e:
@@ -216,8 +230,9 @@ class ClaudeAdapter:
                         problem = check(out)
                     except ValueError as e:
                         problem = f"JSON 아님: {e}"
-                rec["attempts"].append({"attempt": attempt, "stop_reason": r.stop_reason, "text": text[:2000],
-                                        "problem": problem})
+                rec["attempts"].append({"attempt": attempt, "stop_reason": r.stop_reason, "text": text,
+                                        "problem": problem, "request": raw_req, "response": _raw_response(r),
+                                        "client": rec["client"]})
                 if problem is None:
                     rec["output"], rec["ok"] = out, True
                     return out

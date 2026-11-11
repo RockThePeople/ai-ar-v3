@@ -70,6 +70,19 @@ DEFAULT_TEMPLATE = os.environ.get(
     "simple clean 3D game asset style, pure white background, no shadow")
 
 
+_SETTING_LINE = ("from_pretrained", "height", "width", "num_inference_steps", "guidance", "Resize", "torch_dtype",
+                 "manual_seed", "max_sequence_length")
+
+
+def _script_settings(path: Path) -> list:
+    """S9: 스크립트 소스에서 설정이 들어 있는 줄을 그대로 뽑는다(모델·해상도·스텝·guidance 등)."""
+    try:
+        return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
+                if any(k in ln for k in _SETTING_LINE)]
+    except OSError as e:
+        return [f"(읽지 못함: {e})"]
+
+
 def render_rgba(prompt: str, *, seed: int = 42,
                 keep_dir: Optional[Path] = None) -> Tuple[bytes, dict]:
     """prompt → (RGBA PNG 바이트, 소요 내역).
@@ -85,7 +98,13 @@ def render_rgba(prompt: str, *, seed: int = 42,
     effective = DEFAULT_TEMPLATE.replace("{subject}", prompt)
     (work / "prompt.effective.txt").write_text(effective, encoding="utf-8")
 
-    timing: dict = {"prompt_effective_chars": len(effective), "prompt_effective": effective}
+    timing: dict = {"prompt_effective_chars": len(effective), "prompt_effective": effective,
+                    # S9: 실제로 부른 명령(경로는 이름만)과 스크립트 안 설정(파일에서 읽음)
+                    "command": [["zimage_gen.py", "--prompt", effective, "--out", "image.png", "--seed", str(seed)],
+                                ["birefnet_seg.py", "--in", "image.png", "--out", "source.png"]],
+                    "settings": {"source": "T2I_TOOLS_DIR 스크립트 소스에서 읽은 줄(인자로 넘기지 않는 값은 스크립트 고정)",
+                                 "zimage_gen.py": _script_settings(tools / "zimage_gen.py"),
+                                 "birefnet_seg.py": _script_settings(tools / "birefnet_seg.py")}}
     try:
         t0 = time.time()
         subprocess.run([str(zpy), str(tools / "zimage_gen.py"),

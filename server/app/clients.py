@@ -79,7 +79,8 @@ def build_clients(S) -> APIRouter:
         for a in j.get("attempts", []):
             attempts.append({**{k: a.get(k) for k in ("attempt", "seed", "prompt", "new_scene_prompt", "instruction",
                                                       "render_id", "rejected", "reason", "category", "guidance",
-                                                      "crop", "inpaint_s", "refine_retry", "refine_unchanged")},
+                                                      "crop", "inpaint_s", "refine_retry", "refine_unchanged",
+                                                      "inpaint_raw")},
                              "images": {n: f"/clients/img/{j['job_id']}/{a['attempt']}/{n}.png" for n in
                                         ("render", "edit", "mask") + (CROP_IMGS if (a.get("crop") or {}).get("box") else ())}})
         outcome = {"committed": "유지", "discarded": "되돌리기" if "자동" not in (j.get("discard_note") or "") else "자동 폐기",
@@ -99,7 +100,20 @@ def build_clients(S) -> APIRouter:
                 "stage_s": _dur(j.get("stage_log") or [], j.get("finished_at")), "queue_waits": j.get("queue_waits"),
                 "history": j.get("history"), "discard_note": j.get("discard_note"),
                 "llm_calls": [{k: c[k] for k in ("kind", "model", "ok", "retried", "latency_s", "in_tokens", "out_tokens",
-                                                 "error", "input", "output")} for c in S.db.llm_calls(j["job_id"])]}
+                                                 "error", "input", "output", "attempts")} for c in S.db.llm_calls(j["job_id"])],
+                # S9: 실제로 오간 입력 전문(앞으로의 작업부터 기록, 지난 작업은 있는 만큼)
+                "raw_generate": j.get("raw_generate"), "raw_edit3d": j.get("raw_edit3d"),
+                "render_record": (j.get("render") or {}).get("record"),
+                "job_json": f"/clients/api/jobs/{j['job_id']}"}
+
+    @r.get("/api/jobs/{job_id}")
+    def api_job(job_id: str, req: Request):
+        """S9: 작업 기록 전문 + LLM 호출 전문(요청 본문·응답 원문, 회차마다)."""
+        guard(req)
+        j = S.engine.get(job_id)
+        if j is None:
+            raise AppError(404, "JOB_NOT_FOUND", job_id)
+        return {"job": j, "llm_calls": S.db.llm_calls(job_id)}
 
     @r.get("/api/assets")
     def api_assets(req: Request):
@@ -205,7 +219,7 @@ tr.row:hover{background:#f3f7ff;cursor:pointer} .del{color:#999} .bad{color:#b00
 input{padding:4px 8px;width:260px} details{background:#fff;border:1px solid #ddd;margin:6px 0;padding:6px}
 summary{cursor:pointer;font-weight:600} pre{white-space:pre-wrap;font:12px monospace;background:#f6f6f6;padding:6px;max-height:260px;overflow:auto}
 .imgs img{width:31%;margin-right:1%;border:1px solid #ccc;background:#000} .views{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.view{height:360px;background:#223} .cap{font-size:12px;color:#555} @media(max-width:900px){.views{grid-template-columns:1fr}}
+.view{height:360px;background:#223} .cap{font-size:12px;color:#555} details.raw{margin:3px 0;padding:3px 6px} details.raw summary{font-weight:400;font-size:12px} details.raw pre{max-height:520px} @media(max-width:900px){.views{grid-template-columns:1fr}}
 </style>"""
 
 LIST_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -238,6 +252,22 @@ DETAIL_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><met
 const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function cropView(a){const c=a.crop;if(!c)return '';if(c.off)return '<div class="cap">잘라 인페인팅 꺼짐(APP_INPAINT_CROP=0)</div>';if(!c.box)return `<div class="cap">자르지 않음: ${esc(c.reason||'')}</div>`;
 return `<div class="cap">잘라 인페인팅(S7): 상자 x=${c.box[0]} y=${c.box[1]} 한 변 ${c.box[2]} px → 1024² (×${c.scale}) · 마스크 상자 ${c.mask_bbox.join(',')} · 마스크 ${c.mask_px} px → 보낸 ${c.mask_px_sent} px · 자르기 ${c.pre_s}s · 붙이기 ${c.post_s}s · 인페인팅 전체 ${a.inpaint_s}s</div><div class="imgs">${['crop_render','crop_mask','crop_edit'].map(n=>`<a href="${a.images[n]}" target="_blank"><img src="${a.images[n]}" title="${n}"></a>`).join('')}</div><div class="cap">[자른 입력 | 자른 마스크 | 자른 결과(워커 출력)]</div>`}
+const J1=o=>JSON.stringify(o,null,1).replace(/\\[\\s+([-\\d.,\\s]+?)\\s+\\]/g,(m,a)=>'['+a.replace(/\\s+/g,'')+']');  // 숫자 배열은 한 줄로
+const RAW=(t,o)=>o==null?'':`<details class="raw"><summary>${t}</summary><pre>${esc(typeof o==='string'?o:J1(o))}</pre></details>`;
+const thumb=(u,t)=>`<a href="${u}" target="_blank"><img src="${u}" title="${t}"></a>`;
+function llmRaw(c){const at=c.attempts||[];if(!at.length)return '<span class="cap">(전문 기록 없음 — S9 이전 또는 가짜 LLM)</span>';
+ return at.map(a=>{const q=a.request;if(!q)return `<div class="cap">회차 ${a.attempt}: 전문 없음(S9 이전) · stop ${esc(a.stop_reason)} · 원문 ${esc(a.text)}</div>`;
+  const msgs=q.messages.map(m=>`[${m.role}]\\n${typeof m.content==='string'?m.content:JSON.stringify(m.content)}`).join('\\n\\n');
+  const n=(q.system||'').length+q.messages.reduce((x,m)=>x+(typeof m.content==='string'?m.content.length:JSON.stringify(m.content).length),0);
+  const u=(a.response||{}).usage||{};
+  return `<div class="cap"><b>회차 ${a.attempt}</b> · stop_reason ${esc(a.stop_reason)} · usage in ${u.input_tokens??'?'} / out ${u.output_tokens??'?'} · 보낸 system+messages ${n}자${a.problem?' · 위반: '+esc(a.problem):''}</div>`+
+   RAW('system 프롬프트 전문',q.system)+RAW('messages 전문(템플릿이 채워진 그대로)',msgs)+
+   RAW('요청 본문 전체 JSON(model·max_tokens·output_config 포함, 키 없음)',q)+RAW('받은 응답 원문(파싱 전 content·stop_reason·usage)',a.response)+RAW('클라이언트 설정',a.client);}).join('');}
+function llmTable(cs){return `<details><summary>LLM 호출 ${cs.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력(정리본)</th><th>출력(정리본)</th></tr>${cs.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr><tr><td colspan="8">${llmRaw(c)}</td></tr>`).join('')}</table></details>`;}
+function inpRaw(a,j){const r=a.inpaint_raw;if(!r)return '<div class="cap">(인페인팅 요청 전문 기록 없음 — S9 이전)</div>';
+ return `<div class="cap">인페인팅 요청: 문장 "${esc((r.form||{}).prompt)}" · seed ${esc((r.form||{}).seed)} · 워커 설정 ${esc(JSON.stringify(r.settings))} <i>(출처: ${esc(r.settings_source||'-')})</i></div>`+RAW('인페인팅 요청·응답 전문',r);}
+function e3Raw(j){const r=j.raw_edit3d;if(!r)return '';const n=r.attempt,b=`/clients/img/${j.job_id}/${n}/`;
+ return `<div><b>3D 편집 입력</b> (A5000 /v2/trellis/edit, 시도 ${n} 승인본) · ${esc(r.text||'')}<div class="imgs">${thumb(b+'render.png','2d_render')}${thumb(b+'mask.png','2d_mask')}${thumb(b+'edit.png','2d_edit')}</div><div class="cap">[2d_render | 2d_mask | 2d_edit]</div>`+RAW('meta JSON 전문',r.meta)+RAW('보낸 파일(이름·바이트·sha256)',r.files)+RAW('A5000 접수 응답',r.submit_response)+RAW('A5000 작업 결과 전문(설정·단계 시간·청크)',r.job_result)+`</div>`;}
 const ts=t=>t?new Date(t*1000).toLocaleString('ko-KR'):'';const aid=location.pathname.split('/').pop();
 // NORMALIZED(복셀 축) → three 월드: glbbuild 의 VOXEL_TO_GLB 와 같은 (x, z, −y). common.js:voxelToWorld 에서 xf 가 항등인 경우.
 const toW=v=>new THREE.Vector3(v[0],v[2],-v[1]);
@@ -249,7 +279,7 @@ function init3d(){const a=document.getElementById('vA');cam=new THREE.Perspectiv
  views=[mkView(a),mkView(document.getElementById('vB'))];const ctl=views.map(v=>new THREE.OrbitControls(cam,v.r.domElement));
  ctl.forEach(c=>c.addEventListener('change',()=>ctl.forEach(o=>{if(o!==c)o.target.copy(c.target)})));window.ctl=ctl;
  (function loop(){requestAnimationFrame(loop);views.forEach(v=>v.r.render(v.s,cam));})();}
-function load(i,url,cap){const v=views[i];document.getElementById(i?'cB':'cA').textContent=cap+' 불러오는 중…';
+function load(i,url,cap){const v=views[i];if(!v)return;document.getElementById(i?'cB':'cA').textContent=cap+' 불러오는 중…';
  new THREE.GLTFLoader().load(url,g=>{if(v.obj)v.s.remove(v.obj);v.obj=g.scene;v.obj.traverse(o=>{if(o.isMesh){if(!o.geometry.attributes.normal)o.geometry.computeVertexNormals();o.material=new THREE.MeshStandardMaterial({vertexColors:!!o.geometry.attributes.color,roughness:0.85,metalness:0,side:THREE.DoubleSide})}});v.s.add(v.obj);document.getElementById(i?'cB':'cA').textContent=cap},undefined,e=>document.getElementById(i?'cB':'cA').textContent=cap+' 실패');}
 function opts(){const o=D.versions.map(v=>({k:'v'+v,url:`/clients/glb/${aid}/v${v}.glb`,cap:`v${v}`}));
  D.jobs.filter(j=>j.archive).forEach(j=>o.push({k:'ar-'+j.job_id,url:`/clients/glb/archive/${j.job_id}.glb`,cap:`되돌린 결과 ${j.job_id} (v${j.base_version} 위)`,job:j}));return o;}
@@ -262,17 +292,20 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
  document.getElementById('title').textContent=`${d.asset_id} · QR ${d.qr_id??'-'} · ${d.status}`;
  document.getElementById('meta').innerHTML=`생성 ${ts(d.created_at)} · 생성자 ${esc(d.creator)} · 판본 ${d.version} · 편집 ${d.commits}/${d.edits} · 평가 ${d.rating_avg??'-'} (${d.ratings})${d.deleted_at?' · 삭제 '+ts(d.deleted_at):''}<br>장면 문장: ${esc(d.scene_prompt)}`;
  const g=d.jobs.find(j=>j.kind==='generate');
- document.getElementById('gen').innerHTML=g?`<div>원문: <b>${esc(g.prompt)}</b> · seed ${g.seed} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM '+(g.translate.mode==='detail'?'상세화':'변환'):'LLM 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span></div><div>→ subject_detailed: ${esc(g.prompt_en)}</div><div>→ 실제 T2I 문장: <span class="cap">${esc(g.t2i_effective||'(기록 없음 — S6 이전 생성)')}</span></div><div> · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
- init3d();const o=opts();['selA','selB'].forEach((id,i)=>{const s=document.getElementById(id);s.innerHTML=o.map(x=>`<option value="${x.k}">${esc(x.cap)}</option>`).join('');s.onchange=()=>pick(i);});
+ document.getElementById('gen').innerHTML=g?`<div>원문: <b>${esc(g.prompt)}</b> · seed ${g.seed} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM '+(g.translate.mode==='detail'?'상세화':'변환'):'LLM 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span></div><div>→ subject_detailed: ${esc(g.prompt_en)}</div><div>→ 실제 T2I 문장: <span class="cap">${esc(g.t2i_effective||'(기록 없음 — S6 이전 생성)')}</span></div><div> · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}${llmTable(g.llm_calls)}${g.raw_generate?RAW('T2I 실제 명령·seed·설정(스크립트에서 읽음)',g.raw_generate.t2i)+RAW('A5000 /generate 요청·결과 전문',g.raw_generate.a5000_generate):'<div class="cap">(생성 요청 전문 기록 없음 — S9 이전)</div>'}<div class="cap"><a href="${g.job_json}" target="_blank">작업 JSON 전문</a></div>`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
+ try{init3d()}catch(e){document.querySelector('.views')?.insertAdjacentHTML('beforebegin','<div class="cap bad">3D 보기를 열 수 없다(WebGL 없음): '+esc(e.message)+'</div>')}const o=opts();['selA','selB'].forEach((id,i)=>{const s=document.getElementById(id);s.innerHTML=o.map(x=>`<option value="${x.k}">${esc(x.cap)}</option>`).join('');s.onchange=()=>pick(i);});
  if(o.length){document.getElementById('selA').value=o[0].k;document.getElementById('selB').value=o[o.length-1].k;pick(0);pick(1);}
  const qj=new URLSearchParams(location.search).get('job');
  document.getElementById('edits').innerHTML=d.jobs.filter(j=>j.kind==='edit').map(j=>`<details><summary>${ts(j.created_at)} · ${esc(j.instruction)} → <span class="${j.outcome==='유지'?'ok':(j.outcome==='실패'?'bad':'')}">${j.outcome}${j.error_code?' '+j.error_code:''}</span> · v${j.base_version}${j.to_version?' → v'+j.to_version:''} · 바뀐 ${j.n_changed} · 제거 ${j.n_removed}</summary>
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>`<img src="${a.images[n]}" title="${n}">`).join('')}</div>${cropView(a)}</div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
-  <details><summary>LLM 호출 ${j.llm_calls.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력</th><th>출력</th></tr>${j.llm_calls.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr>`).join('')}</table></details>
+  ${llmTable(j.llm_calls)}
+  ${RAW('A5000 렌더 요청·응답 전문(마지막 렌더)',j.render_record)}
+  ${e3Raw(j)}
+  <div class="cap"><a href="${j.job_json}" target="_blank">작업 JSON 전문</a></div>
   <details><summary>상태 이력</summary><pre>${esc(JSON.stringify(j.history,null,1))}</pre></details></details>`).join('')||'<div class="cap">편집 없음</div>';
  if(qj){const jj=d.jobs.find(x=>x.job_id===qj);if(jj)setTimeout(()=>compare(jj),300);}
  document.getElementById('rates').innerHTML=d.ratings_list.length?`<table><tr><th>기기</th><th>별점</th><th>version_range</th><th>시각</th><th>피드백</th></tr>${d.ratings_list.map(x=>`<tr><td>${esc(x.device)}</td><td>${x.stars}</td><td>${x.version_range}</td><td>${ts(x.created_at)}</td><td><a href="${x.feedback_uri}">파일</a></td></tr>`).join('')}</table>`:'<div class="cap">평가 없음</div>';

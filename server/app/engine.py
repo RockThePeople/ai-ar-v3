@@ -183,6 +183,8 @@ class Engine:
             d.mkdir(parents=True, exist_ok=True)
             (d / "t2i.png").write_bytes(out["png"])
             j["t2i"] = {"file": "t2i.png", "timing": out.get("t2i_timing")}
+        if out.get("raw"):
+            j["raw_generate"] = out["raw"]               # S9: T2I 명령·설정, A5000 /generate 요청·결과 전문
         if j["state"] != "generating":
             return                                        # TIMEOUT 등으로 이미 끝났다
         self._set(j, stage="chunking", progress=0.95)
@@ -268,11 +270,13 @@ class Engine:
         seed = 0 + j["attempt"] - 1                       # 내부 규약 5절: 기본 seed + attempt − 1
         inpaint_prompt = j["refine"]["new_scene_prompt"].rstrip(" .") + INPAINT_SUFFIX
         crop, crop_files = None, None
+        info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
         t0 = time.perf_counter()
         if self.s.inpaint_crop:                           # S7: 마스크 주변만 잘라 1024² 로 키워 보내고 원래 자리에 붙인다
-            edit, crop, crop_files = crop_inpaint(rpng, mpng, lambda r, m: self.be.inpaint(r, m, inpaint_prompt, seed))
+            edit, crop, crop_files = crop_inpaint(rpng, mpng,
+                                                  lambda r, m: self.be.inpaint(r, m, inpaint_prompt, seed, info=info))
         else:
-            edit = self.be.inpaint(rpng, mpng, inpaint_prompt, seed)
+            edit = self.be.inpaint(rpng, mpng, inpaint_prompt, seed, info=info)
         inpaint_s = round(time.perf_counter() - t0, 3)
         if j["state"] != "inpainting":
             return
@@ -288,7 +292,8 @@ class Engine:
         j["attempts"].append({"attempt": j["attempt"], "seed": seed, "prompt": inpaint_prompt,
                               "new_scene_prompt": j["refine"]["new_scene_prompt"], "instruction": j["instruction"],
                               "render_id": j["render"]["render_id"], "t": self.clock(), "inpaint_s": inpaint_s,
-                              "crop": crop if self.s.inpaint_crop else {"off": True}, **(j.get("refine_meta") or {})})
+                              "crop": crop if self.s.inpaint_crop else {"off": True}, "inpaint_raw": info,
+                              **(j.get("refine_meta") or {})})
         if (j.get("refine_meta") or {}).get("refine_unchanged"):
             j["refine_unchanged"] = True
         self._set(j, "awaiting_2d_review", "inpainting", 1.0)
@@ -307,6 +312,7 @@ class Engine:
         entries = self.store.put_staging(j["asset_id"], j["job_id"], out["to_version"], out["blobs"])
         j["worker_job_id"] = out["worker_job_id"]
         j["edit_stats"] = out.get("stats")
+        j["raw_edit3d"] = dict(out.get("raw") or {}, attempt=j["attempt"])   # S9: A5000 /edit 요청·결과 전문
         j["result"] = {"base_version": j["base_version"], "to_version": out["to_version"], "chunks": entries,
                        "removed_chunk_ids": out["removed"]}
         j["expires_at"] = self.clock() + self.s.review3d_s

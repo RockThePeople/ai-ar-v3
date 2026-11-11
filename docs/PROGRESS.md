@@ -355,6 +355,7 @@ W28 멀티유저 (M6)
 
 | 날짜 | 세션 | 결과 |
 |---|---|---|
+| 11-11 | 3090 app11 | S9 `/clients` 입력 전문: LLM 호출마다 요청 본문 전체(system·messages·output_config, 키 없음)·응답 원문(usage·stop_reason) 회차별, 인페인팅 요청·워커 응답 settings, A5000 render/edit/generate 요청·결과 전문, T2I 명령·스크립트 설정. `/clients/api/jobs/<id>` 작업 JSON. WebGL 없어도 페이지가 그려지게 |
 | 11-11 | 3090 app10 | S8: prompt 거절 뒤 재보정 new_scene_prompt 가 직전과 같으면(소문자·공백·끝 마침표 정규화) 보정 LLM 1회 더(`refine_changed`, 직전 문장·거절 이유·guidance 전달). 그래도 같으면 진행하고 `refine_unchanged` 기록·/clients 표시 |
 | 11-11 | 3090 app9 | S7 잘라 인페인팅(`APP_INPAINT_CROP`, 기본 1): 마스크 상자 ×2(최소 384) 정사각을 1024² 로 키워 워커에 보내고 결과를 원래 자리에 붙임(마스크 밖 = 워커 합성과 같은 흰 배경 RGB, 경계 4 px 안쪽 섞기). numpy+zlib(`server/app/cropinpaint.py`). `/clients` 에 상자·자른 입력/결과 |
 | 11-11 | 3090 app7 | S6 상세 프롬프트: 생성 입력을 subject_detailed(물체 + 부품 3–5 + 색·재질)로 상세화(영어도), T2I 고정 꼬리를 논문 X3 형식으로, 편집 new_scene_prompt 상세 유지 + 인페인팅 꼬리 `simple clean 3D game asset style`, 서버 문장 상한 800자. /clients 에 문장 사슬 표시 |

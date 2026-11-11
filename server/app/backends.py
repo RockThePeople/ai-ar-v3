@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import re
 import time
@@ -66,6 +67,11 @@ def fake_translate(prompt: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════ 실제
+def _fdesc(name: str, b: bytes) -> dict:
+    """S9: 보낸 파일 설명(이름·바이트·sha256). 이미지 자체는 작업 폴더에 따로 남는다."""
+    return {"filename": name, "bytes": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+
+
 class RealBackend:
     name = "real"
 
@@ -135,7 +141,12 @@ class RealBackend:
             res = self._poll(c, r.json()["job_id"], "GENERATE_FAILED", progress, "generating")
             progress("chunking", 0.9)
             blobs = self._fetch_version(c, asset_id, 1, res)
-        return {"blobs": blobs, "t2i_timing": timing, "png": png}
+        raw = {"t2i": {"command": timing.get("command"), "settings": timing.get("settings"),
+                       "prompt_effective": timing.get("prompt_effective"), "seed": seed},
+               "a5000_generate": {"endpoint": "POST /v2/trellis/generate (multipart: meta + image)", "meta": meta,
+                                  "files": {"image": _fdesc("input.png", png)}, "submit_response": r.json(),
+                                  "job_result": res}}
+        return {"blobs": blobs, "t2i_timing": timing, "png": png, "raw": raw}
 
     # 편집
     def render(self, asset_id: str, base_version: int, camera: dict, cells: List[list]) -> dict:
@@ -163,13 +174,18 @@ class RealBackend:
         for k in ("render_id", "render_sha256", "mask_sha256"):
             if not rec.get(k):
                 raise StageError("RENDER_FAILED", f"A5000 render 응답에 {k} 가 없다")
-        record = {"view": rec.get("view"), "camera_used": rec.get("camera_used"), "mode": self.s.render_mode,
+        record = {"request": {"endpoint": "POST /v2/trellis/render (JSON)", "body": body}, "response": rec,
+                  "view": rec.get("view"), "camera_used": rec.get("camera_used"), "mode": self.s.render_mode,
                   "render_sha256": rec["render_sha256"], "mask_sha256": rec["mask_sha256"],
                   "timing": (rec.get("renderer") or {}).get("timing")}
         return {"render_id": rec["render_id"], "render_png": files["2d_render"], "mask_png": files["2d_mask"],
                 "record": record}
 
-    def inpaint(self, render_png: bytes, mask_png: bytes, prompt: str, seed: int) -> bytes:
+    def inpaint(self, render_png: bytes, mask_png: bytes, prompt: str, seed: int, info: Optional[dict] = None) -> bytes:
+        if info is not None:                              # S9: 보낸 것 그대로
+            info.update({"endpoint": "POST /inpaint?wait=1 (multipart: image, mask, prompt, seed)",
+                         "form": {"prompt": prompt, "seed": str(seed)},
+                         "files": {"image": _fdesc("2d_render.png", render_png), "mask": _fdesc("2d_mask.png", mask_png)}})
         with self._w() as w:
             r = self._call(lambda: w.post("/inpaint", params={"wait": "1"},
                                           files={"image": ("2d_render.png", render_png, "image/png"),
@@ -181,6 +197,11 @@ class RealBackend:
             g = self._call(lambda: w.get(f"/jobs/{r.json()['job_id']}/2d_edit.png"), "INPAINT_FAILED", "인페인팅 결과")
             if g.status_code != 200:
                 raise self._err(g, "INPAINT_FAILED", "인페인팅 결과")
+            if info is not None:
+                info["worker_response"] = r.json()
+                info["settings"] = ((r.json().get("result") or {}).get("settings"))
+                info["settings_source"] = "워커 응답 result.settings (POST /inpaint?wait=1 응답)"
+                info["received"] = _fdesc("2d_edit.png", g.content)
             return g.content
 
     def edit3d(self, asset_id: str, base_version: int, render: dict, edit_png: bytes, cells: List[list],
@@ -196,6 +217,7 @@ class RealBackend:
             if r.status_code != 202:
                 raise self._err(r, "EDIT_FAILED", "A5000 edit")
             jid = r.json()["job_id"]
+            submit = r.json()
             res = self._poll(c, jid, "EDIT_FAILED", progress, "editing_3d")
             progress("chunking", 0.9)
             blobs = {}
@@ -206,9 +228,15 @@ class RealBackend:
                 if g.status_code != 200:
                     raise self._err(g, "EDIT_FAILED", f"staging 청크 {k}")
                 blobs[k] = g.content
+        raw = {"endpoint": "POST /v2/trellis/edit (multipart: meta + 2d_render + 2d_mask + 2d_edit)", "meta": meta,
+               "files": {"2d_render": _fdesc("2d_render.png", render["render_png"]),
+                         "2d_mask": _fdesc("2d_mask.png", render["mask_png"]),
+                         "2d_edit": _fdesc("2d_edit.png", edit_png)},
+               "text": "텍스트 입력 없음(이미지 조건) — meta 에 프롬프트 필드가 없고 파일 3장만 보낸다",
+               "submit_response": submit, "job_result": res}
         return {"to_version": int(res["to_version"]), "blobs": blobs,
                 "removed": list(res.get("removed_chunk_ids") or []), "worker_job_id": jid,
-                "stats": res.get("stats")}
+                "stats": res.get("stats"), "raw": raw}
 
     def commit(self, asset_id: str, to_version: int, idem: str) -> None:
         with self._a() as c:
@@ -325,7 +353,9 @@ class MockBackend:
         return {"render_id": f"mock-{int(time.time()*1000)}", "render_png": (self.fx / "render.png").read_bytes(),
                 "mask_png": (self.fx / "mask.png").read_bytes(), "record": {"mock": True}}
 
-    def inpaint(self, render_png: bytes, mask_png: bytes, prompt: str, seed: int) -> bytes:
+    def inpaint(self, render_png: bytes, mask_png: bytes, prompt: str, seed: int, info: Optional[dict] = None) -> bytes:
+        if info is not None:
+            info.update({"mock": True, "note": "가짜 모드 — 워커 호출 없음, 고정 edit.png", "form": {"prompt": prompt, "seed": seed}})
         self._sleep("inpaint")
         return (self.fx / "edit.png").read_bytes()
 
