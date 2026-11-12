@@ -150,3 +150,51 @@ def test_realstyle_off_is_s6(env):
 def test_fake_adapter_detail_style():
     assert FakeAdapter().detail_style("장난감 같은 소방차")["style"] == "toy-like"
     assert FakeAdapter().detail_style("빨간 소방차")["style"] is None
+
+
+# ── 사용자 결정(2026-11-12): S11 이전 자산은 생성 원문의 양식어로 ──────────────────
+def test_style_from_request():
+    from server.app.llm_adapter import style_from_request
+    assert style_from_request("a cartoon boy with a cap") == ("cartoon", "cartoon")
+    assert style_from_request("Toy like fire truck") == ("toy-like", "toy like")
+    assert style_from_request("장난감 같은 기차") == ("toy-like", "장난감 같은")
+    assert style_from_request("만화풍 야구 선수") == ("cartoon", "만화풍")
+    assert style_from_request("low-poly fox") == ("low poly", "low-poly")
+    assert style_from_request("a standing baseball player") == (None, None)
+    assert style_from_request("a tomato") == (None, None)                      # 단어 경계(toy ⊄ tomato)
+
+
+def _make_pre_s11(env, prompt, scene):
+    """S11 이전 자산처럼: 생성 작업에 양식 판정이 없고 style 열 NULL, 장면 문장은 옛 상세화."""
+    aid = make_asset(env)
+    g = [j for j in env.eng.jobs.values() if j["asset_id"] == aid and j["kind"] == "generate"][0]
+    g.pop("style", None)
+    g.pop("t2i_template", None)
+    g["prompt"] = prompt
+    env.eng._save(g)
+    env.eng.db.x("UPDATE assets SET style=NULL, scene_prompt=? WHERE asset_id=?", (scene, aid))
+    return aid
+
+
+def test_pre_s11_cartoon_request_gives_cartoon_style_tail(env):
+    aid = _make_pre_s11(env, "a cartoon boy with a cap", "A boy character, a blue cap, a round face")
+    jid = edit(env, aid).json()["job_id"]
+    env.eng.drain()
+    a = env.eng.get(jid)["attempts"][0]
+    assert a["prompt"].endswith(", cartoon style")
+    assert a["style"]["mode"] == "user" and a["style"]["style"] == "cartoon"
+    assert a["style"]["style_source"] == "pre_s11_request" and a["style"]["words"] == "cartoon"
+
+
+def test_pre_s11_scene_words_are_ignored(env):
+    aid = _make_pre_s11(env, "a standing baseball player", "A standing baseball player figure, a helmet")
+    assert env.eng._asset_style_src(aid) == {"style": None, "source": "pre_s11_request", "words": None,
+                                             "request": "a standing baseball player"}
+
+
+def test_s11_asset_record_wins_over_request(env):
+    aid = make_asset(env)                                    # S11 생성: 양식 판정 기록 있음(실물형)
+    g = [j for j in env.eng.jobs.values() if j["asset_id"] == aid and j["kind"] == "generate"][0]
+    g["prompt"] = "a cartoon man"                            # 기록이 있으면 원문을 다시 보지 않는다
+    env.eng._save(g)
+    assert env.eng._asset_style_src(aid)["style"] is None

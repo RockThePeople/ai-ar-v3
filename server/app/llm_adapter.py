@@ -322,6 +322,27 @@ _FAKE_STYLE = (("toy like", "toy-like"), ("toy-like", "toy-like"), ("장난감 �
                ("miniature", "miniature"), ("cartoon", "cartoon"), ("만화풍", "cartoon"), ("low poly", "low poly"))
 
 
+#: 사용자 결정(2026-11-12): S11 이전 자산(양식 기록 없음)은 생성 원문의 양식어로 양식을 정한다. 장면 문장은 보지 않는다.
+#: 긴 말부터 찾는다. (찾을 말, 양식) — 영어는 단어 경계, 한국어는 부분 문자열
+_REQUEST_STYLE = (("toy-like", "toy-like"), ("toy like", "toy-like"), ("low-poly", "low poly"), ("low poly", "low poly"),
+                  ("cartoon", "cartoon"), ("miniature", "miniature"), ("chibi", "chibi"), ("toy", "toy-like"),
+                  ("장난감 같은", "toy-like"), ("장난감", "toy-like"), ("만화풍", "cartoon"), ("만화", "cartoon"),
+                  ("카툰", "cartoon"), ("미니어처", "miniature"), ("치비", "chibi"), ("로우폴리", "low poly"),
+                  ("로우 폴리", "low poly"))
+
+
+def style_from_request(text: str):
+    """생성 원문(사용자 입력) → (양식, 찾은 말) 또는 (None, None)."""
+    t = text or ""
+    for w, st in _REQUEST_STYLE:
+        if _HANGUL.search(w):
+            if w in t:
+                return st, w
+        elif re.search(r"\b" + re.escape(w) + r"s?\b", t, re.I):
+            return st, w
+    return None, None
+
+
 def fake_detail_style(prompt: str) -> dict:
     low = prompt.lower()
     for w, st in _FAKE_STYLE:
