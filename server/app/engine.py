@@ -22,10 +22,19 @@ from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
 from .cropinpaint import crop_inpaint
-from .llm_adapter import LLMInvalid, LLMUnavailable, make_adapter
+from .llm_adapter import LLMInvalid, LLMUnavailable, banned_words, make_adapter, strip_banned
+from ..t2i import app_template
 
 #: S6: 인페인팅 문장 꼬리. 시점·배경 문구는 넣지 않는다(조건 렌더가 라쏘 시점이다)
 INPAINT_SUFFIX = ", simple clean 3D game asset style"
+
+
+def inpaint_prompt(new_scene_prompt: str, realstyle: bool, style: Optional[str]) -> str:
+    """S11 켬: 장면 문장 + (양식이 있으면 ', {style} style'). 끔: S6 꼬리."""
+    base = new_scene_prompt.rstrip(" .")
+    if not realstyle:
+        return base + INPAINT_SUFFIX
+    return base + (f", {style} style" if style else "")
 from .config import Settings
 from .store import ChunkStore, Db
 
@@ -170,17 +179,32 @@ class Engine:
         # S6: 거친 입력을 상세 물체 묘사(subject_detailed)로 바꾼다. 영어 입력도 항상 거친다(계약 3.2 영어 변환 포함).
         # T2I 는 여기에 서버 고정 꼬리를 붙인다(server/t2i.py DEFAULT_TEMPLATE). LLM 실패면 원문으로 진행(생성은 막지 않는다)
         raw = j["prompt"].strip()
+        style, template = None, None
+        styled = self.s.realstyle and hasattr(self.llm, "detail_style")
         try:
-            prompt_en = self.llm.detail_prompt(raw, job_id=j["job_id"])
-            j["translate"] = {"ok": True, "mode": "detail"}
+            if styled:                                   # S11: {subject_detailed, style} + 금지어 검사
+                d = self.llm.detail_style(raw, job_id=j["job_id"])
+                prompt_en, style = d["subject_detailed"], d.get("style")
+                j["style"] = {"mode": "user" if style else "real", "style": style, "words": d.get("style_words"),
+                              **(d.get("check") or {})}
+                j["translate"] = {"ok": True, "mode": "detail_style"}
+            else:
+                prompt_en = self.llm.detail_prompt(raw, job_id=j["job_id"])
+                j["translate"] = {"ok": True, "mode": "detail"}
         except (LLMInvalid, LLMUnavailable) as e:
-            prompt_en, j["translate"] = raw, {"ok": False, "mode": "detail", "error": f"{type(e).__name__}: {e}"}
+            prompt_en, j["translate"] = raw, {"ok": False, "mode": "detail_style" if styled else "detail",
+                                              "error": f"{type(e).__name__}: {e}"}
+        if self.s.realstyle:
+            template = app_template(style)
+            j.setdefault("style", {"mode": "real", "style": None, "words": None, "fallback": True})
+            j["t2i_template"] = template
         j["prompt_en"] = prompt_en                      # = subject_detailed(꼬리 없음), 첫 scene_prompt
         self._save(j)
         trace: dict = {}                                  # S10: A5000 접수·폴링 회차 기록(실패해도 남긴다)
         j.setdefault("a5000_trace", {})["generate"] = trace
         try:
-            out = self.be.generate(j["asset_id"], prompt_en, int(j["seed"]), self._progress(j), trace=trace)
+            kw = {"template": template} if template else {}
+            out = self.be.generate(j["asset_id"], prompt_en, int(j["seed"]), self._progress(j), trace=trace, **kw)
         finally:
             self._save(j)
         if out.get("png"):                               # T2I RGBA 보관(S3)
@@ -196,7 +220,7 @@ class Engine:
         self.store.put_version(j["asset_id"], 1, out["blobs"])
         if out.get("slat_coords"):
             self.store.put_slat_coords(j["asset_id"], 1, out["slat_coords"])
-        self.db.x("UPDATE assets SET version=1, scene_prompt=? WHERE asset_id=?", (prompt_en, j["asset_id"]))
+        self.db.x("UPDATE assets SET version=1, scene_prompt=?, style=? WHERE asset_id=?", (prompt_en, style, j["asset_id"]))
         self.db.x("INSERT OR REPLACE INTO commits VALUES(?,?,?,?)", (j["asset_id"], 1, j["job_id"], self.clock()))
         j["result"] = {"to_version": 1, "manifest_uri": f"/v2/assets/{j['asset_id']}/manifest.v1.json"}
         j["progress"] = 1.0
@@ -230,6 +254,33 @@ class Engine:
         a = self.db.asset(asset_id)
         return (a["scene_prompt"] if a else "") or ""
 
+    def _asset_style(self, asset_id: str) -> Optional[str]:
+        """S11: 자산 양식. 기록 없음(S11 이전 자산 포함) = None = 기본 실물형."""
+        a = self.db.asset(asset_id)
+        return (a["style"] or None) if a is not None and "style" in a.keys() else None
+
+    def _refine_styled(self, j: dict, scene: str, hist: list, changed_from: Optional[dict] = None):
+        """S11: 자산 양식을 보정에 알리고, 실물형인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다."""
+        if not self.s.realstyle:
+            kw = {"changed_from": changed_from} if changed_from else {}
+            return self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw), None
+        st = self._asset_style(j["asset_id"])
+        kw = {"changed_from": changed_from} if changed_from else {}
+        out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], style={"style": st}, **kw)
+        meta = {"mode": "user" if st else "real", "style": st, "banned_found": [], "retried": False, "removed": []}
+        if st:
+            return out, meta
+        src = f"{scene} {j['instruction']}"
+        found = banned_words(out["new_scene_prompt"], src)
+        if found:
+            meta.update(banned_found=found, retried=True)
+            out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], style={"style": st}, avoid=found, **kw)
+            left = banned_words(out["new_scene_prompt"], src)
+            if left:
+                out = dict(out, new_scene_prompt=strip_banned(out["new_scene_prompt"], left))
+                meta["removed"] = left
+        return out, meta
+
     def _run_refine(self, j: dict) -> None:
         self._set(j, "refining", "refining", 0.1)
         self._mock_gate(j)
@@ -237,18 +288,20 @@ class Engine:
             time.sleep(self.be.DUR["refine"] * self.s.mock_time_scale)
         try:
             scene, hist = self._scene(j["asset_id"]), list(j.get("reject_history") or [])
-            j["refine"] = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"])
+            j["refine"], smeta = self._refine_styled(j, scene, hist)
             j["refine_meta"] = {}
             last = (j.get("attempts") or [None])[-1]
             if last and last.get("rejected") and last.get("category") == "prompt" and \
                     _norm(j["refine"]["new_scene_prompt"]) == _norm(last.get("new_scene_prompt")):
                 # S8: prompt 거절인데 같은 문장 → 1회 더(그래도 같으면 진행하고 기록)
-                again = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"],
-                                        changed_from={"prev": last.get("new_scene_prompt"), "reason": last.get("reason"),
-                                                      "guidance": last.get("guidance")})
+                again, smeta2 = self._refine_styled(j, scene, hist, changed_from={
+                    "prev": last.get("new_scene_prompt"), "reason": last.get("reason"), "guidance": last.get("guidance")})
+                if smeta2 is not None:
+                    smeta = smeta2
                 same = _norm(again["new_scene_prompt"]) == _norm(last.get("new_scene_prompt"))
                 j["refine"] = again
                 j["refine_meta"] = {"refine_retry": True, "refine_unchanged": same}
+            j["style_meta"] = smeta                        # S11: 이 시도의 양식 판정·금지어 처리(끔이면 None)
         except LLMInvalid as e:
             raise StageError("REFINE_INVALID", str(e))
         except LLMUnavailable as e:
@@ -273,15 +326,15 @@ class Engine:
         rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
         rpng, mpng = (rd / "render.png").read_bytes(), (rd / "mask.png").read_bytes()
         seed = 0 + j["attempt"] - 1                       # 내부 규약 5절: 기본 seed + attempt − 1
-        inpaint_prompt = j["refine"]["new_scene_prompt"].rstrip(" .") + INPAINT_SUFFIX
+        ip = inpaint_prompt(j["refine"]["new_scene_prompt"], self.s.realstyle, (j.get("style_meta") or {}).get("style"))
         crop, crop_files = None, None
         info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
         t0 = time.perf_counter()
         if self.s.inpaint_crop:                           # S7: 마스크 주변만 잘라 1024² 로 키워 보내고 원래 자리에 붙인다
             edit, crop, crop_files = crop_inpaint(rpng, mpng,
-                                                  lambda r, m: self.be.inpaint(r, m, inpaint_prompt, seed, info=info))
+                                                  lambda r, m: self.be.inpaint(r, m, ip, seed, info=info))
         else:
-            edit = self.be.inpaint(rpng, mpng, inpaint_prompt, seed, info=info)
+            edit = self.be.inpaint(rpng, mpng, ip, seed, info=info)
         inpaint_s = round(time.perf_counter() - t0, 3)
         if j["state"] != "inpainting":
             return
@@ -294,7 +347,7 @@ class Engine:
         base = f"/app/v1/jobs/{j['job_id']}/preview/{j['attempt']}"
         j["preview"] = {"attempt": j["attempt"], "render_url": f"{base}/render.png",
                         "edit_url": f"{base}/edit.png", "mask_url": f"{base}/mask.png"}
-        j["attempts"].append({"attempt": j["attempt"], "seed": seed, "prompt": inpaint_prompt,
+        j["attempts"].append({"attempt": j["attempt"], "seed": seed, "prompt": ip, "style": j.get("style_meta"),
                               "new_scene_prompt": j["refine"]["new_scene_prompt"], "instruction": j["instruction"],
                               "render_id": j["render"]["render_id"], "t": self.clock(), "inpaint_s": inpaint_s,
                               "crop": crop if self.s.inpaint_crop else {"off": True}, "inpaint_raw": info,

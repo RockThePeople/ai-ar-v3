@@ -356,6 +356,7 @@ W28 멀티유저 (M6)
 | 날짜 | 세션 | 결과 |
 |---|---|---|
 | 11-12 | 3090 app12 | S10: A5000 잡 폴링 연결 오류(TransportError·본문 없는 5xx) 재시도 1·2·4·8 s 뒤 8 s, 연속 60 s 넘으면 WORKER_UNREACHABLE. A5000 오류 본문 있는 5xx·4xx 는 바로 실패. 접수 POST 는 재시도 안 함(A5000 은 앞 작업 끝나기 전 같은 키를 재생하지 않음). 접수·폴링 회차 기록(실패 포함)·/clients 표 |
+| 11-12 | 3090 app13 | S11 `APP_REALSTYLE`(기본 1): 상세화가 {subject_detailed, style, style_words} — 기본 실물형, 양식은 사용자 원문에 있을 때만(style_words 원문 검사). 금지어(figure·toy·miniature·cartoon·chibi·stylized·game asset·figurine·low poly) 1회 재요청 뒤 삭제·기록. T2I 꼬리에서 game asset 삭제(+`{style} style`), 자산 style 열, 인페인팅 문장 + `, {style} style`, 보정에 자산 양식 알림·금지어 재요청. /clients 양식 판정. 끔 = S6 그대로 |
 | 11-11 | 3090 app11 | S9 `/clients` 입력 전문: LLM 호출마다 요청 본문 전체(system·messages·output_config, 키 없음)·응답 원문(usage·stop_reason) 회차별, 인페인팅 요청·워커 응답 settings, A5000 render/edit/generate 요청·결과 전문, T2I 명령·스크립트 설정. `/clients/api/jobs/<id>` 작업 JSON. WebGL 없어도 페이지가 그려지게 |
 | 11-11 | 3090 app10 | S8: prompt 거절 뒤 재보정 new_scene_prompt 가 직전과 같으면(소문자·공백·끝 마침표 정규화) 보정 LLM 1회 더(`refine_changed`, 직전 문장·거절 이유·guidance 전달). 그래도 같으면 진행하고 `refine_unchanged` 기록·/clients 표시 |
 | 11-11 | 3090 app9 | S7 잘라 인페인팅(`APP_INPAINT_CROP`, 기본 0 — 사용자 결정: 켬이 확대 조각에 장면을 다시 그리고 R→B): 마스크 상자 ×2(최소 384) 정사각을 1024² 로 키워 워커에 보내고 결과를 원래 자리에 붙임(마스크 밖 = 워커 합성과 같은 흰 배경 RGB, 경계 4 px 안쪽 섞기). numpy+zlib(`server/app/cropinpaint.py`). `/clients` 에 상자·자른 입력/결과 |

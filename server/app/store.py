@@ -187,7 +187,8 @@ class Db:
         self.lock = threading.RLock()
         with self.lock:
             self.c.executescript(SCHEMA)
-            for col in ("deleted_at REAL", "qr_origin TEXT"):           # 1.0.2 보관(S3) — 옛 DB 에 열 추가
+            for col in ("deleted_at REAL", "qr_origin TEXT",            # 1.0.2 보관(S3) — 옛 DB 에 열 추가
+                        "style TEXT"):                                  # S11 자산 양식(NULL = 기본 실물형, S11 이전 포함)
                 try:
                     self.c.execute(f"ALTER TABLE assets ADD COLUMN {col}")
                 except sqlite3.OperationalError:

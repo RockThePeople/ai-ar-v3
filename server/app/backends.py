@@ -120,7 +120,8 @@ class RealBackend:
         return out
 
     # 생성
-    def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None) -> dict:
+    def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None,
+                 template: Optional[str] = None) -> dict:
         from .. import t2i
         trace = trace if trace is not None else {}
 
@@ -129,7 +130,7 @@ class RealBackend:
             with self._w(timeout=600) as w:
                 self._call(lambda: w.post("/release"), "WORKER_UNREACHABLE", "인페인팅 워커 release")
             try:
-                png, timing = t2i.render_rgba(prompt, seed=seed)
+                png, timing = t2i.render_rgba(prompt, seed=seed, template=template)  # S11: None = S6 꼬리
             except t2i.T2IUnavailable as e:
                 raise StageError("T2I_FAILED", str(e)) from e
         finally:
@@ -415,7 +416,8 @@ class MockBackend:
     def health(self) -> dict:
         return {"a5000": "up", "inpaint": "up"}
 
-    def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None) -> dict:
+    def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None,
+                 template: Optional[str] = None) -> dict:
         progress("generating", 0.5)
         self._sleep("generate")
         src = self.s.mock_source

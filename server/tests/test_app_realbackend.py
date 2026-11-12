@@ -34,7 +34,7 @@ def _app(tmp_path, fw, mode="camera"):
 def test_generate_swap_order_and_edit(tmp_path, fw, monkeypatch):
     from server import t2i
 
-    def fake_rgba(prompt, seed=42, keep_dir=None):
+    def fake_rgba(prompt, seed=42, keep_dir=None, template=None):
         assert fw.gpu_loaded is False, "T2I 는 인페인팅 워커를 내린 뒤에 돈다"
         fw.log.append(f"t2i {prompt} {seed}")
         return b"\x89PNG fake", {"t2i_s": 1.0}
@@ -74,7 +74,7 @@ def test_generate_swap_order_and_edit(tmp_path, fw, monkeypatch):
 def test_reload_even_when_t2i_fails(tmp_path, fw, monkeypatch):
     from server import t2i
 
-    def boom(prompt, seed=42, keep_dir=None):
+    def boom(prompt, seed=42, keep_dir=None, template=None):
         raise t2i.T2IUnavailable("boom")
 
     monkeypatch.setattr(t2i, "render_rgba", boom)
@@ -87,7 +87,7 @@ def test_reload_even_when_t2i_fails(tmp_path, fw, monkeypatch):
 
 def test_view_mode_and_discard(tmp_path, fw, monkeypatch):
     from server import t2i
-    monkeypatch.setattr(t2i, "render_rgba", lambda p, seed=42, keep_dir=None: (b"x", {}))
+    monkeypatch.setattr(t2i, "render_rgba", lambda p, seed=42, keep_dir=None, template=None: (b"x", {}))
     c = _app(tmp_path, fw, mode="view")
     aid = c.post("/app/v1/qr/q3/asset", json={"prompt": "x"}, headers=A).json()["asset_id"]
     c.eng.drain()

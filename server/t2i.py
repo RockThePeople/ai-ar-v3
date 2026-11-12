@@ -70,6 +70,18 @@ DEFAULT_TEMPLATE = os.environ.get(
     "simple clean 3D game asset style, pure white background, no shadow")
 
 
+#: S11(2026-11-12): 앱 생성의 기본은 실물형 — `simple clean 3D game asset style` 삭제. 사용자가 양식을 말하면
+#: `{style} style` 을 넣는다. 앱 서버(`APP_REALSTYLE=1`)가 template= 로 넘긴다. 다른 경로(routes_v2·voxhammer)는 DEFAULT_TEMPLATE 그대로.
+REAL_TEMPLATE = "{subject}, three-quarter front view, centered, full object visible, pure white background, no shadow"
+REAL_STYLE_TEMPLATE = ("{subject}, {style} style, three-quarter front view, centered, full object visible, "
+                       "pure white background, no shadow")
+
+
+def app_template(style: Optional[str]) -> str:
+    """S11: 양식(None = 기본 실물형) → T2I 템플릿({subject} 만 남김)."""
+    return REAL_STYLE_TEMPLATE.replace("{style}", style) if style else REAL_TEMPLATE
+
+
 _SETTING_LINE = ("from_pretrained", "height", "width", "num_inference_steps", "guidance", "Resize", "torch_dtype",
                  "manual_seed", "max_sequence_length")
 
@@ -84,7 +96,7 @@ def _script_settings(path: Path) -> list:
 
 
 def render_rgba(prompt: str, *, seed: int = 42,
-                keep_dir: Optional[Path] = None) -> Tuple[bytes, dict]:
+                keep_dir: Optional[Path] = None, template: Optional[str] = None) -> Tuple[bytes, dict]:
     """prompt → (RGBA PNG 바이트, 소요 내역).
 
     Raises:
@@ -95,7 +107,7 @@ def render_rgba(prompt: str, *, seed: int = 42,
     work = Path(keep_dir) if keep_dir else Path(tempfile.mkdtemp(prefix="t2i-"))
     work.mkdir(parents=True, exist_ok=True)
     rgb, rgba = work / "image.png", work / "source.png"
-    effective = DEFAULT_TEMPLATE.replace("{subject}", prompt)
+    effective = (template or DEFAULT_TEMPLATE).replace("{subject}", prompt)
     (work / "prompt.effective.txt").write_text(effective, encoding="utf-8")
 
     timing: dict = {"prompt_effective_chars": len(effective), "prompt_effective": effective,

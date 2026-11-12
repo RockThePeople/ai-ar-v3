@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.app.config import Settings
-from server.app.engine import INPAINT_SUFFIX
+from server.app.engine import INPAINT_SUFFIX, inpaint_prompt
 from server.app.main import create_app
 from server.app.llm_adapter import FakeAdapter
 from server.tests.app_fakes import BASE_KEYS, FakeBackend
@@ -132,7 +132,7 @@ def test_edit_to_2d_review_and_preview(env):
     for n in ("render", "edit", "mask"):
         r = env.get(j["preview"][f"{n}_url"])
         assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
-    assert ("inpaint_args", j["refine"]["new_scene_prompt"] + INPAINT_SUFFIX, 0) in env.be.calls
+    assert ("inpaint_args", inpaint_prompt(j["refine"]["new_scene_prompt"], True, None), 0) in env.be.calls   # S11 실물형: 꼬리 없음
 
 
 def test_reject_quality_prompt_then_retry_limit(env):
@@ -143,7 +143,7 @@ def test_reject_quality_prompt_then_retry_limit(env):
     assert j["state"] == "inpainting" and j["review"]["category"] == "quality" and j["attempt"] == 2
     env.eng.drain()
     assert sum(1 for c in env.be.calls if c == ("render",)) == n_render          # 품질 재시도는 렌더 재사용
-    assert ("inpaint_args", job(env, jid)["refine"]["new_scene_prompt"] + INPAINT_SUFFIX, 1) in env.be.calls   # seed = 0 + attempt − 1
+    assert ("inpaint_args", inpaint_prompt(job(env, jid)["refine"]["new_scene_prompt"], True, None), 1) in env.be.calls   # seed = 0 + attempt − 1
     assert job(env, jid)["preview"]["attempt"] == 2
     j = env.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "프롬프트를 잘못 이해함"}, headers=A).json()
     assert j["state"] == "refining" and j["review"]["category"] == "prompt" and j["attempt"] == 3
@@ -486,7 +486,8 @@ def test_clients_raw_fields(env):
     d = env.get(f"/clients/api/assets/{aid}").json()
     e = [x for x in d["jobs"] if x["job_id"] == jid][0]
     a = e["attempts"][0]["inpaint_raw"]
-    assert a["form"]["prompt"].endswith(INPAINT_SUFFIX) and a["settings"] and a["settings_source"]
+    assert not a["form"]["prompt"].endswith(INPAINT_SUFFIX) and a["settings"] and a["settings_source"]   # S11 실물형
+    assert e["attempts"][0]["style"]["mode"] == "real"
     assert e["raw_edit3d"]["text"].startswith("텍스트 입력 없음") and e["raw_edit3d"]["attempt"] == 1
     assert all("attempts" in c for c in e["llm_calls"])
     full = env.get(e["job_json"]).json()
