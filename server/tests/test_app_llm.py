@@ -35,7 +35,7 @@ class StubLLM:
     def refine(self, scene, instruction, history, job_id="", **kw):
         return self._next(self.refines, ("refine", scene, instruction, list(history)))
 
-    def classify(self, reason, refine, history, job_id=""):
+    def classify(self, reason, refine, history, job_id="", **kw):
         return self._next(self.classes, ("classify", reason, list(history)))
 
 
@@ -68,7 +68,8 @@ def test_prompt_reject_feeds_history_and_scene_updates(tmp_path):
     assert j["state"] == "refining" and j["review"] == {"reason": "갑옷 색이 틀렸어", "category": "prompt",
                                                          "guidance": "make the armor red"}
     c.eng.drain()
-    assert llm.calls[-1] == ("refine", "a man riding a motorcycle", "change the man into Ironman", ["make the armor red"])
+    assert llm.calls[-1] == ("refine", "a man riding a motorcycle", "change the man into Ironman",
+                             ['user said: "갑옷 색이 틀렸어" (this comes first); guidance: make the armor red'])   # S13 원문 우선
     assert job(c, jid)["refine"] == R2
     c.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": True}, headers=A)
     c.eng.drain()
@@ -190,6 +191,7 @@ def test_inpaint_prompt_gets_style_suffix_when_realstyle_off(tmp_path):
     llm = DetailLLM(DETAILED, refines=[r])
     c = _env(tmp_path, llm)
     c.eng.s.realstyle = False
+    c.eng.s.regionrefine = False                                                # S6 문장 그대로 보는 시험(S13 자리 검사 제외)
     c.eng.llm, keep = FakeAdapter(), llm
     aid = make_asset(c)
     c.eng.llm = keep

@@ -132,7 +132,9 @@ def test_edit_to_2d_review_and_preview(env):
     for n in ("render", "edit", "mask"):
         r = env.get(j["preview"][f"{n}_url"])
         assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
-    assert ("inpaint_args", inpaint_prompt(j["refine"]["new_scene_prompt"], True, None), 0) in env.be.calls   # S11 실물형: 꼬리 없음
+    rf0 = env.eng.get(jid)["refine"]                                                            # 앱 API 는 4필드만(모양 그대로)
+    want = rf0.get("inpaint_prompt") or rf0["new_scene_prompt"]                                 # S13b: 인페인팅 전용 문장
+    assert ("inpaint_args", inpaint_prompt(want, True, None), 0) in env.be.calls   # S11 실물형: 꼬리 없음
 
 
 def test_reject_quality_prompt_then_retry_limit(env):
@@ -143,7 +145,8 @@ def test_reject_quality_prompt_then_retry_limit(env):
     assert j["state"] == "inpainting" and j["review"]["category"] == "quality" and j["attempt"] == 2
     env.eng.drain()
     assert sum(1 for c in env.be.calls if c == ("render",)) == n_render          # 품질 재시도는 렌더 재사용
-    assert ("inpaint_args", inpaint_prompt(job(env, jid)["refine"]["new_scene_prompt"], True, None), 1) in env.be.calls   # seed = 0 + attempt − 1
+    rf = env.eng.get(jid)["refine"]
+    assert ("inpaint_args", inpaint_prompt(rf.get("inpaint_prompt") or rf["new_scene_prompt"], True, None), 1) in env.be.calls   # seed = 0 + attempt − 1
     assert job(env, jid)["preview"]["attempt"] == 2
     j = env.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "프롬프트를 잘못 이해함"}, headers=A).json()
     assert j["state"] == "refining" and j["review"]["category"] == "prompt" and j["attempt"] == 3

@@ -81,7 +81,7 @@ def build_clients(S) -> APIRouter:
             attempts.append({**{k: a.get(k) for k in ("attempt", "seed", "prompt", "new_scene_prompt", "instruction",
                                                       "render_id", "rejected", "reason", "category", "guidance",
                                                       "crop", "inpaint_s", "refine_retry", "refine_unchanged",
-                                                      "inpaint_raw", "style")},
+                                                      "inpaint_raw", "style", "render_reused", "inpaint_src")},
                              "images": {n: f"/clients/img/{j['job_id']}/{a['attempt']}/{n}.png" for n in
                                         ("render", "edit", "mask") + (CROP_IMGS if (a.get("crop") or {}).get("box") else ())}})
         outcome = {"committed": "유지", "discarded": "되돌리기" if "자동" not in (j.get("discard_note") or "") else "자동 폐기",
@@ -142,6 +142,17 @@ def build_clients(S) -> APIRouter:
         return {**row, "versions": versions, "jobs": [job_view(j) for j in jobs], "ratings_list": ratings}
 
     # ── 이미지 ─────────────────────────────────────────────────────
+    @r.get("/img/{job_id}/region/{name}.png")
+    def region_img(job_id: str, name: str, req: Request):
+        """S13: 보정·분류에 보낸 라쏘 겹친 이미지·확대."""
+        guard(req)
+        if name not in ("overlay", "zoom") or S.engine.get(job_id) is None:
+            raise AppError(404, "JOB_NOT_FOUND", job_id)
+        p = data / "jobs" / job_id / "region" / f"{name}.png"
+        if not p.is_file():
+            raise AppError(404, "JOB_NOT_FOUND", "이미지 없음")
+        return FileResponse(p, media_type="image/png")
+
     @r.get("/img/{job_id}/{attempt}/{name}.png")
     def img(job_id: str, attempt: int, name: str, req: Request):
         guard(req)
@@ -269,6 +280,9 @@ function llmRaw(c){const at=c.attempts||[];if(!at.length)return '<span class="ca
 function llmTable(cs){return `<details><summary>LLM 호출 ${cs.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력(정리본)</th><th>출력(정리본)</th></tr>${cs.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr><tr><td colspan="8">${llmRaw(c)}</td></tr>`).join('')}</table></details>`;}
 function inpRaw(a,j){const r=a.inpaint_raw;if(!r)return '<div class="cap">(인페인팅 요청 전문 기록 없음 — S9 이전)</div>';
  return `<div class="cap">인페인팅 요청: 문장 "${esc((r.form||{}).prompt)}" · seed ${esc((r.form||{}).seed)} · 워커 설정 ${esc(JSON.stringify(r.settings))} <i>(출처: ${esc(r.settings_source||'-')})</i></div>`+RAW('인페인팅 요청·응답 전문',r);}
+function regionView(st,jid,a){if(!st||!st.region)return '';const iss=x=>(x||[]).map(v=>({subject_changed:'주어 바뀜',placement:'새 부위 자리'}[v]||v)).join(', ');
+ const fit={ok:'ok',too_small:'<span class="bad">too_small</span>',wrong_part:'<span class="bad">wrong_part</span>'}[st.region_fit]||esc(st.region_fit);
+ return `<div class="cap">라쏘 이미지(S13): mask_ratio ${st.mask_ratio??'-'} · selected_part <b>${esc(st.selected_part||'-')}</b> · region_fit ${fit} — ${esc(st.region_reason||'')}${(st.region_found||[]).length?` · 검사 ${esc(iss(st.region_found))} → 재요청 1회${(st.region_left||[]).length?` → <span class="bad">남음 ${esc(iss(st.region_left))}</span>`:' → 해결'}`:''}${a&&a.render_reused?' · 조건 렌더 재사용':''}</div><div class="imgs">${(st.images||[]).map(n=>thumb(`/clients/img/${jid}/region/${n}.png`,'보정에 보낸 '+n)).join('')}</div>`;}
 function relView(st){if(!st||!st.relphrase)return '';const f=st.imperative_found||[],l=st.imperative_left||[];
  return `<div class="cap">보정 템플릿: S12 관계어(wearing·holding·with)${f.length?` · 명령형 ${esc(f.join(', '))} → 재요청 1회${l.length?` → <span class="bad">남음 ${esc(l.join(', '))}</span>`:' → 사라짐'}`:' · 명령형 없음'}</div>`;}
 function styleView(st,gen){if(st&&!gen&&st.relphrase&&!st.mode)return relView(st);if(!st)return `<div class="cap">양식 판정: 기록 없음${gen?' (S11 이전 생성 또는 APP_REALSTYLE=0)':' (S11 이전·끔) → 기본 실물형으로 봄'}</div>`;
@@ -313,7 +327,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${styleView(a.style,false)}${a.style&&a.style.mode?relView(a.style):''}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)}</div><table class="cap"><tr><th>인페인팅 문장${a.inpaint_src==='inpaint_prompt'?' (S13b inpaint_prompt)':' (장면 문장)'}</th><th>장면 문장(자산 저장용 new_scene_prompt)</th></tr><tr><td>${esc(a.prompt)}</td><td>${esc(a.new_scene_prompt||'(기록 없음)')}</td></tr></table>${styleView(a.style,false)}${a.style&&a.style.mode?relView(a.style):''}${regionView(a.style,j.job_id,a)}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   ${llmTable(j.llm_calls)}
   ${RAW('A5000 렌더 요청·응답 전문(마지막 렌더)',j.render_record)}
