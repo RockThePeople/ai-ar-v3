@@ -22,7 +22,8 @@ from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
 from .cropinpaint import crop_inpaint
-from .llm_adapter import LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, strip_banned
+from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, strip_banned,
+                          style_from_request)
 from ..t2i import app_template
 
 #: S6: 인페인팅 문장 꼬리. 시점·배경 문구는 넣지 않는다(조건 렌더가 라쏘 시점이다)
@@ -255,16 +256,29 @@ class Engine:
         return (a["scene_prompt"] if a else "") or ""
 
     def _asset_style(self, asset_id: str) -> Optional[str]:
-        """S11: 자산 양식. 기록 없음(S11 이전 자산 포함) = None = 기본 실물형."""
+        """S11: 자산 양식(None = 기본 실물형)."""
+        return self._asset_style_src(asset_id)["style"]
+
+    def _asset_style_src(self, asset_id: str) -> dict:
+        """자산 양식과 출처. S11 생성 자산은 기록(style 열, NULL = 실물형). S11 이전 자산(생성 작업에 양식 판정이
+        없음)은 생성 원문의 양식어로 정한다(사용자 결정 2026-11-12). 장면 문장은 보지 않는다. 생성 기록이 없으면 실물형."""
         a = self.db.asset(asset_id)
-        return (a["style"] or None) if a is not None and "style" in a.keys() else None
+        if a is not None and "style" in a.keys() and a["style"]:
+            return {"style": a["style"], "source": "asset"}
+        gens = self.db.jobs("asset_id=? AND kind='generate'", (asset_id,), limit=1)
+        g = gens[0] if gens else None
+        if g is None or "style" in g:
+            return {"style": None, "source": "asset" if g is not None else "default"}
+        st, w = style_from_request(g.get("prompt") or "")
+        return {"style": st, "source": "pre_s11_request", "words": w, "request": g.get("prompt")}
 
     def _refine_styled(self, j: dict, scene: str, hist: list, changed_from: Optional[dict] = None):
         """S11: 자산 양식을 보정에 알리고, 실물형인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다.
         S12: 관계어 보정 템플릿, 명령형 동사가 있으면 1회 재요청(금지어와 같은 재요청 1회로 묶는다), 남으면 기록만."""
         rs, rp = self.s.realstyle, self.s.relphrase
         kw: dict = {"changed_from": changed_from} if changed_from else {}
-        st = self._asset_style(j["asset_id"]) if rs else None
+        src_info = self._asset_style_src(j["asset_id"]) if rs else {"style": None}
+        st = src_info["style"]
         if rs:
             kw["style"] = {"style": st}
         if rp:
@@ -274,7 +288,10 @@ class Engine:
             return out, None
         meta: dict = {"retried": False}
         if rs:
-            meta.update(mode="user" if st else "real", style=st, banned_found=[], removed=[])
+            meta.update(mode="user" if st else "real", style=st, banned_found=[], removed=[],
+                        style_source=src_info.get("source"))
+            if src_info.get("source") == "pre_s11_request":
+                meta["words"] = src_info.get("words")
         if rp:
             meta.update(relphrase=True, imperative_found=[], imperative_left=[])
         src = f"{scene} {j['instruction']}"
