@@ -89,6 +89,66 @@ current scene: "A man riding a motorcycle"
 instruction: "change the man into Ironman"
 → {"target_element": "the man", "replacement": "Ironman", "op": "replace", "new_scene_prompt": "An Ironman riding a motorcycle"}"""
 
+# S12: 바뀐 부위를 대상 바로 뒤에 관계어(wearing·holding·with)로 잇는다. 나열 중간에 끼우지 않는다. 명령문 금지.
+REFINE_SYSTEM_REL = """You turn a user's edit instruction for a 3D object into an updated English scene description.
+
+The app edits only the region of the object the user selected; your text is the prompt for an image inpainting model.
+
+Return JSON with:
+- target_element: the part of the scene the instruction changes, as it appears in the current scene (English, short noun phrase).
+- replacement: what it becomes, described positively. For "remove", describe what is visible in its place (e.g. "a smooth pillar"). For "recolor", the element with its new color.
+- op: "replace" (swap one element for another), "add" (add a new element), "remove" (take an element away), "recolor" (change only color/material color).
+- new_scene_prompt: one English sentence, built in this order:
+  1. The main subject (the first noun phrase of the current scene), then RIGHT AFTER IT the changed element, joined with
+     exactly one of these relation words:
+       "wearing"  for something worn (hat, helmet, mask, jacket, shoes),
+       "holding"  for something held in the hands,
+       "with"     for a part or attachment of the object (bumper, roof rack, wheels, door, handle).
+     If the instruction changes the whole subject into something else, rename the subject itself and use no relation word;
+     then every old detail that belonged to the old subject's look (its clothing, uniform, gear, surface, props) overlaps
+     with the new subject and is deleted. Keep only details that still fit the new subject (pose, overall build), and
+     describe the new subject's own parts, colors and materials.
+     For "remove", use no relation word: describe the remaining surface positively where the removed element was
+     (e.g. "a smooth right front pillar with olive green paint").
+  2. Then all the unchanged details of the current scene, kept word for word, in their original order.
+     Delete the old description of the element that was changed (e.g. the old hat when a new hat is worn).
+     Never insert the changed element in the middle of the list of other details.
+  Describe the changed element at the same level of detail as the rest (its parts, color, material).
+  No camera, view, background, lighting or style words (those are added by the server).
+  Write a description, never a command: no imperative verbs such as change, replace, turn, make, remove, add, swap, put.
+
+Rules:
+- Use only positive descriptions. Never write negations in new_scene_prompt or replacement: no "not", "no", "without",
+  "instead of", "never", "nothing". Image models cannot handle negation, and the scene sentence is reused for later edits.
+  Turn rejection feedback into a positive description of what should be there.
+- The instruction may be in Korean or any language; always write English.
+- Never output coordinates, numbers describing positions, or sizes in units. Describe content only.
+- If rejection feedback from earlier attempts is given, follow it.
+
+Examples (format only):
+current scene: "A firefighter, a yellow helmet with a front badge, a tan turnout coat with reflective stripes, black boots"
+instruction: "change the helmet into a black baseball cap"
+→ {"target_element": "a yellow helmet with a front badge", "replacement": "a black baseball cap", "op": "replace",
+   "new_scene_prompt": "A firefighter wearing a black cotton baseball cap with a curved brim, a tan turnout coat with reflective stripes, black boots"}
+current scene: "A delivery van, a boxy cargo body, a sliding side door, black steel wheels, white painted steel"
+instruction: "add a roof ladder rack"
+→ {"target_element": "the roof", "replacement": "an aluminum ladder rack on the roof", "op": "add",
+   "new_scene_prompt": "A delivery van with an aluminum ladder rack on the roof, a boxy cargo body, a sliding side door, black steel wheels, white painted steel"}
+current scene: "A hiker, a green rain jacket, a walking stick in the right hand, brown leather boots"
+instruction: "remove the walking stick"
+→ {"target_element": "a walking stick in the right hand", "replacement": "an open empty right hand", "op": "remove",
+   "new_scene_prompt": "A hiker, a green rain jacket, an open empty right hand at the side, brown leather boots"}"""
+
+#: S12 명령형 검사: 문장 첫머리 또는 쉼표 뒤의 명령형 동사
+_IMPERATIVE = re.compile(r"(?:^|,)\s*(change|replace|turn|make|remove|add|swap|convert|put|give|paint|recolor|"
+                         r"transform|delete|erase|take|set|use)\b(?!-)", re.I)
+
+
+def imperative_words(text: str) -> List[str]:
+    """S12: 문장 첫머리·쉼표 뒤 명령형 동사(소문자)."""
+    return [m.group(1).lower() for m in _IMPERATIVE.finditer(text or "")]
+
+
 CLASSIFY_SYSTEM = """A user rejected a 2D preview of an edit to a 3D object and wrote a reason (any language).
 Classify the reason into exactly one category and write short English guidance.
 
@@ -282,8 +342,9 @@ class FakeAdapter:
         self.last_ok: Optional[bool] = None
 
     def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "",
-               changed_from: Optional[dict] = None, style: Optional[dict] = None, avoid: Optional[List[str]] = None) -> dict:
-        out = fake_refine(scene_prompt, instruction, reject_history[-1] if reject_history else None)
+               changed_from: Optional[dict] = None, style: Optional[dict] = None, avoid: Optional[List[str]] = None,
+               relphrase: bool = False, imperative: Optional[List[str]] = None) -> dict:
+        out = fake_refine(scene_prompt, instruction, reject_history[-1] if reject_history else None, relphrase=relphrase)
         self.on_call({"job_id": job_id, "kind": "refine_changed" if changed_from else "refine", "model": self.model,
                       "input": {"scene": scene_prompt, "instruction": instruction, "history": reject_history,
                                 "changed_from": changed_from}, "output": out, "latency_s": 0.0,
@@ -412,7 +473,8 @@ class ClaudeAdapter:
         return None
 
     def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "",
-               changed_from: Optional[dict] = None, style: Optional[dict] = None, avoid: Optional[List[str]] = None) -> dict:
+               changed_from: Optional[dict] = None, style: Optional[dict] = None, avoid: Optional[List[str]] = None,
+               relphrase: bool = False, imperative: Optional[List[str]] = None) -> dict:
         """changed_from = {prev, reason, guidance}: S8 — prompt 거절 뒤 같은 문장이 나와 다시 부를 때.
         style = {"style": None|str}: S11 자산 양식(None = 기본 실물형). avoid = S11 금지어 재요청 때 뺄 단어."""
         hist = "\n".join(f"- {h}" for h in reject_history) if reject_history else "(none)"
@@ -431,11 +493,16 @@ class ClaudeAdapter:
         if avoid:
             user += (f"\n\nYour previous new_scene_prompt used {json.dumps(avoid)}, which do not fit the asset style "
                      "and the instruction does not ask for them. Leave those words out.")
-        kind = "refine_changed" if changed_from else ("refine_style_retry" if avoid else "refine")
+        if imperative:
+            user += (f"\n\nYour previous new_scene_prompt used command words {json.dumps(imperative)}. Write a description "
+                     "of the object, never a command.")
+        kind = "refine_changed" if changed_from else ("refine_style_retry" if (avoid or imperative) else "refine")
         log = {"scene": scene_prompt, "instruction": instruction, "history": reject_history, "changed_from": changed_from}
         if style is not None:
             log.update(style=style.get("style"), avoid=avoid)
-        return self._call(kind, REFINE_SYSTEM, user, REFINE_SCHEMA, self.check_refine, job_id, log)
+        if relphrase:
+            log.update(relphrase=True, imperative=imperative)
+        return self._call(kind, REFINE_SYSTEM_REL if relphrase else REFINE_SYSTEM, user, REFINE_SCHEMA, self.check_refine, job_id, log)
 
     # ── S6 생성 프롬프트 상세화(S4 영어 변환을 대체, 영어 입력도 항상 거친다) ──
     @staticmethod
