@@ -271,7 +271,8 @@ function inpRaw(a,j){const r=a.inpaint_raw;if(!r)return '<div class="cap">(인�
 function relView(st){if(!st||!st.relphrase)return '';const f=st.imperative_found||[],l=st.imperative_left||[];
  return `<div class="cap">보정 템플릿: S12 관계어(wearing·holding·with)${f.length?` · 명령형 ${esc(f.join(', '))} → 재요청 1회${l.length?` → <span class="bad">남음 ${esc(l.join(', '))}</span>`:' → 사라짐'}`:' · 명령형 없음'}</div>`;}
 function styleView(st,gen){if(st&&!gen&&st.relphrase&&!st.mode)return relView(st);if(!st)return `<div class="cap">양식 판정: 기록 없음${gen?' (S11 이전 생성 또는 APP_REALSTYLE=0)':' (S11 이전·끔) → 기본 실물형으로 봄'}</div>`;
- const m=st.mode==='user'?`사용자 지정: <b>${esc(st.words||'?')}</b> → <b>${esc(st.style)}</b>`:'기본 실물형';
+ const pre=st.style_source==='pre_s11_request'?' <span class="cap">(S11 이전 자산 — 생성 원문 기준)</span>':'';
+ const m=(st.mode==='user'?`사용자 지정: <b>${esc(st.words||(gen?'?':'자산 기록'))}</b> → <b>${esc(st.style)}</b>`:'기본 실물형')+pre;
  const f=(st.banned_found||[]).length?` · 금지어 ${esc((st.banned_found||[]).join(', '))} → 재요청 1회${(st.removed||[]).length?` → 남은 <span class="bad">${esc(st.removed.join(', '))}</span> 삭제`:' → 사라짐'}`:(st.mode==='user'?'':' · 금지어 없음');
  return `<div>양식 판정: ${m}${f}${st.fallback?' <span class="cap">(LLM 실패·상세화 미지원 → 실물형)</span>':''}${st.retry_error?` <span class="bad">재요청 실패 ${esc(st.retry_error)}</span>`:''}</div>`;}
 function trView(t,label){if(!t)return '';const s=t.submit||{},ps=t.polls||[],r=t.result||{},t0=s.t||(ps[0]||{}).t||0;
