@@ -527,3 +527,22 @@ def test_clients_raw_links_crop_and_refine_retry(env):
     assert ("crop_render" in a["images"]) and hashlib.sha256(sent).hexdigest()   # 자른 입력 이미지가 보인다
     page = env.get(f"/clients/{aid}").text
     assert "cropView(a)}${inpRaw(a,j)}" in page and "refine_retry" in page
+
+
+# ── 사용자 결정(2026-11-12): 기기에서 삭제해도 A5000 워커 저장소까지 보관 ─────────────
+def test_delete_keeps_worker_store_by_default(env):
+    aid = make_asset(env)
+    assert env.delete("/app/v1/qr/booth-07", headers=A).status_code == 204
+    assert ("delete",) not in env.be.calls                                    # A5000 DELETE 를 부르지 않는다
+    a = env.eng.db.asset(aid)
+    assert a["deleted_at"] is not None and a["worker_kept"] == 1
+    assert env.eng.store.blobs(aid, 1)                                        # 앱 서버 청크도 그대로
+    row = [r for r in env.get("/clients/api/assets").json() if r["asset_id"] == aid][0]
+    assert row["status"] == "삭제됨" and row["worker_kept"] is True
+
+
+def test_delete_worker_store_when_enabled(env):
+    env.eng.s.worker_delete = True
+    aid = make_asset(env)
+    assert env.delete("/app/v1/qr/booth-07", headers=A).status_code == 204
+    assert ("delete",) in env.be.calls and env.eng.db.asset(aid)["worker_kept"] == 0

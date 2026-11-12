@@ -188,7 +188,8 @@ class Db:
         with self.lock:
             self.c.executescript(SCHEMA)
             for col in ("deleted_at REAL", "qr_origin TEXT",            # 1.0.2 보관(S3) — 옛 DB 에 열 추가
-                        "style TEXT"):                                  # S11 자산 양식(NULL = 기본 실물형, S11 이전 포함)
+                        "style TEXT",                                   # S11 자산 양식(NULL = 기본 실물형, S11 이전 포함)
+                        "worker_kept INTEGER"):                         # 삭제 때 A5000 저장소 보관 여부(NULL = 11-12 이전 삭제 = 지워짐)
                 try:
                     self.c.execute(f"ALTER TABLE assets ADD COLUMN {col}")
                 except sqlite3.OperationalError:

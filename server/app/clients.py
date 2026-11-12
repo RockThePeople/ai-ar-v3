@@ -69,6 +69,7 @@ def build_clients(S) -> APIRouter:
                         "commits": sum(1 for j in edits if j["state"] == "committed"), "edits": len(edits),
                         "rating_avg": round(sum(x["stars"] for x in rs) / len(rs), 2) if rs else None,
                         "ratings": len(rs), "status": status, "deleted_at": a["deleted_at"],
+                        "worker_kept": bool(a["worker_kept"]) if a["deleted_at"] else None,
                         "scene_prompt": a["scene_prompt"]})
         return out
 
@@ -234,7 +235,7 @@ const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt
 const ts=t=>t?new Date(t*1000).toLocaleString('ko-KR'):'';let rows=[];
 function draw(){const q=document.getElementById('q').value.trim();const f=rows.filter(r=>!q||String(r.qr_id).includes(q)||r.asset_id.includes(q));
  document.getElementById('n').textContent=f.length+'행';
- document.getElementById('tb').innerHTML=f.map(r=>`<tr class="row ${r.status==='삭제됨'?'del':''}" onclick="location='/clients/${r.asset_id}'"><td>${esc(r.qr_id)}</td><td>${r.asset_id}</td><td>${ts(r.created_at)}</td><td>${esc(r.creator)}</td><td>${r.version}</td><td>${r.commits} / ${r.edits}</td><td>${r.rating_avg??'-'} (${r.ratings})</td><td class="${r.status==='활성'?'ok':(r.status==='삭제됨'?'':'bad')}">${r.status}</td><td>${esc(r.scene_prompt)}</td></tr>`).join('');}
+ document.getElementById('tb').innerHTML=f.map(r=>`<tr class="row ${r.status==='삭제됨'?'del':''}" onclick="location='/clients/${r.asset_id}'"><td>${esc(r.qr_id)}</td><td>${r.asset_id}</td><td>${ts(r.created_at)}</td><td>${esc(r.creator)}</td><td>${r.version}</td><td>${r.commits} / ${r.edits}</td><td>${r.rating_avg??'-'} (${r.ratings})</td><td class="${r.status==='활성'?'ok':(r.status==='삭제됨'?'':'bad')}">${r.status}${r.deleted_at?(r.worker_kept?' <span class="cap">(A5000 보관)</span>':' <span class="cap">(A5000 저장소 지워짐)</span>'):''}</td><td>${esc(r.scene_prompt)}</td></tr>`).join('');}
 fetch('/clients/api/assets').then(r=>r.json()).then(d=>{rows=d;draw()});document.getElementById('q').oninput=draw;
 </script></body></html>"""
 
