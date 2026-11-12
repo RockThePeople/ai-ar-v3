@@ -247,7 +247,8 @@ class Engine:
             if int(base_version) != int(a["version"]):
                 raise AppError(409, "VERSION_CONFLICT", f"최신 판본은 v{a['version']}",
                                {"latest_version": int(a["version"])})
-            j = self._new_job("edit", asset_id, device, a["qr_id"], base_version=int(base_version),
+            raw = self.db.qr_raw_prompt(a["qr_id"])        # S14 그대로 모드(작업 생성 때 고정)
+            j = self._new_job("edit", asset_id, device, a["qr_id"], base_version=int(base_version), raw_prompt=raw,
                               instruction=instruction, camera=camera, cells=cells, mock_fail=mock_fail,
                               idem=hashlib.sha256(f"{asset_id}|{base_version}|{uuid.uuid4().hex}".encode()).hexdigest()[:32])
         self._enqueue(j, "refine")
@@ -401,9 +402,21 @@ class Engine:
             j["region_error"] = f"{type(e).__name__}: {e}"
             return None
 
+    def _run_raw(self, j: dict) -> None:
+        """S14 그대로 모드: LLM 없이 지시문 원문을 인페인팅 문장으로. 장면 문장 = 이전 + '; ' + 지시문(기록용)."""
+        ins = j["instruction"].strip()
+        scene = self._scene(j["asset_id"])
+        j["refine"] = {"target_element": None, "replacement": ins, "op": "replace",
+                       "new_scene_prompt": f"{scene}; {ins}" if scene else ins, "inpaint_prompt": ins}
+        j["refine_meta"], j["style_meta"] = {"raw_prompt": True}, None
+        self._save(j)
+        self._run_render_inpaint(j, new_render=False)
+
     def _run_refine(self, j: dict) -> None:
         self._set(j, "refining", "refining", 0.1)
         self._mock_gate(j)
+        if j.get("raw_prompt"):
+            return self._run_raw(j)
         if self.be.name == "mock":
             time.sleep(self.be.DUR["refine"] * self.s.mock_time_scale)
         region = None
@@ -456,6 +469,8 @@ class Engine:
         ip_src = "inpaint_prompt" if (self.s.inpaintprompt and (j["refine"] or {}).get("inpaint_prompt")) else "scene"
         base_text = j["refine"]["inpaint_prompt"] if ip_src == "inpaint_prompt" else j["refine"]["new_scene_prompt"]
         ip = inpaint_prompt(base_text, self.s.realstyle, (j.get("style_meta") or {}).get("style"))
+        if j.get("raw_prompt"):                           # S14: 원문 그대로(번역·상세화·양식 꼬리 없음)
+            ip_src, ip = "raw_prompt", j["refine"]["inpaint_prompt"]
         crop, crop_files = None, None
         info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
         t0 = time.perf_counter()
@@ -533,6 +548,8 @@ class Engine:
                 raise AppError(400, "INVALID_REQUEST", "거절에는 reason 이 필요하다")
             if j.get("classifying"):
                 raise AppError(409, "WRONG_STATE", "거절 이유를 분류하는 중이다")
+            if j.get("raw_prompt"):                      # S14: 분류 LLM 없음 — 거절 이유 원문이 새 인페인팅 문장, seed +1
+                return self._reject_raw(j, reason.strip())
             j["classifying"] = True
             self._set(j, stage="classifying")
         try:                                             # LLM 호출은 잠금 밖에서
@@ -581,6 +598,21 @@ class Engine:
                 self._set(j, "inpainting", "inpainting", 0.0)
                 self._enqueue(j, "inpaint_again")
             return j
+
+    def _reject_raw(self, j: dict, reason: str) -> dict:
+        guide = "그대로 모드: 거절 이유 원문을 새 인페인팅 문장으로 다시 그린다(seed +1)"
+        j["review"] = {"reason": reason, "category": "prompt", "guidance": guide}
+        if j.get("attempts"):
+            j["attempts"][-1].update(rejected=True, reason=reason, category="prompt", guidance=guide)
+        if j["attempt"] >= self.s.max_attempts:
+            self._finish(j, "failed", "RETRY_LIMIT", "2D 거절 3회")
+            return j
+        j["attempt"] += 1
+        j["refine"] = dict(j["refine"], inpaint_prompt=reason)
+        j["refine_meta"] = {"raw_prompt": True}
+        self._set(j, "inpainting", "inpainting", 0.0)
+        self._enqueue(j, "inpaint_again")                # 조건 렌더 재사용, seed = attempt − 1
+        return j
 
     def review3d(self, job_id: str, device: str, keep: bool) -> dict:
         with self.lock:

@@ -171,6 +171,8 @@ CREATE TABLE IF NOT EXISTS llm_calls (
   id INTEGER PRIMARY KEY AUTOINCREMENT, t REAL, job_id TEXT, kind TEXT, model TEXT, ok INTEGER, retried INTEGER,
   latency_s REAL, in_tokens INTEGER, out_tokens INTEGER, error TEXT, input TEXT, output TEXT, attempts TEXT);
 CREATE INDEX IF NOT EXISTS llm_job ON llm_calls(job_id);
+CREATE TABLE IF NOT EXISTS qr_flags (
+  qr_id TEXT PRIMARY KEY, raw_prompt INTEGER NOT NULL DEFAULT 0, note TEXT, set_at REAL);
 CREATE TABLE IF NOT EXISTS ratings (
   rating_id TEXT PRIMARY KEY, asset_id TEXT, device TEXT, stars INTEGER,
   v_from INTEGER, v_to INTEGER, created_at REAL, asset_deleted INTEGER NOT NULL DEFAULT 0, body TEXT);
@@ -213,6 +215,19 @@ class Db:
         """앱 API 에 보이는 자산(삭제되지 않음). 삭제된 자산은 앱 API 에서 404 다(1.0.2 9절)."""
         a = self.asset(asset_id)
         return a if a is not None and a["deleted_at"] is None else None
+
+    # S14 마커별 플래그(관리 스크립트로 켜고 끔, 앱 API 변경 없음)
+    def qr_raw_prompt(self, qr_id: Optional[str]) -> bool:
+        if not qr_id:
+            return False
+        r = self.q("SELECT raw_prompt FROM qr_flags WHERE qr_id=?", (qr_id,))
+        return bool(r and r[0]["raw_prompt"])
+
+    def set_qr_raw_prompt(self, qr_id: str, on: bool, note: str = "") -> None:
+        import time as _t
+        self.x("INSERT INTO qr_flags(qr_id, raw_prompt, note, set_at) VALUES(?,?,?,?) "
+               "ON CONFLICT(qr_id) DO UPDATE SET raw_prompt=excluded.raw_prompt, note=excluded.note, set_at=excluded.set_at",
+               (qr_id, 1 if on else 0, note, _t.time()))
 
     def asset_by_qr(self, qr_id: str) -> Optional[sqlite3.Row]:
         r = self.q("SELECT * FROM assets WHERE qr_id=?", (qr_id,))

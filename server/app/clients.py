@@ -106,7 +106,8 @@ def build_clients(S) -> APIRouter:
                 # S9: 실제로 오간 입력 전문(앞으로의 작업부터 기록, 지난 작업은 있는 만큼)
                 "raw_generate": j.get("raw_generate"), "raw_edit3d": j.get("raw_edit3d"),
                 "render_record": (j.get("render") or {}).get("record"),
-                "a5000_trace": j.get("a5000_trace"),            # S10: 접수·폴링 회차(실패 포함)
+                "a5000_trace": j.get("a5000_trace"),
+                "raw_prompt": bool(j.get("raw_prompt")),        # S14 그대로 모드            # S10: 접수·폴링 회차(실패 포함)
                 "job_json": f"/clients/api/jobs/{j['job_id']}"}
 
     @r.get("/api/jobs/{job_id}")
@@ -327,7 +328,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)}</div><table class="cap"><tr><th>인페인팅 문장${a.inpaint_src==='inpaint_prompt'?' (S13b inpaint_prompt)':' (장면 문장)'}</th><th>장면 문장(자산 저장용 new_scene_prompt)</th></tr><tr><td>${esc(a.prompt)}</td><td>${esc(a.new_scene_prompt||'(기록 없음)')}</td></tr></table>${styleView(a.style,false)}${a.style&&a.style.mode?relView(a.style):''}${regionView(a.style,j.job_id,a)}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)}</div><table class="cap"><tr><th>인페인팅 문장${a.inpaint_src==='raw_prompt'?' <span class="bad">(그대로 모드: 사용자 원문, LLM 없음)</span>':(a.inpaint_src==='inpaint_prompt'?' (S13b inpaint_prompt)':' (장면 문장)')}</th><th>장면 문장(자산 저장용 new_scene_prompt)</th></tr><tr><td>${esc(a.prompt)}</td><td>${esc(a.new_scene_prompt||'(기록 없음)')}</td></tr></table>${styleView(a.style,false)}${a.style&&a.style.mode?relView(a.style):''}${regionView(a.style,j.job_id,a)}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   ${llmTable(j.llm_calls)}
   ${RAW('A5000 렌더 요청·응답 전문(마지막 렌더)',j.render_record)}
