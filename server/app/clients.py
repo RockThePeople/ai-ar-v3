@@ -263,12 +263,14 @@ function llmRaw(c){const at=c.attempts||[];if(!at.length)return '<span class="ca
   const n=(q.system||'').length+q.messages.reduce((x,m)=>x+(typeof m.content==='string'?m.content.length:JSON.stringify(m.content).length),0);
   const u=(a.response||{}).usage||{};
   return `<div class="cap"><b>회차 ${a.attempt}</b> · stop_reason ${esc(a.stop_reason)} · usage in ${u.input_tokens??'?'} / out ${u.output_tokens??'?'} · 보낸 system+messages ${n}자${a.problem?' · 위반: '+esc(a.problem):''}</div>`+
-   RAW('system 프롬프트 전문',q.system)+RAW('messages 전문(템플릿이 채워진 그대로)',msgs)+
+   RAW((c.kind||'').startsWith('refine')?'보정 템플릿 — system 프롬프트 전문'+(((c.input||{}).relphrase)?' (S12 관계어)':''):'system 프롬프트 전문',q.system)+RAW('messages 전문(템플릿이 채워진 그대로)',msgs)+
    RAW('요청 본문 전체 JSON(model·max_tokens·output_config 포함, 키 없음)',q)+RAW('받은 응답 원문(파싱 전 content·stop_reason·usage)',a.response)+RAW('클라이언트 설정',a.client);}).join('');}
 function llmTable(cs){return `<details><summary>LLM 호출 ${cs.length}건</summary><table><tr><th>종류</th><th>모델</th><th>성공</th><th>재시도</th><th>지연</th><th>토큰</th><th>입력(정리본)</th><th>출력(정리본)</th></tr>${cs.map(c=>`<tr><td>${c.kind}</td><td>${c.model}</td><td>${c.ok?'예':'아니오 '+esc(c.error)}</td><td>${c.retried?'예':''}</td><td>${c.latency_s}s</td><td>${c.in_tokens}/${c.out_tokens}</td><td><pre>${esc(JSON.stringify(c.input))}</pre></td><td><pre>${esc(JSON.stringify(c.output))}</pre></td></tr><tr><td colspan="8">${llmRaw(c)}</td></tr>`).join('')}</table></details>`;}
 function inpRaw(a,j){const r=a.inpaint_raw;if(!r)return '<div class="cap">(인페인팅 요청 전문 기록 없음 — S9 이전)</div>';
  return `<div class="cap">인페인팅 요청: 문장 "${esc((r.form||{}).prompt)}" · seed ${esc((r.form||{}).seed)} · 워커 설정 ${esc(JSON.stringify(r.settings))} <i>(출처: ${esc(r.settings_source||'-')})</i></div>`+RAW('인페인팅 요청·응답 전문',r);}
-function styleView(st,gen){if(!st)return `<div class="cap">양식 판정: 기록 없음${gen?' (S11 이전 생성 또는 APP_REALSTYLE=0)':' (S11 이전·끔) → 기본 실물형으로 봄'}</div>`;
+function relView(st){if(!st||!st.relphrase)return '';const f=st.imperative_found||[],l=st.imperative_left||[];
+ return `<div class="cap">보정 템플릿: S12 관계어(wearing·holding·with)${f.length?` · 명령형 ${esc(f.join(', '))} → 재요청 1회${l.length?` → <span class="bad">남음 ${esc(l.join(', '))}</span>`:' → 사라짐'}`:' · 명령형 없음'}</div>`;}
+function styleView(st,gen){if(st&&!gen&&st.relphrase&&!st.mode)return relView(st);if(!st)return `<div class="cap">양식 판정: 기록 없음${gen?' (S11 이전 생성 또는 APP_REALSTYLE=0)':' (S11 이전·끔) → 기본 실물형으로 봄'}</div>`;
  const m=st.mode==='user'?`사용자 지정: <b>${esc(st.words||'?')}</b> → <b>${esc(st.style)}</b>`:'기본 실물형';
  const f=(st.banned_found||[]).length?` · 금지어 ${esc((st.banned_found||[]).join(', '))} → 재요청 1회${(st.removed||[]).length?` → 남은 <span class="bad">${esc(st.removed.join(', '))}</span> 삭제`:' → 사라짐'}`:(st.mode==='user'?'':' · 금지어 없음');
  return `<div>양식 판정: ${m}${f}${st.fallback?' <span class="cap">(LLM 실패·상세화 미지원 → 실물형)</span>':''}${st.retry_error?` <span class="bad">재요청 실패 ${esc(st.retry_error)}</span>`:''}</div>`;}
@@ -309,7 +311,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${styleView(a.style,false)}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)} → new_scene_prompt: ${esc(a.new_scene_prompt||'(기록 없음)')} → 실제 인페인팅 문장: ${esc(a.prompt)}</div>${styleView(a.style,false)}${a.style&&a.style.mode?relView(a.style):''}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   ${llmTable(j.llm_calls)}
   ${RAW('A5000 렌더 요청·응답 전문(마지막 렌더)',j.render_record)}

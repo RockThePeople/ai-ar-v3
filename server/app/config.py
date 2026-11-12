@@ -54,6 +54,7 @@ class Settings:
     timeout_s: float = 600.0  # 실행 상태 10분
     review3d_s: float = 1800.0  # 3D 확인 30분
     max_attempts: int = 3
+    relphrase: bool = True  # S12 APP_RELPHRASE: 보정 문장에서 바뀐 부위를 대상 뒤 관계어로(끔 = S4–S11 보정 템플릿)
     realstyle: bool = True  # S11 APP_REALSTYLE: 기본 실물형 + 사용자 양식만(끔 = S6 'game asset' 꼬리)
     inpaint_crop: bool = False  # S7 APP_INPAINT_CROP: 마스크 주변만 잘라 인페인팅(기본 0, 사용자 결정 — 켬이 장면 재생성·R→B)
 
@@ -74,4 +75,5 @@ class Settings:
             mock_source=os.environ.get("APP_MOCK_SOURCE") or "sample-jeep",
             inpaint_crop=_flag("APP_INPAINT_CROP", "0"),
             realstyle=_flag("APP_REALSTYLE", "1"),
+            relphrase=_flag("APP_RELPHRASE", "1"),
         )

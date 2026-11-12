@@ -120,7 +120,7 @@ def test_edit_real_asset_banned_retry_then_strip(env):
             "new_scene_prompt": "An Ironman toy riding a motorcycle"}]
     seen = []
 
-    def refine(scene, instruction, hist, job_id="", changed_from=None, style=None, avoid=None):
+    def refine(scene, instruction, hist, job_id="", changed_from=None, style=None, avoid=None, **kw):
         seen.append((style, avoid))
         return seq.pop(0)
     env.eng.llm.refine = refine
@@ -129,7 +129,8 @@ def test_edit_real_asset_banned_retry_then_strip(env):
     j = env.eng.get(jid)
     a = j["attempts"][0]
     assert seen == [({"style": None}, None), ({"style": None}, ["figure"])]
-    assert a["style"] == {"mode": "real", "style": None, "banned_found": ["figure"], "retried": True, "removed": ["toy"]}
+    assert {k: a["style"][k] for k in ("mode", "style", "banned_found", "retried", "removed")} == \
+        {"mode": "real", "style": None, "banned_found": ["figure"], "retried": True, "removed": ["toy"]}
     assert a["prompt"] == "An Ironman riding a motorcycle" and "toy" not in a["new_scene_prompt"]
 
 

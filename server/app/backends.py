@@ -35,7 +35,7 @@ Progress = Callable[[str, float], None]
 
 
 # ══════════════════════════════════════════════════════════ 가짜 LLM (S1)
-def fake_refine(scene_prompt: str, instruction: str, reason: Optional[str] = None) -> dict:
+def fake_refine(scene_prompt: str, instruction: str, reason: Optional[str] = None, relphrase: bool = False) -> dict:
     """규칙 기반 보정. `change X into Y` / `X → Y` 꼴이면 대상·대체를 뽑는다. 실제 LLM 은 S2."""
     target, repl, op = None, instruction.strip(), "replace"
     m = re.search(r"(?:change|turn|make|replace)\s+(.+?)\s+(?:into|to|with)\s+(.+)", instruction, re.I)
@@ -47,6 +47,11 @@ def fake_refine(scene_prompt: str, instruction: str, reason: Optional[str] = Non
         op = "add"
     base = (scene_prompt or "").strip().rstrip(".")
     new = f"{base}, {instruction.strip()}" if base else instruction.strip()
+    if relphrase:                                     # S12: 명령문을 붙이지 않는다 — 대상 자리 바꾸기, 없으면 ', with <대체>'
+        if target and target.lower() in base.lower():
+            new = re.sub(re.escape(target), repl, base, count=1, flags=re.I)
+        else:
+            new = f"{base}, with {repl}" if base else repl
     if reason:
         new = f"{new} ({reason.strip()})"
     return {"target_element": target, "replacement": repl, "op": op, "new_scene_prompt": new}

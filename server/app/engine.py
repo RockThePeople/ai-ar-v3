@@ -22,7 +22,7 @@ from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
 from .cropinpaint import crop_inpaint
-from .llm_adapter import LLMInvalid, LLMUnavailable, banned_words, make_adapter, strip_banned
+from .llm_adapter import LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, strip_banned
 from ..t2i import app_template
 
 #: S6: 인페인팅 문장 꼬리. 시점·배경 문구는 넣지 않는다(조건 렌더가 라쏘 시점이다)
@@ -260,25 +260,41 @@ class Engine:
         return (a["style"] or None) if a is not None and "style" in a.keys() else None
 
     def _refine_styled(self, j: dict, scene: str, hist: list, changed_from: Optional[dict] = None):
-        """S11: 자산 양식을 보정에 알리고, 실물형인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다."""
-        if not self.s.realstyle:
-            kw = {"changed_from": changed_from} if changed_from else {}
-            return self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw), None
-        st = self._asset_style(j["asset_id"])
-        kw = {"changed_from": changed_from} if changed_from else {}
-        out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], style={"style": st}, **kw)
-        meta = {"mode": "user" if st else "real", "style": st, "banned_found": [], "retried": False, "removed": []}
-        if st:
-            return out, meta
+        """S11: 자산 양식을 보정에 알리고, 실물형인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다.
+        S12: 관계어 보정 템플릿, 명령형 동사가 있으면 1회 재요청(금지어와 같은 재요청 1회로 묶는다), 남으면 기록만."""
+        rs, rp = self.s.realstyle, self.s.relphrase
+        kw: dict = {"changed_from": changed_from} if changed_from else {}
+        st = self._asset_style(j["asset_id"]) if rs else None
+        if rs:
+            kw["style"] = {"style": st}
+        if rp:
+            kw["relphrase"] = True
+        out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw)
+        if not (rs or rp):
+            return out, None
+        meta: dict = {"retried": False}
+        if rs:
+            meta.update(mode="user" if st else "real", style=st, banned_found=[], removed=[])
+        if rp:
+            meta.update(relphrase=True, imperative_found=[], imperative_left=[])
         src = f"{scene} {j['instruction']}"
-        found = banned_words(out["new_scene_prompt"], src)
-        if found:
-            meta.update(banned_found=found, retried=True)
-            out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], style={"style": st}, avoid=found, **kw)
-            left = banned_words(out["new_scene_prompt"], src)
+        check_banned = rs and not st
+        banned = banned_words(out["new_scene_prompt"], src) if check_banned else []
+        imp = imperative_words(out["new_scene_prompt"]) if rp else []
+        if banned or imp:
+            meta["retried"] = True
+            extra: dict = {}
+            if banned:
+                meta["banned_found"], extra["avoid"] = banned, banned
+            if imp:
+                meta["imperative_found"], extra["imperative"] = imp, imp
+            out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw, **extra)
+            left = banned_words(out["new_scene_prompt"], src) if check_banned else []
             if left:
                 out = dict(out, new_scene_prompt=strip_banned(out["new_scene_prompt"], left))
                 meta["removed"] = left
+            if rp:
+                meta["imperative_left"] = imperative_words(out["new_scene_prompt"])
         return out, meta
 
     def _run_refine(self, j: dict) -> None:
