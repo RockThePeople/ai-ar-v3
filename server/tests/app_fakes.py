@@ -60,8 +60,10 @@ class FakeBackend:
     def health(self):
         return {"a5000": "up", "inpaint": "up"}
 
-    def generate(self, asset_id, prompt, seed, progress, trace=None, template=None):
+    def generate(self, asset_id, prompt, seed, progress, trace=None, template=None, t2i_seed=None):
         self.calls.append(("generate_args", prompt, template))
+        if t2i_seed is not None:
+            self.calls.append(("generate_seeds", t2i_seed, seed))
         self._f("generate")
         progress("generating", 0.5)
         return {"blobs": {k: cbin(k) for k in BASE_KEYS}, "slat_coords": [[32, 32, 32], [33, 32, 32]]}

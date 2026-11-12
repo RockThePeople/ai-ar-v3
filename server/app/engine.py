@@ -30,6 +30,8 @@ from ..t2i import app_template
 
 #: S6: 인페인팅 문장 꼬리. 시점·배경 문구는 넣지 않는다(조건 렌더가 라쏘 시점이다)
 INPAINT_SUFFIX = ", simple clean 3D game asset style"
+#: S14 논문 X3 생성 설정의 TRELLIS seed(`x3/track_a/*/gen/gen.json`, 단계는 A5000 기본 25/25)
+PAPER_TRELLIS_SEED = 42
 
 
 def inpaint_prompt(new_scene_prompt: str, realstyle: bool, style: Optional[str]) -> str:
@@ -166,7 +168,9 @@ class Engine:
             asset_id = f"a-{uuid.uuid4().hex[:8]}"
             self.db.x("INSERT INTO assets(asset_id,qr_id,qr_origin,creator,scene_prompt,version,created_at,source) "
                       "VALUES(?,?,?,?,?,0,?,?)", (asset_id, qr_id, qr_id, device, None, self.clock(), "generate"))
-            j = self._new_job("generate", asset_id, device, qr_id, prompt=prompt, seed=seed, mock_fail=mock_fail)
+            raw = self.db.qr_raw_prompt(qr_id)            # S14 그대로 모드: 생성도 입력 문장 그대로
+            j = self._new_job("generate", asset_id, device, qr_id, prompt=prompt, seed=seed, mock_fail=mock_fail,
+                              raw_prompt=raw)
         self._enqueue(j, "generate")
         return j
 
@@ -184,9 +188,18 @@ class Engine:
         raw = j["prompt"].strip()
         style, template = None, None
         styled = self.s.realstyle and hasattr(self.llm, "detail_style")
+        gen_kw: dict = {}
+        if j.get("raw_prompt"):
+            # S14 그대로 모드: LLM 없이 입력 문장 그대로 T2I(꼬리 없음). 논문 설정: T2I seed = 요청 seed, TRELLIS seed 42·25/25
+            prompt_en, template = raw, "{subject}"
+            j["translate"] = {"ok": True, "mode": "raw"}
+            j["paper_gen"] = {"t2i_seed": int(j["seed"]), "trellis_seed": PAPER_TRELLIS_SEED, "template": template}
+            gen_kw = {"t2i_seed": int(j["seed"])}
+            return self._generate_with(j, prompt_en, template, None, PAPER_TRELLIS_SEED, gen_kw)
         try:
             if styled:                                   # S11: {subject_detailed, style} + 금지어 검사
-                d = self.llm.detail_style(raw, job_id=j["job_id"])
+                fkw = {"facehint": True} if self.s.facehint else {}
+                d = self.llm.detail_style(raw, job_id=j["job_id"], **fkw)
                 prompt_en, style = strip_realworld(d["subject_detailed"]), d.get("style")   # S13 7
                 j["style"] = {"mode": "user" if style else "real", "style": style, "words": d.get("style_words"),
                               **(d.get("check") or {})}
@@ -201,13 +214,17 @@ class Engine:
             template = app_template(style)
             j.setdefault("style", {"mode": "real", "style": None, "words": None, "fallback": True})
             j["t2i_template"] = template
+        return self._generate_with(j, prompt_en, template, style, int(j["seed"]), gen_kw)
+
+    def _generate_with(self, j: dict, prompt_en: str, template: Optional[str], style: Optional[str], seed: int,
+                       gen_kw: dict) -> None:
         j["prompt_en"] = prompt_en                      # = subject_detailed(꼬리 없음), 첫 scene_prompt
         self._save(j)
         trace: dict = {}                                  # S10: A5000 접수·폴링 회차 기록(실패해도 남긴다)
         j.setdefault("a5000_trace", {})["generate"] = trace
         try:
-            kw = {"template": template} if template else {}
-            out = self.be.generate(j["asset_id"], prompt_en, int(j["seed"]), self._progress(j), trace=trace, **kw)
+            kw = dict({"template": template} if template else {}, **gen_kw)
+            out = self.be.generate(j["asset_id"], prompt_en, seed, self._progress(j), trace=trace, **kw)
         finally:
             self._save(j)
         if out.get("png"):                               # T2I RGBA 보관(S3)
@@ -215,6 +232,9 @@ class Engine:
             d.mkdir(parents=True, exist_ok=True)
             (d / "t2i.png").write_bytes(out["png"])
             j["t2i"] = {"file": "t2i.png", "timing": out.get("t2i_timing")}
+            if out.get("image_png"):                     # S14: 배경 제거 전 원본도 보관
+                (d / "image.png").write_bytes(out["image_png"])
+                j["t2i"]["raw_file"] = "image.png"
         if out.get("raw"):
             j["raw_generate"] = out["raw"]               # S9: T2I 명령·설정, A5000 /generate 요청·결과 전문
         if j["state"] != "generating":

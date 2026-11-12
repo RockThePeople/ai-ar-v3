@@ -94,7 +94,8 @@ def build_clients(S) -> APIRouter:
                 "translate": j.get("translate"),
                 "style": j.get("style"), "t2i_template": j.get("t2i_template"),   # S11 양식 판정(생성)
                 "t2i_effective": ((j.get("t2i") or {}).get("timing") or {}).get("prompt_effective"),
-                "seed": j.get("seed"), "t2i": bool(j.get("t2i")),
+                "seed": j.get("seed"), "t2i": bool(j.get("t2i")), "t2i_raw": bool((j.get("t2i") or {}).get("raw_file")),
+                "paper_gen": j.get("paper_gen"),
                 "refine": j.get("refine"), "camera": j.get("camera"), "n_cells": len(j.get("cells") or []),
                 "attempts": attempts, "base_version": j.get("base_version") or res.get("base_version"),
                 "to_version": res.get("to_version"), "n_changed": len(res.get("chunks") or []),
@@ -162,6 +163,17 @@ def build_clients(S) -> APIRouter:
         p = data / "jobs" / job_id / str(int(attempt)) / f"{name}.png"
         if not p.is_file():
             raise AppError(404, "JOB_NOT_FOUND", "이미지 없음")
+        return FileResponse(p, media_type="image/png")
+
+    @r.get("/img/{job_id}/image.png")
+    def t2i_raw(job_id: str, req: Request):
+        """S14: 배경 제거 전 T2I 원본."""
+        guard(req)
+        if S.engine.get(job_id) is None:
+            raise AppError(404, "JOB_NOT_FOUND", job_id)
+        p = data / "jobs" / job_id / "image.png"
+        if not p.is_file():
+            raise AppError(404, "JOB_NOT_FOUND", "원본 이미지 없음")
         return FileResponse(p, media_type="image/png")
 
     @r.get("/img/{job_id}/t2i.png")
@@ -320,7 +332,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
  document.getElementById('title').textContent=`${d.asset_id} · QR ${d.qr_id??'-'} · ${d.status}`;
  document.getElementById('meta').innerHTML=`생성 ${ts(d.created_at)} · 생성자 ${esc(d.creator)} · 판본 ${d.version} · 편집 ${d.commits}/${d.edits} · 평가 ${d.rating_avg??'-'} (${d.ratings})${d.deleted_at?' · 삭제 '+ts(d.deleted_at):''}<br>장면 문장: ${esc(d.scene_prompt)}`;
  const g=d.jobs.find(j=>j.kind==='generate');
- document.getElementById('gen').innerHTML=g?`<div>원문: <b>${esc(g.prompt)}</b> · seed ${g.seed} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM '+(g.translate.mode==='detail'?'상세화':(g.translate.mode==='detail_style'?'상세화+양식':'변환')):'LLM 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span></div><div>→ subject_detailed: ${esc(g.prompt_en)}</div>${styleView(g.style,true)}<div>→ 실제 T2I 문장: <span class="cap">${esc(g.t2i_effective||'(기록 없음 — S6 이전 생성)')}</span></div><div> · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}${llmTable(g.llm_calls)}${g.raw_generate?RAW('T2I 실제 명령·seed·설정(스크립트에서 읽음)',g.raw_generate.t2i)+RAW('A5000 /generate 요청·결과 전문',g.raw_generate.a5000_generate)+trView((g.a5000_trace||{}).generate,'/generate'):trView((g.a5000_trace||{}).generate,'/generate')+'<div class="cap">(생성 요청 전문 기록 없음 — S9 이전)</div>'}<div class="cap"><a href="${g.job_json}" target="_blank">작업 JSON 전문</a></div>`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
+ document.getElementById('gen').innerHTML=g?`<div>원문: <b>${esc(g.prompt)}</b> · seed ${g.seed} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM '+(g.translate.mode==='detail'?'상세화':(g.translate.mode==='detail_style'?'상세화+양식':'변환')):'LLM 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span></div><div>→ subject_detailed: ${esc(g.prompt_en)}</div>${styleView(g.style,true)}<div>→ 실제 T2I 문장: <span class="cap">${esc(g.t2i_effective||'(기록 없음 — S6 이전 생성)')}</span></div><div> · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<div class="imgs">${g.t2i_raw?`<figure style="display:inline-block;margin:0 8px 0 0"><img src="/clients/img/${g.job_id}/image.png" style="width:240px;border:1px solid #ccc"><figcaption class="cap">T2I 원본(배경 제거 전)</figcaption></figure>`:''}<figure style="display:inline-block;margin:0"><img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc"><figcaption class="cap">배경 제거(TRELLIS 입력)</figcaption></figure></div>`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}${llmTable(g.llm_calls)}${g.raw_generate?RAW('T2I 실제 명령·seed·설정(스크립트에서 읽음)',g.raw_generate.t2i)+RAW('A5000 /generate 요청·결과 전문',g.raw_generate.a5000_generate)+trView((g.a5000_trace||{}).generate,'/generate'):trView((g.a5000_trace||{}).generate,'/generate')+'<div class="cap">(생성 요청 전문 기록 없음 — S9 이전)</div>'}<div class="cap"><a href="${g.job_json}" target="_blank">작업 JSON 전문</a></div>`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
  try{init3d()}catch(e){document.querySelector('.views')?.insertAdjacentHTML('beforebegin','<div class="cap bad">3D 보기를 열 수 없다(WebGL 없음): '+esc(e.message)+'</div>')}const o=opts();['selA','selB'].forEach((id,i)=>{const s=document.getElementById(id);s.innerHTML=o.map(x=>`<option value="${x.k}">${esc(x.cap)}</option>`).join('');s.onchange=()=>pick(i);});
  if(o.length){document.getElementById('selA').value=o[0].k;document.getElementById('selB').value=o[o.length-1].k;pick(0);pick(1);}
  const qj=new URLSearchParams(location.search).get('job');

@@ -33,7 +33,11 @@ def main(argv=None) -> int:
     c = sub.add_parser("copy-sample")
     c.add_argument("sample"); c.add_argument("version", type=int); c.add_argument("qr"); c.add_argument("creator")
     c.add_argument("--scene", required=True); c.add_argument("--asset-id")
+    g = sub.add_parser("generate", help="그 마커에서 생성 작업을 연다(앱 생성과 같은 엔진 경로, 서비스는 멈춘 상태에서)")
+    g.add_argument("qr"); g.add_argument("creator"); g.add_argument("--prompt", required=True); g.add_argument("--seed", type=int, default=0)
     a = ap.parse_args(argv)
+    if a.cmd == "generate":
+        return _generate(a)
     data, db, store = _paths()
     if a.cmd == "flag":
         db.set_qr_raw_prompt(a.qr, a.state == "on", a.note)
@@ -59,6 +63,25 @@ def main(argv=None) -> int:
         print(json.dumps({"asset_id": aid, "qr_id": a.qr, "version": 1, "n_chunks": len(store.blobs(aid, 1)),
                           "slat_coords": bool(store.slat_coords(aid, 1))}))
     return 0
+
+
+def _generate(a) -> int:
+    """앱 서버와 같은 Engine·실제 백엔드로 생성 1건을 이 프로세스에서 돌린다. 8083 은 멈춘 뒤 실행한다(GPU 큐 하나)."""
+    from server.app.backends import make_backend
+    from server.app.config import Settings
+    from server.app.engine import Engine
+    s = Settings.from_env()
+    db, store = Db(s.data_dir / "app.sqlite3"), ChunkStore(s.data_dir)
+    eng = Engine(s, db, store, make_backend(s, store), start_thread=False)
+    if not db.qr_raw_prompt(a.qr):
+        raise SystemExit(f"마커 {a.qr} 에 raw_prompt 가 켜져 있지 않다(먼저 flag … on)")
+    j = eng.create_asset(a.qr, a.creator, a.prompt, a.seed)
+    eng.drain()
+    j = eng.get(j["job_id"])
+    print(json.dumps({"job_id": j["job_id"], "asset_id": j["asset_id"], "state": j["state"], "error": j.get("error_code"),
+                      "paper_gen": j.get("paper_gen"), "t2i_effective": ((j.get("t2i") or {}).get("timing") or {}).get("prompt_effective")},
+                     ensure_ascii=False))
+    return 0 if j["state"] == "committed" else 1
 
 
 if __name__ == "__main__":

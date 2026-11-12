@@ -82,3 +82,60 @@ def test_copy_sample_tool(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(SystemExit):
         papermode.main(["copy-sample", "sample-x", "1", "st-09", "0xdev", "--scene", "x"])   # 마커가 비어 있지 않다
+
+
+PLAN = ("A chibi adventurer figurine standing, three-quarter front view, centered, full body visible, wearing a brown "
+        "leather hat, holding a wooden sword in the right hand, a round wooden shield on the left arm, brown leather boots, "
+        "green tunic, simple clean 3D game asset style, pure white background, no shadow")
+
+
+def test_raw_generate_verbatim_and_paper_seeds(env):
+    env.eng.db.set_qr_raw_prompt("st-02", True)
+    calls = _llm_spy(env)
+    assert len(PLAN) > 300                                                   # 앱 API 상한(300자)보다 길다 → 서버가 직접 연다
+    j = env.eng.create_asset("st-02", "0xdevice", PLAN, 0)
+    env.eng.drain()
+    j = env.eng.get(j["job_id"])
+    r = type("R", (), {"json": lambda self: {"asset_id": j["asset_id"]}})()
+    assert j["state"] == "committed" and calls == []
+    assert ("generate_args", PLAN, "{subject}") in env.be.calls            # 꼬리 없이 원문 그대로
+    assert ("generate_seeds", 0, 42) in env.be.calls                       # T2I seed 0, TRELLIS seed 42
+    assert j["translate"]["mode"] == "raw" and j["paper_gen"]["trellis_seed"] == 42
+    assert env.eng.db.asset(r.json()["asset_id"])["scene_prompt"] == PLAN
+
+
+def test_generate_other_marker_unchanged(env):
+    env.eng.db.set_qr_raw_prompt("st-02", True)
+    r = env.post("/app/v1/qr/st-03/asset", json={"prompt": "a red fire truck", "seed": 5}, headers=A)
+    env.eng.drain()
+    j = env.eng.get(r.json()["job_id"])
+    assert not j.get("raw_prompt") and not any(c[0] == "generate_seeds" for c in env.be.calls)
+
+
+# ── S14 덧붙임: T2I 원본 보관, 얼굴 규칙 ───────────────────────────────────
+def test_facehint_passed_and_rule_text(env):
+    from server.app.llm_adapter import FACE_HINT
+    assert "clearly visible face" in FACE_HINT
+    seen = []
+    orig = env.eng.llm.detail_style
+    env.eng.llm.detail_style = lambda p, job_id="", **kw: (seen.append(kw), orig(p, job_id=job_id))[1]
+    env.post("/app/v1/qr/st-05/asset", json={"prompt": "a cartoon style adventurer"}, headers=A)
+    env.eng.drain()
+    assert seen == [{"facehint": True}]
+    env.eng.s.facehint = False
+    env.post("/app/v1/qr/st-06/asset", json={"prompt": "a dog"}, headers=A)
+    env.eng.drain()
+    assert seen[-1] == {}
+
+
+def test_t2i_raw_image_saved_and_served(env):
+    from server.tests.app_fakes import png
+    orig = env.be.generate
+    env.be.generate = lambda *a, **k: dict(orig(*a, **k), png=png(v=50), image_png=png(v=60))
+    r = env.post("/app/v1/qr/st-07/asset", json={"prompt": "a cat"}, headers=A).json()
+    env.eng.drain()
+    j = env.eng.get(r["job_id"])
+    assert j["t2i"]["raw_file"] == "image.png"
+    assert env.get(f"/clients/img/{r['job_id']}/image.png").content == png(v=60)
+    row = [x for x in env.get(f"/clients/api/assets/{r['asset_id']}").json()["jobs"] if x["kind"] == "generate"][0]
+    assert row["t2i_raw"] is True

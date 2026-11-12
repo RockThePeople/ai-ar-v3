@@ -54,6 +54,7 @@ class Settings:
     timeout_s: float = 600.0  # 실행 상태 10분
     review3d_s: float = 1800.0  # 3D 확인 30분
     max_attempts: int = 3
+    facehint: bool = True  # S14 APP_FACEHINT: 상세화에 "사람·캐릭터·동물이면 얼굴이 보이게" 규칙
     regionrefine: bool = True  # S13 APP_REGIONREFINE: 보정·분류에 라쏘 이미지·mask_ratio, selected_part·region_fit
     inpaintprompt: bool = True  # S13b APP_INPAINTPROMPT: 인페인팅에 보정의 inpaint_prompt(장면 문장은 자산용 그대로)
     rejectraw: bool = True  # S13 APP_REJECTRAW: prompt 재시도 보정에 사용자 거절 원문도
@@ -82,6 +83,7 @@ class Settings:
             relphrase=_flag("APP_RELPHRASE", "1"),
             worker_delete=_flag("APP_WORKER_DELETE", "0"),
             regionrefine=_flag("APP_REGIONREFINE", "1"),
+            facehint=_flag("APP_FACEHINT", "1"),
             rejectraw=_flag("APP_REJECTRAW", "1"),
             inpaintprompt=_flag("APP_INPAINTPROMPT", "1"),
         )
