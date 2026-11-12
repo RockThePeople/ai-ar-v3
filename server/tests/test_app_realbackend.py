@@ -68,7 +68,7 @@ def test_generate_swap_order_and_edit(tmp_path, fw, monkeypatch):
     assert any(x.endswith(f"/v2/trellis/assets/{aid}/commit") for x in fw.log)
     assert sorted(c.get(f"/v2/assets/{aid}/manifest.v2.json").json()["chunks"]) == ["8_8_8", "8_8_9"]
     assert c.delete("/app/v1/qr/q1", headers=A).status_code == 204
-    assert f"DELETE /v2/trellis/assets/{aid}" in fw.log
+    assert f"DELETE /v2/trellis/assets/{aid}" not in fw.log                     # 기본: A5000 저장소 보관(11-12 사용자 결정)
 
 
 def test_reload_even_when_t2i_fails(tmp_path, fw, monkeypatch):

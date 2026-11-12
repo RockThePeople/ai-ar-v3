@@ -623,12 +623,15 @@ class Engine:
             if act is not None:
                 raise AppError(409, "ASSET_LOCKED", "진행 중 작업이 있다", {"job_id": act["job_id"]})
             aid = a["asset_id"]
-            try:
-                note = self.be.delete(aid)               # A5000 워커 저장소는 지운다(1.0.2 9절)
-            except StageError as e:
-                raise AppError(409, e.code, str(e))
+            note = None
+            if self.s.worker_delete:                     # 끔(기본) = A5000 워커 저장소도 보관(사용자 결정 2026-11-12)
+                try:
+                    note = self.be.delete(aid)           # 켬 = 1.0.2 9절 원래 동작(A5000 저장소 삭제)
+                except StageError as e:
+                    raise AppError(409, e.code, str(e))
             # 앱 서버 기록은 보관한다: QR 만 비우고 판본·청크·작업·미리보기·LLM 기록·평가는 그대로(1.0.2 9절)
-            self.db.x("UPDATE assets SET qr_id=NULL, deleted_at=? WHERE asset_id=?", (self.clock(), aid))
+            self.db.x("UPDATE assets SET qr_id=NULL, deleted_at=?, worker_kept=? WHERE asset_id=?",
+                      (self.clock(), 0 if self.s.worker_delete else 1, aid))
             self.db.x("UPDATE ratings SET asset_deleted=1 WHERE asset_id=?", (aid,))
             if note:   # 앱 쪽 삭제는 진행한다. A5000 쪽이 남았을 수 있다는 기록
                 print(f"[delete] {aid}: {note}", flush=True)
