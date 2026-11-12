@@ -67,6 +67,13 @@ def fake_translate(prompt: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════ 실제
+def _json_or_text(r: httpx.Response):
+    try:
+        return r.json()
+    except ValueError:
+        return r.text[:500]
+
+
 def _fdesc(name: str, b: bytes) -> dict:
     """S9: 보낸 파일 설명(이름·바이트·sha256). 이미지 자체는 작업 폴더에 따로 남는다."""
     return {"filename": name, "bytes": len(b), "sha256": hashlib.sha256(b).hexdigest()}
@@ -113,8 +120,9 @@ class RealBackend:
         return out
 
     # 생성
-    def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress) -> dict:
+    def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None) -> dict:
         from .. import t2i
+        trace = trace if trace is not None else {}
 
         progress("t2i", 0.05)
         try:
@@ -136,9 +144,11 @@ class RealBackend:
             r = self._call(lambda: c.post("/v2/trellis/generate", data={"meta": json.dumps(meta)},
                                           files={"image": ("input.png", png, "image/png")}),
                            "GENERATE_FAILED", "A5000 generate")
+            trace["submit"] = {"t": round(self._now(), 3), "endpoint": "POST /v2/trellis/generate", "status": r.status_code,
+                               "response": _json_or_text(r)}
             if r.status_code != 202:
                 raise self._err(r, "GENERATE_FAILED", "A5000 generate")
-            res = self._poll(c, r.json()["job_id"], "GENERATE_FAILED", progress, "generating")
+            res = self._poll(c, r.json()["job_id"], "GENERATE_FAILED", progress, "generating", trace)
             progress("chunking", 0.9)
             blobs = self._fetch_version(c, asset_id, 1, res)
         raw = {"t2i": {"command": timing.get("command"), "settings": timing.get("settings"),
@@ -205,7 +215,8 @@ class RealBackend:
             return g.content
 
     def edit3d(self, asset_id: str, base_version: int, render: dict, edit_png: bytes, cells: List[list],
-               idem: str, progress: Progress) -> dict:
+               idem: str, progress: Progress, trace: Optional[dict] = None) -> dict:
+        trace = trace if trace is not None else {}
         meta = {"asset_id": asset_id, "base_version": base_version, "seed": 0, "idempotency_key": idem,
                 "render_id": render["render_id"],
                 "mask": {"mode": "voxels", "voxels": cells, "halo_margin_voxels": 2, "grid_source": "slat_coords"}}
@@ -214,11 +225,15 @@ class RealBackend:
                 "2d_render": ("2d_render.png", render["render_png"], "image/png"),
                 "2d_mask": ("2d_mask.png", render["mask_png"], "image/png"),
                 "2d_edit": ("2d_edit.png", edit_png, "image/png")}), "EDIT_FAILED", "A5000 edit")
+            # 접수는 재시도하지 않는다(S10): A5000 은 같은 idempotency_key 라도 앞 작업이 끝나 staging 이 기록되기 전에는
+            # 재생하지 않고 새 작업을 만든다(services/a5000_edit/app.py replayable) → 중복 GPU 작업·같은 staging 폴더 경합
+            trace["submit"] = {"t": round(self._now(), 3), "endpoint": "POST /v2/trellis/edit", "status": r.status_code,
+                               "response": _json_or_text(r)}
             if r.status_code != 202:
                 raise self._err(r, "EDIT_FAILED", "A5000 edit")
             jid = r.json()["job_id"]
             submit = r.json()
-            res = self._poll(c, jid, "EDIT_FAILED", progress, "editing_3d")
+            res = self._poll(c, jid, "EDIT_FAILED", progress, "editing_3d", trace)
             progress("chunking", 0.9)
             blobs = {}
             for ch in res.get("chunks", []):
@@ -294,17 +309,75 @@ class RealBackend:
                 raise self._err(r, "INTERNAL", f"chunk {p}")
             return r.content
 
-    def _poll(self, c: httpx.Client, jid: str, code: str, progress: Progress, stage: str) -> dict:
-        t0 = time.time()
+    # S10: 폴링 연결 오류 재시도. 간격 1·2·4·8 s 뒤 8 s 고정, 연속 실패가 60 s 를 넘으면 WORKER_UNREACHABLE.
+    POLL_BACKOFF = (1.0, 2.0, 4.0, 8.0)
+    POLL_GIVEUP_S = 60.0
+    POLL_INTERVAL_S = 0.5
+    _sleep = staticmethod(time.sleep)                   # 시험에서 바꾼다
+    _now = staticmethod(time.time)
+
+    def _poll(self, c: httpx.Client, jid: str, code: str, progress: Progress, stage: str,
+              trace: Optional[dict] = None) -> dict:
+        """A5000 잡 폴링. 회차마다 trace["polls"] 에 시각·HTTP 상태 또는 오류·A5000 상태를 남긴다.
+
+        - 200: 계속(to_version 이 있으면 끝). 그 사이 실패가 있었으면 연속 실패를 초기화한다.
+        - 연결 오류(ReadError·ConnectError·RemoteProtocolError·타임아웃 = httpx.TransportError)·본문 없는 5xx: 재시도.
+        - 5xx 인데 A5000 오류 본문(error_code)이 있으면 = A5000 작업 실패(job_status 가 실패를 5xx 로 낸다) → 바로 실패.
+        - 4xx(작업 없음 등): 바로 실패(지금과 같다).
+        """
+        polls = trace.setdefault("polls", []) if trace is not None else []
+        t0 = self._now()
+        fail_since: Optional[float] = None
+        fails = 0
+        n = 0
         while True:
-            r = self._call(lambda: c.get(f"/v2/trellis/jobs/{jid}"), code, "잡 폴링")
-            if r.status_code != 200:
-                raise self._err(r, code, f"A5000 잡 {jid}")
-            b = r.json()
-            if "to_version" in b:
-                return b
-            progress(stage, min(0.85, 0.3 + (time.time() - t0) / 120))
-            time.sleep(0.5)
+            n += 1
+            ts = self._now()
+            rec: dict = {"n": n, "t": round(ts, 3)}
+            polls.append(rec)
+            problem = None
+            try:
+                r = c.get(f"/v2/trellis/jobs/{jid}")
+            except httpx.TransportError as e:
+                problem = rec["error"] = f"{type(e).__name__}: {e}"
+            else:
+                rec["status"] = r.status_code
+                if r.status_code == 200:
+                    b = r.json()
+                    rec.update({k: b.get(k) for k in ("state", "stage", "progress") if k in b})
+                    if "to_version" in b:
+                        rec["state"] = rec.get("state") or "succeeded"
+                        if trace is not None:
+                            trace["result"] = {"t": round(ts, 3), "polls": n, "retries": sum(1 for p in polls if "retry_wait_s" in p)}
+                        return b
+                    if fails:
+                        rec["recovered_after_s"] = round(ts - fail_since, 3)
+                    fail_since, fails = None, 0
+                    progress(stage, min(0.85, 0.3 + (ts - t0) / 120))
+                    self._sleep(self.POLL_INTERVAL_S)
+                    continue
+                body = None
+                try:
+                    body = r.json()
+                except ValueError:
+                    pass
+                rec["body"] = body if body is not None else r.text[:200]
+                if r.status_code < 500 or (isinstance(body, dict) and body.get("error_code")):
+                    if trace is not None:
+                        trace["result"] = {"t": round(ts, 3), "polls": n, "failed": f"HTTP {r.status_code}"}
+                    raise self._err(r, code, f"A5000 잡 {jid}")
+                problem = f"HTTP {r.status_code}(오류 본문 없음)"
+            fails += 1
+            fail_since = fail_since if fail_since is not None else ts
+            if ts - fail_since > self.POLL_GIVEUP_S:
+                if trace is not None:
+                    trace["result"] = {"t": round(ts, 3), "polls": n, "failed": "WORKER_UNREACHABLE",
+                                       "fail_window_s": round(ts - fail_since, 3)}
+                raise StageError("WORKER_UNREACHABLE", f"잡 폴링: 연속 실패 {fails}회 {ts - fail_since:.0f} s(> "
+                                                       f"{self.POLL_GIVEUP_S:.0f} s), 마지막 {problem}")
+            wait = self.POLL_BACKOFF[min(fails - 1, len(self.POLL_BACKOFF) - 1)]
+            rec["retry_wait_s"] = wait
+            self._sleep(wait)
 
     def _fetch_version(self, c: httpx.Client, asset_id: str, n: int, res: dict) -> Dict[str, bytes]:
         blobs = {}
@@ -342,7 +415,7 @@ class MockBackend:
     def health(self) -> dict:
         return {"a5000": "up", "inpaint": "up"}
 
-    def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress) -> dict:
+    def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None) -> dict:
         progress("generating", 0.5)
         self._sleep("generate")
         src = self.s.mock_source
@@ -360,7 +433,7 @@ class MockBackend:
         return (self.fx / "edit.png").read_bytes()
 
     def edit3d(self, asset_id: str, base_version: int, render: dict, edit_png: bytes, cells: List[list],
-               idem: str, progress: Progress) -> dict:
+               idem: str, progress: Progress, trace: Optional[dict] = None) -> dict:
         self._sleep("edit3d")
         vs = self._src_versions()
         k = max(1, base_version)                      # 사본의 k 번째 편집 = 원천 v k → v k+1

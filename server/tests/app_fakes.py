@@ -60,7 +60,7 @@ class FakeBackend:
     def health(self):
         return {"a5000": "up", "inpaint": "up"}
 
-    def generate(self, asset_id, prompt, seed, progress):
+    def generate(self, asset_id, prompt, seed, progress, trace=None):
         self._f("generate")
         progress("generating", 0.5)
         return {"blobs": {k: cbin(k) for k in BASE_KEYS}, "slat_coords": [[32, 32, 32], [33, 32, 32]]}
@@ -76,7 +76,7 @@ class FakeBackend:
         self.calls.append(("inpaint_args", prompt, seed))
         return png(v=200 + seed)
 
-    def edit3d(self, asset_id, base_version, render, edit_png, cells, idem, progress):
+    def edit3d(self, asset_id, base_version, render, edit_png, cells, idem, progress, trace=None):
         self._f("edit3d")
         return {"to_version": base_version + 1, "worker_job_id": "wj-1", "stats": {}, "raw": {"meta": {"seed": 0}, "text": "텍스트 입력 없음(이미지 조건)"},
                 "blobs": {"8_8_8": cbin("8_8_8", base_version), "10_8_8": cbin("10_8_8")}, "removed": ["9_8_8"]}
