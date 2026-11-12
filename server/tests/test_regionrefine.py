@@ -268,3 +268,24 @@ def test_app_api_refine_shape_unchanged(env):
     jid = to_2d(env, aid)
     r = env.get(f"/app/v1/jobs/{jid}", headers=A).json()["refine"]
     assert set(r) == {"target_element", "replacement", "op", "new_scene_prompt"}
+
+
+def test_classify_guidance_lateral_stripped(env):
+    aid = make_asset(env)
+    jid = to_2d(env, aid)
+    env.eng.llm.classify = lambda reason, refine, history, job_id="", **kw: {
+        "category": "quality", "guidance": "the glove on the left hand looks like a white mesh"}
+    j = env.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "looks blurry"}, headers=A).json()
+    assert "left" not in j["review"]["guidance"] and "glove on the hand" in j["review"]["guidance"]
+    env.eng.drain()
+    j = env.eng.get(jid)
+    assert "left" not in j["attempts"][0]["guidance"]
+
+
+def test_classify_guidance_lateral_kept_when_user_said(env):
+    aid = make_asset(env)
+    jid = to_2d(env, aid)
+    env.eng.llm.classify = lambda reason, refine, history, job_id="", **kw: {
+        "category": "quality", "guidance": "the left glove is blurry"}
+    j = env.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "left glove blurry"}, headers=A).json()
+    assert j["review"]["guidance"] == "the left glove is blurry"
