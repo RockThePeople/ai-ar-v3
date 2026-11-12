@@ -55,6 +55,7 @@ class Settings:
     review3d_s: float = 1800.0  # 3D 확인 30분
     max_attempts: int = 3
     regionrefine: bool = True  # S13 APP_REGIONREFINE: 보정·분류에 라쏘 이미지·mask_ratio, selected_part·region_fit
+    inpaintprompt: bool = True  # S13b APP_INPAINTPROMPT: 인페인팅에 보정의 inpaint_prompt(장면 문장은 자산용 그대로)
     rejectraw: bool = True  # S13 APP_REJECTRAW: prompt 재시도 보정에 사용자 거절 원문도
     worker_delete: bool = False  # APP_WORKER_DELETE: 자산 삭제 때 A5000 워커 저장소도 지움(기본 0 = 보관, 사용자 결정 11-12)
     relphrase: bool = True  # S12 APP_RELPHRASE: 보정 문장에서 바뀐 부위를 대상 뒤 관계어로(끔 = S4–S11 보정 템플릿)
@@ -82,4 +83,5 @@ class Settings:
             worker_delete=_flag("APP_WORKER_DELETE", "0"),
             regionrefine=_flag("APP_REGIONREFINE", "1"),
             rejectraw=_flag("APP_REJECTRAW", "1"),
+            inpaintprompt=_flag("APP_INPAINTPROMPT", "1"),
         )

@@ -151,6 +151,44 @@ REFINE_REGION_SCHEMA = {
     "additionalProperties": False,
 }
 
+# S13b: 인페인팅 전용 문장(바뀐 부위 먼저, 옛 부위 없음, 맥락 한 구절, 좌우 없음, 40단어 안)
+REFINE_REGION_IP_SCHEMA = {
+    "type": "object",
+    "properties": {**REFINE_REGION_SCHEMA["properties"], "inpaint_prompt": {"type": "string"}},
+    "required": REFINE_REGION_SCHEMA["required"] + ["inpaint_prompt"],
+    "additionalProperties": False,
+}
+
+_INPAINT_RULES = """
+- inpaint_prompt: a separate English prompt for the image inpainting model, which repaints ONLY the selected region.
+  Start with what will be visible inside the region after the edit (the changed element), in detail: shape, color, material.
+  Never mention the element it replaces (the old head, the old hat, ...).
+  Then add ONE short phrase of surrounding context (e.g. "sitting on a snowman of packed white snow with a red knitted scarf").
+  No position or side words (left, right, upper, lower, top-left, "on the ... side"): the mask decides where it goes.
+  Positive descriptions only, no commands, no style words beyond the asset style. At most 40 words.
+  Example: "A large carved orange Halloween jack-o'-lantern pumpkin head with triangular eyes and a jagged grin, a short green
+  stem on top, sitting on a snowman of packed white snow with a red knitted scarf".
+  If the whole subject is renamed (mask_ratio 0.6 or more), inpaint_prompt may equal new_scene_prompt shortened to 40 words."""
+
+#: S13b 좌우·위치 단어(지시에 없으면 지운다)
+_LATERAL = re.compile(r"\b(?:on\s+the\s+(?:left|right|upper|lower|far)\s+side(?:\s+of\s+(?:the|its|his|her)\s+\w+)?|"
+                      r"(?:top|bottom|upper|lower)[- ](?:left|right)|left|right|upper|lower)\b(?:-hand)?", re.I)
+
+
+def lateral_words(text: str) -> List[str]:
+    return [m.group(0).lower() for m in _LATERAL.finditer(text or "")]
+
+
+def strip_lateral(text: str, instruction: str = "") -> str:
+    """지시에 좌우·위치 말이 없으면 지운다(있으면 그 말은 둔다)."""
+    if lateral_words(instruction):
+        return text
+    t = _LATERAL.sub("", text or "")
+    t = re.sub(r"\s+([,.])", r"\1", t)
+    t = re.sub(r"\b(a|an|the)\s+(?=[,.]|$)", "", t, flags=re.I)
+    return re.sub(r"\s{2,}", " ", t).strip(" ,")
+
+
 _REGION_RULES = """
 The user selected a region of the object with a lasso. You get two images and a number:
 - Image 1: the object from the lasso camera, with the selected region tinted red and outlined.
@@ -158,7 +196,9 @@ The user selected a region of the object with a lasso. You get two images and a 
 - mask_ratio: selected pixels / object pixels in that view (1.0 = the whole object).
 
 Additional output fields:
-- selected_part: the name of the selected (red) part, as seen in the images (e.g. "the snowman's head", "the left twig arm").
+- selected_part: the name of the selected (red) part, as seen in the images (e.g. "the snowman's head", "a twig arm",
+  "a gloved hand"). Never use left/right or other position words in selected_part or target_element unless the
+  instruction itself uses them; the mask already fixes the position.
 - region_fit: "ok" if the requested result fits in the selected region; "too_small" if the requested result looks larger
   than the selected region (e.g. a long broom when only a hand is selected); "wrong_part" if the part the instruction
   names is outside the selected region.
@@ -261,6 +301,12 @@ Classify the reason into exactly one category and write short English guidance.
 
 Return JSON {"category": ..., "guidance": ...}."""
 
+
+#: S13b: 칠하기·영역을 놓쳤다는 말은 region
+CLASSIFY_REGION_RULE = """
+
+- If the user says they missed or got wrong the painting / selection / area / extent (e.g. "missed to select",
+  "wrong area", "too small area", "needs to start from ..."), the category is "region"."""
 
 CLASSIFY_IMAGE_RULES = """
 
@@ -483,6 +529,8 @@ class FakeAdapter:
             if relphrase and repl and repl.lower() not in nsp.split(",", 1)[0].lower():
                 head, _, rest = (scene_prompt or "").strip().rstrip(".").partition(",")
                 nsp = f"{head} with {repl}" + (f",{rest}" if rest else "") if head else repl
+            if region.get("inpaint_prompt"):
+                out["inpaint_prompt"] = repl or nsp
             out = dict(out, new_scene_prompt=nsp, selected_part=out.get("target_element") or "the selected part", region_fit="ok",
                        region_reason="fake adapter")
         self.on_call({"job_id": job_id, "kind": "refine_changed" if changed_from else "refine", "model": self.model,
@@ -498,7 +546,7 @@ class FakeAdapter:
         return fake_detail_style(prompt)
 
     def classify(self, reason: str, refine: Optional[dict], history: List[str], job_id: str = "",
-                 images: Optional[List[bytes]] = None) -> dict:
+                 images: Optional[List[bytes]] = None, region_rule: bool = False) -> dict:
         cat, guide = fake_classify(reason)
         out = {"category": cat, "guidance": guide}
         self.on_call({"job_id": job_id, "kind": "classify", "model": self.model, "input": {"reason": reason},
@@ -624,11 +672,28 @@ class ClaudeAdapter:
         base = {k: o[k] for k in REFINE_SCHEMA["properties"]}
         return ClaudeAdapter.check_refine(base)
 
+    @staticmethod
+    def check_refine_region_ip(o: dict) -> Optional[str]:
+        if set(o) != set(REFINE_REGION_IP_SCHEMA["properties"]):
+            return f"필드가 다르다: {sorted(o)}"
+        t = str(o.get("inpaint_prompt", "")).strip()
+        if not t:
+            return "inpaint_prompt 가 비었다"
+        if len(t.split()) > 60:                               # 규칙 40단어, 검사는 여유 있게(넘으면 재시도)
+            return f"inpaint_prompt 가 너무 길다({len(t.split())}단어, 40단어 안)"
+        m = _NEG.search(t)
+        if m:
+            return f"inpaint_prompt 에 부정 표현 {m.group(0)!r} 이 있다"
+        if _HANGUL.search(t):
+            return "inpaint_prompt 에 한글이 있다"
+        return ClaudeAdapter.check_refine_region({k: v for k, v in o.items() if k != "inpaint_prompt"})
+
     def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "",
                changed_from: Optional[dict] = None, style: Optional[dict] = None, avoid: Optional[List[str]] = None,
                relphrase: bool = False, imperative: Optional[List[str]] = None, region: Optional[dict] = None,
                fix: Optional[List[str]] = None) -> dict:
-        """region = {"images": [png, …], "mask_ratio": float}: S13 라쏘 이미지(이미지 실패면 글자만으로 다시, 기록).
+        """region["inpaint_prompt"] = True: S13b 인페인팅 전용 문장도 받는다.
+        region = {"images": [png, …], "mask_ratio": float}: S13 라쏘 이미지(이미지 실패면 글자만으로 다시, 기록).
         fix = S13 서버 검사 재요청 안내문 목록.
         changed_from = {prev, reason, guidance}: S8 — prompt 거절 뒤 같은 문장이 나와 다시 부를 때.
         style = {"style": None|str}: S11 자산 양식(None = 기본 실물형). avoid = S11 금지어 재요청 때 뺄 단어."""
@@ -668,9 +733,11 @@ class ClaudeAdapter:
             utext = user + f"\n\nmask_ratio: {ratio if ratio is not None else 'unknown'}"
             log.update(region={"mask_ratio": ratio, "n_images": len(imgs)})
             content = [_img_block(b) for b in imgs] + [{"type": "text", "text": utext}]
+            ip = bool(region.get("inpaint_prompt"))
             try:
-                return self._call(kind, system + "\n" + _REGION_RULES, content, REFINE_REGION_SCHEMA,
-                                  self.check_refine_region, job_id, log)
+                return self._call(kind, system + "\n" + _REGION_RULES + (_INPAINT_RULES if ip else ""), content,
+                                  REFINE_REGION_IP_SCHEMA if ip else REFINE_REGION_SCHEMA,
+                                  self.check_refine_region_ip if ip else self.check_refine_region, job_id, log)
             except LLMUnavailable as e:
                 if not imgs or "API 4" not in str(e):
                     raise
@@ -742,8 +809,8 @@ class ClaudeAdapter:
         return None
 
     def classify(self, reason: str, refine: Optional[dict], history: List[str], job_id: str = "",
-                 images: Optional[List[bytes]] = None) -> dict:
-        """images = [라쏘 겹친 렌더, 2d_edit]: S13. 이미지 실패면 글자만으로(기록)."""
+                 images: Optional[List[bytes]] = None, region_rule: bool = False) -> dict:
+        """images = [라쏘 겹친 렌더, 2d_edit]: S13. 이미지 실패면 글자만으로(기록). region_rule: S13b 영역 규칙."""
         ctx = json.dumps({k: (refine or {}).get(k) for k in ("target_element", "replacement", "op", "new_scene_prompt")},
                          ensure_ascii=False)
         user = (f"edit that was previewed: {ctx}\n"
@@ -755,13 +822,15 @@ class ClaudeAdapter:
             log["n_images"] = len(imgs)
             content = [_img_block(b) for b in imgs] + [{"type": "text", "text": user}]
             try:
-                return self._call("classify", CLASSIFY_SYSTEM + CLASSIFY_IMAGE_RULES, content, CLASSIFY_SCHEMA,
+                return self._call("classify", CLASSIFY_SYSTEM + (CLASSIFY_REGION_RULE if region_rule else "") +
+                                  CLASSIFY_IMAGE_RULES, content, CLASSIFY_SCHEMA,
                                   self.check_classify, job_id, log)
             except LLMUnavailable as e:
                 if "API 4" not in str(e):
                     raise
                 log["image_error"] = str(e)[:300]
-        return self._call("classify", CLASSIFY_SYSTEM, user, CLASSIFY_SCHEMA, self.check_classify, job_id, log)
+        return self._call("classify", CLASSIFY_SYSTEM + (CLASSIFY_REGION_RULE if region_rule else ""), user,
+                          CLASSIFY_SCHEMA, self.check_classify, job_id, log)
 
 
 def make_adapter(mock: bool, on_call: Optional[Callable[[dict], None]] = None, model: Optional[str] = None):

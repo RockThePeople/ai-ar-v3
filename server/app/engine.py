@@ -23,7 +23,8 @@ from typing import Callable, Dict, List, Optional
 from .backends import StageError
 from .cropinpaint import crop_inpaint
 from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, placement_ok,
-                          strip_banned, strip_realworld, style_from_request, subject_head)
+                          strip_banned, strip_lateral, strip_realworld, style_from_request,
+                          subject_head)
 from .regionimg import region_images
 from ..t2i import app_template
 
@@ -288,9 +289,25 @@ class Engine:
         if rp:
             kw["relphrase"] = True
         if region is not None:
-            kw["region"] = {"images": region.get("images"), "mask_ratio": region.get("mask_ratio")}
-        out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw)
-        out = dict(out, new_scene_prompt=strip_realworld(out["new_scene_prompt"]))
+            kw["region"] = {"images": region.get("images"), "mask_ratio": region.get("mask_ratio"),
+                            "inpaint_prompt": self.s.inpaintprompt}
+
+        def clean(o: dict) -> dict:
+            """문구·좌우 정리(S13 7, S13b 2). 인페인팅 문장에는 금지어 삭제도(실물형)."""
+            o = dict(o, new_scene_prompt=strip_realworld(o["new_scene_prompt"]))
+            ins = j["instruction"]
+            for k in ("selected_part", "target_element"):
+                if o.get(k):
+                    o[k] = strip_lateral(o[k], ins) or o[k]
+            if o.get("inpaint_prompt"):
+                t = strip_lateral(strip_realworld(o["inpaint_prompt"]), ins)
+                if rs and not st:
+                    left = banned_words(t, f"{scene} {ins}")
+                    if left:
+                        t = strip_banned(t, left)
+                o["inpaint_prompt"] = t
+            return o
+        out = clean(self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw))
         if not (rs or rp or region is not None):
             return out, None
         meta: dict = {"retried": False}
@@ -340,8 +357,7 @@ class Engine:
                     fix.append("Put the element changed in this edit right after the subject as the first relation phrase "
                                "(before any relation phrase from earlier edits).")
                 extra["fix"] = fix
-            out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw, **extra)
-            out = dict(out, new_scene_prompt=strip_realworld(out["new_scene_prompt"]))
+            out = clean(self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw, **extra))
             left = banned_words(out["new_scene_prompt"], src) if check_banned else []
             if left:
                 out = dict(out, new_scene_prompt=strip_banned(out["new_scene_prompt"], left))
@@ -436,7 +452,10 @@ class Engine:
         rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
         rpng, mpng = (rd / "render.png").read_bytes(), (rd / "mask.png").read_bytes()
         seed = 0 + j["attempt"] - 1                       # 내부 규약 5절: 기본 seed + attempt − 1
-        ip = inpaint_prompt(j["refine"]["new_scene_prompt"], self.s.realstyle, (j.get("style_meta") or {}).get("style"))
+        # S13b: 보정이 인페인팅 전용 문장을 주면 그것을(장면 문장은 자산 갱신용으로 그대로)
+        ip_src = "inpaint_prompt" if (self.s.inpaintprompt and (j["refine"] or {}).get("inpaint_prompt")) else "scene"
+        base_text = j["refine"]["inpaint_prompt"] if ip_src == "inpaint_prompt" else j["refine"]["new_scene_prompt"]
+        ip = inpaint_prompt(base_text, self.s.realstyle, (j.get("style_meta") or {}).get("style"))
         crop, crop_files = None, None
         info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
         t0 = time.perf_counter()
@@ -461,7 +480,7 @@ class Engine:
                               "new_scene_prompt": j["refine"]["new_scene_prompt"], "instruction": j["instruction"],
                               "render_id": j["render"]["render_id"], "t": self.clock(), "inpaint_s": inpaint_s,
                               "crop": crop if self.s.inpaint_crop else {"off": True}, "inpaint_raw": info,
-                              "render_reused": j.get("render_reused"),
+                              "render_reused": j.get("render_reused"), "inpaint_src": ip_src,
                               **(j.get("refine_meta") or {})})
         if (j.get("refine_meta") or {}).get("refine_unchanged"):
             j["refine_unchanged"] = True
@@ -518,7 +537,8 @@ class Engine:
             self._set(j, stage="classifying")
         try:                                             # LLM 호출은 잠금 밖에서
             ckw = {}
-            if self.s.regionrefine:                      # S13 3: 라쏘 겹친 렌더 + 거절한 2d_edit
+            if self.s.regionrefine:                      # S13 3: 라쏘 겹친 렌더 + 거절한 2d_edit, S13b 영역 규칙
+                ckw["region_rule"] = True
                 reg = self._region(j)
                 ed = self._preview_dir(j, j["attempt"]) / "edit.png"
                 imgs = ([reg["images"][0]] if reg and reg.get("images") else []) + ([ed.read_bytes()] if ed.is_file() else [])

@@ -193,3 +193,78 @@ def test_no_placement_retry_when_subject_renamed_at_06(env):
     edit(env, aid)
     env.eng.drain()
     assert len(seen) == 1
+
+
+# ── S13b: 인페인팅 전용 문장, 좌우 단어, 영역 분류 규칙 ─────────────────────────
+def test_inpaint_prompt_used_for_inpaint_and_scene_kept(env):
+    aid = _snow(env)
+    ip = "A large carved orange jack-o'-lantern pumpkin head, sitting on a snowman of packed white snow"
+    seen = _stub(env, [dict(R, new_scene_prompt="A big snowman wearing a carved orange jack-o-lantern pumpkin head, a red scarf",
+                            inpaint_prompt=ip, selected_part="the left snowman head")])
+    jid = edit(env, aid).json()["job_id"]
+    env.eng.drain()
+    j = env.eng.get(jid)
+    a = j["attempts"][0]
+    assert seen[0]["region"]["inpaint_prompt"] is True
+    assert a["prompt"] == ip and a["inpaint_src"] == "inpaint_prompt"                 # 인페인팅 = inpaint_prompt
+    assert a["new_scene_prompt"].startswith("A big snowman wearing")                  # 장면 문장은 그대로
+    env.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": True}, headers=A)
+    env.eng.drain()
+    env.post(f"/app/v1/jobs/{jid}/review3d", json={"keep": True}, headers=A)
+    assert env.eng.db.asset(aid)["scene_prompt"].startswith("A big snowman wearing")  # 자산 장면 = new_scene_prompt
+
+
+def test_lateral_words_stripped_unless_instructed(env):
+    from server.app.llm_adapter import strip_lateral
+    assert strip_lateral("the right twig arm") == "the twig arm"
+    assert strip_lateral("the jeep's lower-right side spare tire area") == "the jeep's side spare tire area"
+    assert strip_lateral("the right arm", "change the right arm into a broom") == "the right arm"
+    assert strip_lateral("a brightly lit window") == "a brightly lit window"
+    aid = _snow(env)
+    _stub(env, [dict(R, target_element="the right twig arm", new_scene_prompt="A big snowman wearing a carved orange "
+                     "jack-o-lantern pumpkin head", inpaint_prompt="A pumpkin head on the right side, upper area")])
+    jid = edit(env, aid).json()["job_id"]
+    env.eng.drain()
+    j = env.eng.get(jid)
+    assert j["refine"]["target_element"] == "the twig arm" and "right" not in j["attempts"][0]["prompt"].lower()
+
+
+def test_inpaintprompt_off_uses_scene(env):
+    env.eng.s.inpaintprompt = False
+    aid = _snow(env)
+    seen = _stub(env, [dict(R, new_scene_prompt="A big snowman wearing a carved orange jack-o-lantern pumpkin head")])
+    jid = edit(env, aid).json()["job_id"]
+    env.eng.drain()
+    a = env.eng.get(jid)["attempts"][0]
+    assert seen[0]["region"]["inpaint_prompt"] is False and a["inpaint_src"] == "scene"
+
+
+def test_classify_region_rule_flag(env):
+    aid = make_asset(env)
+    jid = to_2d(env, aid)
+    got = {}
+    orig = env.eng.llm.classify
+
+    def classify(reason, refine, history, job_id="", **kw):
+        got.update(kw)
+        return orig(reason, refine, history, job_id=job_id)
+    env.eng.llm.classify = classify
+    env.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "i missed to select the color"}, headers=A)
+    assert got.get("region_rule") is True
+
+
+def test_check_refine_region_ip():
+    from server.app.llm_adapter import ClaudeAdapter
+    ok = {"target_element": "the head", "replacement": "a pumpkin head", "op": "replace",
+          "new_scene_prompt": "A snowman wearing a pumpkin head", "selected_part": "the snowman's head",
+          "region_fit": "ok", "region_reason": "fits", "inpaint_prompt": "A carved pumpkin head on a snowman"}
+    assert ClaudeAdapter.check_refine_region_ip(ok) is None
+    assert ClaudeAdapter.check_refine_region_ip({**ok, "inpaint_prompt": "a pumpkin without a stem"})
+    assert ClaudeAdapter.check_refine_region_ip({**ok, "inpaint_prompt": "word " * 61})
+
+
+def test_app_api_refine_shape_unchanged(env):
+    aid = make_asset(env)
+    jid = to_2d(env, aid)
+    r = env.get(f"/app/v1/jobs/{jid}", headers=A).json()["refine"]
+    assert set(r) == {"target_element", "replacement", "op", "new_scene_prompt"}
