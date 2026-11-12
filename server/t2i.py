@@ -96,7 +96,7 @@ def _script_settings(path: Path) -> list:
 
 
 def render_rgba(prompt: str, *, seed: int = 42,
-                keep_dir: Optional[Path] = None, template: Optional[str] = None) -> Tuple[bytes, dict]:
+                keep_dir: Optional[Path] = None, template: Optional[str] = None, return_rgb: bool = False):
     """prompt → (RGBA PNG 바이트, 소요 내역).
 
     Raises:
@@ -139,8 +139,9 @@ def render_rgba(prompt: str, *, seed: int = 42,
     if not rgba.is_file() or rgba.stat().st_size == 0:
         raise T2IUnavailable("분리 결과가 비었다 — 자리표시를 대신 내지 않는다")
     data = rgba.read_bytes()
+    rgb_data = rgb.read_bytes() if (return_rgb and rgb.is_file()) else None   # S14: 배경 제거 전 원본
     timing["rgb_bytes"] = rgb.stat().st_size if rgb.is_file() else 0
     timing["rgba_bytes"] = len(data)
     if keep_dir is None:
         shutil.rmtree(work, ignore_errors=True)
-    return data, timing
+    return (data, timing, rgb_data) if return_rgb else (data, timing)

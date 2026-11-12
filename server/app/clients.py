@@ -94,7 +94,8 @@ def build_clients(S) -> APIRouter:
                 "translate": j.get("translate"),
                 "style": j.get("style"), "t2i_template": j.get("t2i_template"),   # S11 양식 판정(생성)
                 "t2i_effective": ((j.get("t2i") or {}).get("timing") or {}).get("prompt_effective"),
-                "seed": j.get("seed"), "t2i": bool(j.get("t2i")),
+                "seed": j.get("seed"), "t2i": bool(j.get("t2i")), "t2i_raw": bool((j.get("t2i") or {}).get("raw_file")),
+                "paper_gen": j.get("paper_gen"),
                 "refine": j.get("refine"), "camera": j.get("camera"), "n_cells": len(j.get("cells") or []),
                 "attempts": attempts, "base_version": j.get("base_version") or res.get("base_version"),
                 "to_version": res.get("to_version"), "n_changed": len(res.get("chunks") or []),
@@ -106,7 +107,8 @@ def build_clients(S) -> APIRouter:
                 # S9: 실제로 오간 입력 전문(앞으로의 작업부터 기록, 지난 작업은 있는 만큼)
                 "raw_generate": j.get("raw_generate"), "raw_edit3d": j.get("raw_edit3d"),
                 "render_record": (j.get("render") or {}).get("record"),
-                "a5000_trace": j.get("a5000_trace"),            # S10: 접수·폴링 회차(실패 포함)
+                "a5000_trace": j.get("a5000_trace"),
+                "raw_prompt": bool(j.get("raw_prompt")),        # S14 그대로 모드            # S10: 접수·폴링 회차(실패 포함)
                 "job_json": f"/clients/api/jobs/{j['job_id']}"}
 
     @r.get("/api/jobs/{job_id}")
@@ -161,6 +163,17 @@ def build_clients(S) -> APIRouter:
         p = data / "jobs" / job_id / str(int(attempt)) / f"{name}.png"
         if not p.is_file():
             raise AppError(404, "JOB_NOT_FOUND", "이미지 없음")
+        return FileResponse(p, media_type="image/png")
+
+    @r.get("/img/{job_id}/image.png")
+    def t2i_raw(job_id: str, req: Request):
+        """S14: 배경 제거 전 T2I 원본."""
+        guard(req)
+        if S.engine.get(job_id) is None:
+            raise AppError(404, "JOB_NOT_FOUND", job_id)
+        p = data / "jobs" / job_id / "image.png"
+        if not p.is_file():
+            raise AppError(404, "JOB_NOT_FOUND", "원본 이미지 없음")
         return FileResponse(p, media_type="image/png")
 
     @r.get("/img/{job_id}/t2i.png")
@@ -319,7 +332,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
  document.getElementById('title').textContent=`${d.asset_id} · QR ${d.qr_id??'-'} · ${d.status}`;
  document.getElementById('meta').innerHTML=`생성 ${ts(d.created_at)} · 생성자 ${esc(d.creator)} · 판본 ${d.version} · 편집 ${d.commits}/${d.edits} · 평가 ${d.rating_avg??'-'} (${d.ratings})${d.deleted_at?' · 삭제 '+ts(d.deleted_at):''}<br>장면 문장: ${esc(d.scene_prompt)}`;
  const g=d.jobs.find(j=>j.kind==='generate');
- document.getElementById('gen').innerHTML=g?`<div>원문: <b>${esc(g.prompt)}</b> · seed ${g.seed} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM '+(g.translate.mode==='detail'?'상세화':(g.translate.mode==='detail_style'?'상세화+양식':'변환')):'LLM 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span></div><div>→ subject_detailed: ${esc(g.prompt_en)}</div>${styleView(g.style,true)}<div>→ 실제 T2I 문장: <span class="cap">${esc(g.t2i_effective||'(기록 없음 — S6 이전 생성)')}</span></div><div> · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc">`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}${llmTable(g.llm_calls)}${g.raw_generate?RAW('T2I 실제 명령·seed·설정(스크립트에서 읽음)',g.raw_generate.t2i)+RAW('A5000 /generate 요청·결과 전문',g.raw_generate.a5000_generate)+trView((g.a5000_trace||{}).generate,'/generate'):trView((g.a5000_trace||{}).generate,'/generate')+'<div class="cap">(생성 요청 전문 기록 없음 — S9 이전)</div>'}<div class="cap"><a href="${g.job_json}" target="_blank">작업 JSON 전문</a></div>`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
+ document.getElementById('gen').innerHTML=g?`<div>원문: <b>${esc(g.prompt)}</b> · seed ${g.seed} <span class="cap">(${g.translate?(g.translate.skipped?'영어라 그대로':(g.translate.ok?'LLM '+(g.translate.mode==='detail'?'상세화':(g.translate.mode==='detail_style'?'상세화+양식':'변환')):'LLM 실패 → 원문 사용: '+esc(g.translate.error))):'기록 없음'})</span></div><div>→ subject_detailed: ${esc(g.prompt_en)}</div>${styleView(g.style,true)}<div>→ 실제 T2I 문장: <span class="cap">${esc(g.t2i_effective||'(기록 없음 — S6 이전 생성)')}</span></div><div> · ${g.outcome}${g.error_code?' '+g.error_code:''}</div><div class="cap">단계 시간 ${esc(JSON.stringify(g.stage_s))} · GPU 대기 ${esc(JSON.stringify(g.queue_waits))}</div>${g.t2i?`<div class="imgs">${g.t2i_raw?`<figure style="display:inline-block;margin:0 8px 0 0"><img src="/clients/img/${g.job_id}/image.png" style="width:240px;border:1px solid #ccc"><figcaption class="cap">T2I 원본(배경 제거 전)</figcaption></figure>`:''}<figure style="display:inline-block;margin:0"><img src="/clients/img/${g.job_id}/t2i.png" style="width:240px;border:1px solid #ccc;background:#ccc"><figcaption class="cap">배경 제거(TRELLIS 입력)</figcaption></figure></div>`:'<div class="cap">(T2I 이미지 없음 — 가져온 자산이거나 기록 전 생성)</div>'}${llmTable(g.llm_calls)}${g.raw_generate?RAW('T2I 실제 명령·seed·설정(스크립트에서 읽음)',g.raw_generate.t2i)+RAW('A5000 /generate 요청·결과 전문',g.raw_generate.a5000_generate)+trView((g.a5000_trace||{}).generate,'/generate'):trView((g.a5000_trace||{}).generate,'/generate')+'<div class="cap">(생성 요청 전문 기록 없음 — S9 이전)</div>'}<div class="cap"><a href="${g.job_json}" target="_blank">작업 JSON 전문</a></div>`:'<div class="cap">생성 작업 기록 없음(가져온 자산)</div>';
  try{init3d()}catch(e){document.querySelector('.views')?.insertAdjacentHTML('beforebegin','<div class="cap bad">3D 보기를 열 수 없다(WebGL 없음): '+esc(e.message)+'</div>')}const o=opts();['selA','selB'].forEach((id,i)=>{const s=document.getElementById(id);s.innerHTML=o.map(x=>`<option value="${x.k}">${esc(x.cap)}</option>`).join('');s.onchange=()=>pick(i);});
  if(o.length){document.getElementById('selA').value=o[0].k;document.getElementById('selB').value=o[o.length-1].k;pick(0);pick(1);}
  const qj=new URLSearchParams(location.search).get('job');
@@ -327,7 +340,7 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}
-  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)}</div><table class="cap"><tr><th>인페인팅 문장${a.inpaint_src==='inpaint_prompt'?' (S13b inpaint_prompt)':' (장면 문장)'}</th><th>장면 문장(자산 저장용 new_scene_prompt)</th></tr><tr><td>${esc(a.prompt)}</td><td>${esc(a.new_scene_prompt||'(기록 없음)')}</td></tr></table>${styleView(a.style,false)}${a.style&&a.style.mode?relView(a.style):''}${regionView(a.style,j.job_id,a)}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
+  ${j.attempts.map(a=>`<div><b>시도 ${a.attempt}</b> · seed ${a.seed}${a.refine_retry?(a.refine_unchanged?' · <span class="bad">재보정 2회 모두 같은 문장(refine_unchanged)</span>':' · 같은 문장이라 재보정 1회 더 → 바뀜'):''}<div class="cap">지시 원문: ${esc(a.instruction||j.instruction)}</div><table class="cap"><tr><th>인페인팅 문장${a.inpaint_src==='raw_prompt'?' <span class="bad">(그대로 모드: 사용자 원문, LLM 없음)</span>':(a.inpaint_src==='inpaint_prompt'?' (S13b inpaint_prompt)':' (장면 문장)')}</th><th>장면 문장(자산 저장용 new_scene_prompt)</th></tr><tr><td>${esc(a.prompt)}</td><td>${esc(a.new_scene_prompt||'(기록 없음)')}</td></tr></table>${styleView(a.style,false)}${a.style&&a.style.mode?relView(a.style):''}${regionView(a.style,j.job_id,a)}${a.rejected?` · 거절: "${esc(a.reason)}" → ${a.category} (${esc(a.guidance)})`:''}<div class="imgs">${['render','edit','mask'].map(n=>thumb(a.images[n],n)).join('')}</div>${cropView(a)}${inpRaw(a,j)}</div>`).join('')}
   <details><summary>camera JSON</summary><pre>${esc(JSON.stringify(j.camera,null,1))}</pre></details>
   ${llmTable(j.llm_calls)}
   ${RAW('A5000 렌더 요청·응답 전문(마지막 렌더)',j.render_record)}

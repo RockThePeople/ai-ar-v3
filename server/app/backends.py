@@ -126,8 +126,10 @@ class RealBackend:
 
     # 생성
     def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None,
-                 template: Optional[str] = None) -> dict:
+                 template: Optional[str] = None, t2i_seed: Optional[int] = None) -> dict:
+        """seed = TRELLIS(A5000) seed. t2i_seed 가 있으면 T2I 만 그 seed(S14 논문 설정: T2I 0, TRELLIS 42)."""
         from .. import t2i
+        ts = seed if t2i_seed is None else int(t2i_seed)
         trace = trace if trace is not None else {}
 
         progress("t2i", 0.05)
@@ -135,7 +137,9 @@ class RealBackend:
             with self._w(timeout=600) as w:
                 self._call(lambda: w.post("/release"), "WORKER_UNREACHABLE", "인페인팅 워커 release")
             try:
-                png, timing = t2i.render_rgba(prompt, seed=seed, template=template)  # S11: None = S6 꼬리
+                res = t2i.render_rgba(prompt, seed=ts, template=template, return_rgb=True)  # S11: None = S6 꼬리
+                png, timing = res[0], res[1]
+                rgb_png = res[2] if len(res) > 2 else None             # S14: 배경 제거 전 원본(image.png)
             except t2i.T2IUnavailable as e:
                 raise StageError("T2I_FAILED", str(e)) from e
         finally:
@@ -158,11 +162,11 @@ class RealBackend:
             progress("chunking", 0.9)
             blobs = self._fetch_version(c, asset_id, 1, res)
         raw = {"t2i": {"command": timing.get("command"), "settings": timing.get("settings"),
-                       "prompt_effective": timing.get("prompt_effective"), "seed": seed},
+                       "prompt_effective": timing.get("prompt_effective"), "seed": ts},
                "a5000_generate": {"endpoint": "POST /v2/trellis/generate (multipart: meta + image)", "meta": meta,
                                   "files": {"image": _fdesc("input.png", png)}, "submit_response": r.json(),
                                   "job_result": res}}
-        return {"blobs": blobs, "t2i_timing": timing, "png": png, "raw": raw}
+        return {"blobs": blobs, "t2i_timing": timing, "png": png, "image_png": rgb_png, "raw": raw}
 
     # 편집
     def render(self, asset_id: str, base_version: int, camera: dict, cells: List[list]) -> dict:
@@ -422,7 +426,7 @@ class MockBackend:
         return {"a5000": "up", "inpaint": "up"}
 
     def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None,
-                 template: Optional[str] = None) -> dict:
+                 template: Optional[str] = None, t2i_seed: Optional[int] = None) -> dict:
         progress("generating", 0.5)
         self._sleep("generate")
         src = self.s.mock_source

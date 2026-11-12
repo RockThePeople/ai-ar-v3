@@ -396,6 +396,11 @@ DETAIL_STYLE_SCHEMA = {
     "additionalProperties": False,
 }
 
+#: S14 APP_FACEHINT: 사람·캐릭터·동물이면 얼굴이 보이게
+FACE_HINT = """
+- If the object is a person, character or animal, describe its head and a clearly visible face (eyes, nose, mouth)
+  facing the viewer; never hide the face behind a mask, helmet visor, hat brim or hair unless the request asks for it."""
+
 DETAIL_STYLE_SYSTEM = """You expand a user's short request for a single 3D object into a detailed English description
 of the object as it exists in the real world, for a text-to-image model whose image is turned into a 3D model.
 
@@ -542,7 +547,7 @@ class FakeAdapter:
     def detail_prompt(self, prompt: str, job_id: str = "") -> str:
         return prompt.strip()
 
-    def detail_style(self, prompt: str, job_id: str = "") -> dict:
+    def detail_style(self, prompt: str, job_id: str = "", facehint: bool = False) -> dict:
         return fake_detail_style(prompt)
 
     def classify(self, reason: str, refine: Optional[dict], history: List[str], job_id: str = "",
@@ -785,13 +790,15 @@ class ClaudeAdapter:
                 return f"style_words {sw!r} 가 요청 원문에 없다(원문에서 그대로 옮겨야 한다)"
         return None
 
-    def detail_style(self, prompt: str, job_id: str = "") -> dict:
-        """S11: {subject_detailed, style, style_words, check}. style null 인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다."""
+    def detail_style(self, prompt: str, job_id: str = "", facehint: bool = False) -> dict:
+        """facehint: S14 — 사람·캐릭터·동물이면 머리와 얼굴이 보이게 묘사하라는 규칙을 더한다.
+        S11: {subject_detailed, style, style_words, check}. style null 인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다."""
         user = f"request: {json.dumps(prompt, ensure_ascii=False)}"
         chk = lambda o: self.check_detail_style(o, prompt)            # noqa: E731
-        out = self._call("detail_style", DETAIL_STYLE_SYSTEM, user, DETAIL_STYLE_SCHEMA, chk, job_id, {"prompt": prompt})
+        system = DETAIL_STYLE_SYSTEM + (FACE_HINT if facehint else "")
+        out = self._call("detail_style", system, user, DETAIL_STYLE_SCHEMA, chk, job_id, {"prompt": prompt, "facehint": facehint})
         return _style_guard(out, prompt, lambda found: self._call(
-            "detail_style_retry", DETAIL_STYLE_SYSTEM,
+            "detail_style_retry", system,
             user + f"\n\nYour previous subject_detailed {json.dumps(out['subject_detailed'], ensure_ascii=False)} used "
                    f"{json.dumps(found)}, which the request does not ask for. Describe the real object at real-world "
                    "proportions and leave those words out.",
