@@ -22,8 +22,9 @@ from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
 from .cropinpaint import crop_inpaint
-from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, strip_banned,
-                          style_from_request)
+from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, placement_ok,
+                          strip_banned, strip_realworld, style_from_request, subject_head)
+from .regionimg import region_images
 from ..t2i import app_template
 
 #: S6: 인페인팅 문장 꼬리. 시점·배경 문구는 넣지 않는다(조건 렌더가 라쏘 시점이다)
@@ -185,7 +186,7 @@ class Engine:
         try:
             if styled:                                   # S11: {subject_detailed, style} + 금지어 검사
                 d = self.llm.detail_style(raw, job_id=j["job_id"])
-                prompt_en, style = d["subject_detailed"], d.get("style")
+                prompt_en, style = strip_realworld(d["subject_detailed"]), d.get("style")   # S13 7
                 j["style"] = {"mode": "user" if style else "real", "style": style, "words": d.get("style_words"),
                               **(d.get("check") or {})}
                 j["translate"] = {"ok": True, "mode": "detail_style"}
@@ -272,9 +273,12 @@ class Engine:
         st, w = style_from_request(g.get("prompt") or "")
         return {"style": st, "source": "pre_s11_request", "words": w, "request": g.get("prompt")}
 
-    def _refine_styled(self, j: dict, scene: str, hist: list, changed_from: Optional[dict] = None):
+    def _refine_styled(self, j: dict, scene: str, hist: list, changed_from: Optional[dict] = None,
+                       region: Optional[dict] = None):
         """S11: 자산 양식을 보정에 알리고, 실물형인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다.
-        S12: 관계어 보정 템플릿, 명령형 동사가 있으면 1회 재요청(금지어와 같은 재요청 1회로 묶는다), 남으면 기록만."""
+        S12: 관계어 보정 템플릿, 명령형 동사가 있으면 1회 재요청, 남으면 기록만.
+        S13: 라쏘 이미지·mask_ratio(region). mask_ratio < 0.6 인데 주어가 바뀌면, 또는 바뀐 부위가 첫 구에 없으면
+        같은 1회 재요청에 묶는다. 'real-world proportions' 문구는 지운다(토글 없음)."""
         rs, rp = self.s.realstyle, self.s.relphrase
         kw: dict = {"changed_from": changed_from} if changed_from else {}
         src_info = self._asset_style_src(j["asset_id"]) if rs else {"style": None}
@@ -283,8 +287,11 @@ class Engine:
             kw["style"] = {"style": st}
         if rp:
             kw["relphrase"] = True
+        if region is not None:
+            kw["region"] = {"images": region.get("images"), "mask_ratio": region.get("mask_ratio")}
         out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw)
-        if not (rs or rp):
+        out = dict(out, new_scene_prompt=strip_realworld(out["new_scene_prompt"]))
+        if not (rs or rp or region is not None):
             return out, None
         meta: dict = {"retried": False}
         if rs:
@@ -294,41 +301,114 @@ class Engine:
                 meta["words"] = src_info.get("words")
         if rp:
             meta.update(relphrase=True, imperative_found=[], imperative_left=[])
+        ratio = (region or {}).get("mask_ratio")
+
+        def region_issues(o: dict) -> list:
+            if region is None:
+                return []
+            iss = []
+            if ratio is not None and ratio < 0.6 and subject_head(o["new_scene_prompt"]) != subject_head(scene):
+                iss.append("subject_changed")
+            renamed = subject_head(o["new_scene_prompt"]) != subject_head(scene)
+            if not renamed and not placement_ok(o["new_scene_prompt"], o.get("replacement") or "", o.get("op") or ""):
+                iss.append("placement")                       # 주어를 바꾼 문장(0.6 이상 허용 또는 위 재요청)은 자리 검사 제외
+            return iss
+        if region is not None:
+            meta.update(region=True, mask_ratio=ratio, selected_part=out.get("selected_part"),
+                        region_fit=out.get("region_fit"), region_reason=out.get("region_reason"),
+                        images=region.get("files"), region_found=[], region_left=[])
         src = f"{scene} {j['instruction']}"
         check_banned = rs and not st
         banned = banned_words(out["new_scene_prompt"], src) if check_banned else []
         imp = imperative_words(out["new_scene_prompt"]) if rp else []
-        if banned or imp:
+        reg = region_issues(out)
+        if banned or imp or reg:
             meta["retried"] = True
             extra: dict = {}
             if banned:
                 meta["banned_found"], extra["avoid"] = banned, banned
             if imp:
                 meta["imperative_found"], extra["imperative"] = imp, imp
+            if reg:
+                meta["region_found"] = reg
+                fix = []
+                if "subject_changed" in reg:
+                    fix.append(f"Your previous new_scene_prompt {json.dumps(out['new_scene_prompt'])} renamed the whole "
+                               f"subject, but mask_ratio is {ratio} (below 0.6): only a part was selected. Keep the subject "
+                               "and its other details, and describe the selected part as changed with a relation word.")
+                if "placement" in reg:
+                    fix.append("Put the element changed in this edit right after the subject as the first relation phrase "
+                               "(before any relation phrase from earlier edits).")
+                extra["fix"] = fix
             out = self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw, **extra)
+            out = dict(out, new_scene_prompt=strip_realworld(out["new_scene_prompt"]))
             left = banned_words(out["new_scene_prompt"], src) if check_banned else []
             if left:
                 out = dict(out, new_scene_prompt=strip_banned(out["new_scene_prompt"], left))
                 meta["removed"] = left
             if rp:
                 meta["imperative_left"] = imperative_words(out["new_scene_prompt"])
+            if region is not None:
+                meta["region_left"] = region_issues(out)
+                meta.update(selected_part=out.get("selected_part"), region_fit=out.get("region_fit"),
+                            region_reason=out.get("region_reason"))
         return out, meta
+
+    def _ensure_render(self, j: dict) -> bool:
+        """조건 렌더. 이미 있으면 다시 하지 않는다(S13 5: prompt 재시도도 카메라·볼륨이 같다). 새로 했으면 True."""
+        if j.get("render"):
+            return False
+        r = self.be.render(j["asset_id"], j["base_version"], j["camera"], j["cells"])
+        rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
+        rd.mkdir(parents=True, exist_ok=True)
+        (rd / "render.png").write_bytes(r["render_png"])
+        (rd / "mask.png").write_bytes(r["mask_png"])
+        j["render"] = {"render_id": r["render_id"], "record": r.get("record")}
+        return True
+
+    def _region(self, j: dict) -> Optional[dict]:
+        """S13: 라쏘 겹친 이미지·확대·mask_ratio. 파일은 jobs/<id>/region/ 에(같은 렌더면 한 번만 만든다)."""
+        rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
+        gd = self.s.data_dir / "jobs" / j["job_id"] / "region"
+        try:
+            if not (gd / "info.json").is_file():
+                o = region_images((rd / "render.png").read_bytes(), (rd / "mask.png").read_bytes())
+                gd.mkdir(parents=True, exist_ok=True)
+                (gd / "overlay.png").write_bytes(o["overlay_png"])
+                if o["zoom_png"]:
+                    (gd / "zoom.png").write_bytes(o["zoom_png"])
+                (gd / "info.json").write_text(json.dumps({k: o[k] for k in ("mask_ratio", "mask_px", "object_px", "boxes")}))
+            info = json.loads((gd / "info.json").read_text())
+            files = [n for n in ("overlay", "zoom") if (gd / f"{n}.png").is_file()]
+            return {"images": [(gd / f"{n}.png").read_bytes() for n in files], "files": files, **info}
+        except Exception as e:                            # noqa: BLE001 — 이미지가 안 되면 글자만으로
+            j["region_error"] = f"{type(e).__name__}: {e}"
+            return None
 
     def _run_refine(self, j: dict) -> None:
         self._set(j, "refining", "refining", 0.1)
         self._mock_gate(j)
         if self.be.name == "mock":
             time.sleep(self.be.DUR["refine"] * self.s.mock_time_scale)
+        region = None
+        if self.s.regionrefine:                          # S13: 보정 전에 조건 렌더(재시도는 재사용)
+            self._set(j, stage="rendering")
+            j["render_reused"] = not self._ensure_render(j)
+            if j["state"] != "refining":
+                return
+            region = self._region(j)
+            self._set(j, stage="refining")
         try:
             scene, hist = self._scene(j["asset_id"]), list(j.get("reject_history") or [])
-            j["refine"], smeta = self._refine_styled(j, scene, hist)
+            j["refine"], smeta = self._refine_styled(j, scene, hist, region=region)
             j["refine_meta"] = {}
             last = (j.get("attempts") or [None])[-1]
             if last and last.get("rejected") and last.get("category") == "prompt" and \
                     _norm(j["refine"]["new_scene_prompt"]) == _norm(last.get("new_scene_prompt")):
                 # S8: prompt 거절인데 같은 문장 → 1회 더(그래도 같으면 진행하고 기록)
                 again, smeta2 = self._refine_styled(j, scene, hist, changed_from={
-                    "prev": last.get("new_scene_prompt"), "reason": last.get("reason"), "guidance": last.get("guidance")})
+                    "prev": last.get("new_scene_prompt"), "reason": last.get("reason"), "guidance": last.get("guidance")},
+                    region=region)
                 if smeta2 is not None:
                     smeta = smeta2
                 same = _norm(again["new_scene_prompt"]) == _norm(last.get("new_scene_prompt"))
@@ -340,7 +420,7 @@ class Engine:
         except LLMUnavailable as e:
             raise StageError("LLM_UNAVAILABLE", str(e))
         self._save(j)
-        self._run_render_inpaint(j, new_render=True)
+        self._run_render_inpaint(j, new_render=False)    # S13 5: 첫 시도 렌더를 재사용(카메라·볼륨 같음)
 
     def _run_render_inpaint(self, j: dict, new_render: bool) -> None:
         if j["state"] not in ("refining", "inpainting", "queued"):
@@ -349,12 +429,9 @@ class Engine:
         d = self._preview_dir(j, j["attempt"])
         if new_render or not j.get("render"):
             self._set(j, "inpainting", "rendering", 0.1)
-            r = self.be.render(j["asset_id"], j["base_version"], j["camera"], j["cells"])
-            rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
-            rd.mkdir(parents=True, exist_ok=True)
-            (rd / "render.png").write_bytes(r["render_png"])
-            (rd / "mask.png").write_bytes(r["mask_png"])
-            j["render"] = {"render_id": r["render_id"], "record": r.get("record")}
+            if new_render:
+                j.pop("render", None)
+            self._ensure_render(j)
         self._set(j, "inpainting", "inpainting", 0.3)
         rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
         rpng, mpng = (rd / "render.png").read_bytes(), (rd / "mask.png").read_bytes()
@@ -384,6 +461,7 @@ class Engine:
                               "new_scene_prompt": j["refine"]["new_scene_prompt"], "instruction": j["instruction"],
                               "render_id": j["render"]["render_id"], "t": self.clock(), "inpaint_s": inpaint_s,
                               "crop": crop if self.s.inpaint_crop else {"off": True}, "inpaint_raw": info,
+                              "render_reused": j.get("render_reused"),
                               **(j.get("refine_meta") or {})})
         if (j.get("refine_meta") or {}).get("refine_unchanged"):
             j["refine_unchanged"] = True
@@ -439,7 +517,14 @@ class Engine:
             j["classifying"] = True
             self._set(j, stage="classifying")
         try:                                             # LLM 호출은 잠금 밖에서
-            out = self.llm.classify(reason, j.get("refine"), list(j.get("reject_history") or []), job_id=j["job_id"])
+            ckw = {}
+            if self.s.regionrefine:                      # S13 3: 라쏘 겹친 렌더 + 거절한 2d_edit
+                reg = self._region(j)
+                ed = self._preview_dir(j, j["attempt"]) / "edit.png"
+                imgs = ([reg["images"][0]] if reg and reg.get("images") else []) + ([ed.read_bytes()] if ed.is_file() else [])
+                if imgs:
+                    ckw["images"] = imgs
+            out = self.llm.classify(reason, j.get("refine"), list(j.get("reject_history") or []), job_id=j["job_id"], **ckw)
             fail = None
         except LLMInvalid as e:
             out, fail = None, ("CLASSIFY_FAILED", str(e))
@@ -464,7 +549,9 @@ class Engine:
                 return j
             j["attempt"] += 1
             if cat == "prompt":
-                j.setdefault("reject_history", []).append(guide)
+                # S13 4: 사용자 원문도 함께(원문 우선). 끔 = 안내문만
+                j.setdefault("reject_history", []).append(
+                    f'user said: "{reason.strip()}" (this comes first); guidance: {guide}' if self.s.rejectraw else guide)
                 self._set(j, "refining", "refining", 0.0)
                 self._enqueue(j, "refine_again")
             else:
