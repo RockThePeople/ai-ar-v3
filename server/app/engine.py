@@ -558,6 +558,8 @@ class Engine:
                 self._finish(j, "failed", *fail)
                 return j
             cat, guide = out["category"], out["guidance"]
+            if self.s.regionrefine:                      # S13c: 안내문의 좌우·위치 단어도 지운다(이유 원문에 있으면 둔다)
+                guide = strip_lateral(guide, reason) or guide
             j["review"] = {"reason": reason, "category": cat, "guidance": guide}
             if j.get("attempts"):                        # 시도별 거절 기록(S3)
                 j["attempts"][-1].update(rejected=True, reason=reason, category=cat, guidance=guide)
