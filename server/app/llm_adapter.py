@@ -126,6 +126,89 @@ Return JSON {"subject_detailed": ...}.
 Example (format only; invent parts that fit the actual object): "a mailbox" → {"subject_detailed": "A small curbside mailbox,
 a rounded top, a red side flag, a front pull-down door with a brass handle, a square wooden post, dark blue painted metal"}"""
 
+# ── S11: 기본은 실물형, 양식은 사용자가 말할 때만 ─────────────────────────────
+#: 사용자 입력에 없으면 넣지 않는 양식 단어(긴 것부터 — 'plastic toy' 를 'toy' 보다 먼저 지운다)
+BANNED_STYLE = ("plastic toy", "game asset", "low poly", "low-poly", "figurine", "figure", "toy", "miniature",
+                "cartoon", "chibi", "stylized")
+_BANNED_RE = re.compile(r"\b(" + "|".join(re.escape(w).replace(r"\ ", r"[\s-]+").replace(r"\-", r"[\s-]+")
+                                           for w in BANNED_STYLE) + r")(s|ish|y)?\b", re.I)
+#: 한국어 양식 주문 → 원문에 그 말이 있으면 금지어 검사에서 그 영어 단어를 허용한다
+_KO_STYLE = {"장난감": ("toy", "plastic toy"), "피규어": ("figure", "figurine"), "미니어처": ("miniature",),
+             "만화": ("cartoon", "stylized"), "카툰": ("cartoon",), "로우폴리": ("low poly", "low-poly"),
+             "로우 폴리": ("low poly", "low-poly"), "치비": ("chibi",), "게임": ("game asset", "stylized")}
+
+
+def _canon(w: str) -> str:
+    w = re.sub(r"[\s-]+", " ", w.lower()).strip()
+    for b in BANNED_STYLE:
+        if w == b.replace("-", " ") or w.startswith(b.replace("-", " ")):
+            return b.replace("-", " ")
+    return w
+
+
+def banned_words(text: str, source: str = "") -> List[str]:
+    """text 에 있는 금지 양식 단어 중 source(사용자 원문 등)에 없는 것. 대소문자·복수·하이픈 무시."""
+    allowed = {_canon(m.group(1)) for m in _BANNED_RE.finditer(source or "")}
+    for ko, ens in _KO_STYLE.items():
+        if ko in (source or ""):
+            allowed |= {e.replace("-", " ") for e in ens}
+    out = []
+    for m in _BANNED_RE.finditer(text or ""):
+        c = _canon(m.group(1))
+        if c not in allowed and m.group(0) not in out:
+            out.append(m.group(0))
+    return out
+
+
+def strip_banned(text: str, words: List[str]) -> str:
+    """그 단어만 지운다. 남는 빈 쉼표·겹 공백을 정리한다."""
+    t = text
+    for w in sorted(words, key=len, reverse=True):
+        t = re.sub(r"\b" + re.escape(w) + r"\b", "", t, flags=re.I)
+    t = re.sub(r"\s+,", ",", t)
+    t = re.sub(r",(\s*,)+", ",", t)
+    t = re.sub(r"\s{2,}", " ", t).strip(" ,")
+    return t
+
+
+DETAIL_STYLE_SCHEMA = {
+    "type": "object",
+    "properties": {"subject_detailed": {"type": "string"},
+                   "style": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                   "style_words": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+    "required": ["subject_detailed", "style", "style_words"],
+    "additionalProperties": False,
+}
+
+DETAIL_STYLE_SYSTEM = """You expand a user's short request for a single 3D object into a detailed English description
+of the object as it exists in the real world, for a text-to-image model whose image is turned into a 3D model.
+
+Return JSON with:
+- subject_detailed: one line. The object in a few words, then everything the user asked for, then 3 to 5 plausible
+  visible parts (concrete shapes on the object), then the main colors and real materials.
+  When style is null, describe the real thing at real-world proportions (a real person, a real vehicle).
+  When style is set, describe the object's parts, colors and materials only, with no size or scale words
+  (no "full-size", "life-size", "real"), so they do not fight the style.
+  Never use these words unless the user's request itself uses them: figure, figurine, toy, plastic toy, miniature,
+  cartoon, chibi, stylized, game asset, low poly.
+- style: only if the request explicitly asks for a look or style (e.g. "toy like", "miniature", "cartoon", "low poly",
+  "장난감 같은", "만화풍"), that style as a short English phrase (e.g. "toy-like", "cartoon", "low poly"). Otherwise null.
+  Keep style words out of subject_detailed; the server adds "<style> style" after it.
+- style_words: the exact words from the request that ask for that style, copied as written (any language). null when style is null.
+Rules:
+- Keep every attribute the user stated (object type, colors, parts, materials, count). Never contradict or drop them.
+- The request may be in Korean or any language; subject_detailed and style are always English.
+- Use only positive descriptions: never "not", "no", "without", "instead of", "never", "nothing".
+- No camera/view, background, lighting, shadow or render words. The server appends those.
+- Describe one object only. Comma-separated phrases, under 400 characters.
+Examples (format only; invent parts that fit the actual object):
+"a desk lamp" → {"subject_detailed": "A desk lamp, a weighted round base, a two-section jointed arm with coil springs,
+a cone-shaped shade, a push switch on the base, matte black painted steel with a brushed aluminum shade",
+"style": null, "style_words": null}
+"만화풍 우체통" → {"subject_detailed": "A curbside mailbox, a rounded top, a red side flag, a front pull-down door,
+a square wooden post, dark blue painted metal", "style": "cartoon", "style_words": "만화풍"}"""
+
+
 MAX_TEXT = 800        # 서버 안 LLM 출력·장면 문장 상한(S6). 앱 입력 1–300자는 계약대로 라우트가 검사한다
 _STYLE_WORDS = re.compile(r"\b(background|lighting|studio|three-quarter|front view|side view|top view|camera|render(ed|ing)?|"
                           r"game asset|photograph(y|ic)?|shadows?|centered|white background)\b", re.I)
@@ -134,6 +217,60 @@ _STYLE_WORDS = re.compile(r"\b(background|lighting|studio|three-quarter|front vi
 def is_english(text: str) -> bool:
     """영어로 볼 수 있으면 변환하지 않는다(ASCII 와 일반 따옴표·대시만)."""
     return not _NON_ENGLISH.search(text or "")
+
+
+def style_note(style: Optional[str]) -> str:
+    """S11: 보정(A1)에 알리는 자산 양식."""
+    if style:
+        return (f"asset style: {style}. The object is shown in a {style} style; keep the scene in that style and "
+                "add no other style words.")
+    return ("asset style: default realistic. The object is a real-world object at real-world proportions; describe the "
+            "changed element as a real thing and use no style words (figure, toy, miniature, cartoon, stylized, "
+            "game asset, low poly) unless the instruction asks for them.")
+
+
+def _style_guard(out: dict, request: str, again: Callable[[List[str]], dict]) -> dict:
+    """S11 금지어 검사(양식 없는 경우만). again(found) = 1회 재요청."""
+    res = {"subject_detailed": str(out["subject_detailed"]).strip(), "style": (out.get("style") or None),
+           "style_words": (out.get("style_words") or None),
+           "check": {"banned_found": [], "retried": False, "removed": []}}
+    if res["style"] is not None:
+        res["style"] = str(res["style"]).strip()
+        return res
+    found = banned_words(res["subject_detailed"], request)
+    if not found:
+        return res
+    res["check"].update(banned_found=found, retried=True)
+    try:
+        o2 = again(found)
+    except (LLMInvalid, LLMUnavailable) as e:
+        o2, res["check"]["retry_error"] = None, f"{type(e).__name__}: {e}"
+    if o2 is not None:
+        res["subject_detailed"] = str(o2["subject_detailed"]).strip()
+        if o2.get("style"):                    # 재요청이 양식을 새로 붙이면 받아들이지 않는다(원문 검사는 check 가 했다)
+            res["style"], res["style_words"] = str(o2["style"]).strip(), o2.get("style_words")
+            return res
+    left = banned_words(res["subject_detailed"], request)
+    if left:
+        res["subject_detailed"] = strip_banned(res["subject_detailed"], left)
+        res["check"]["removed"] = left
+    return res
+
+
+#: 가짜 모드·시험용 양식 판정(원문 단어 → 영어 양식)
+_FAKE_STYLE = (("toy like", "toy-like"), ("toy-like", "toy-like"), ("장난감 같은", "toy-like"), ("장난감", "toy-like"),
+               ("miniature", "miniature"), ("cartoon", "cartoon"), ("만화풍", "cartoon"), ("low poly", "low poly"))
+
+
+def fake_detail_style(prompt: str) -> dict:
+    low = prompt.lower()
+    for w, st in _FAKE_STYLE:
+        if w in low:
+            subj = re.sub(re.escape(w), "", prompt, flags=re.I).strip() or prompt.strip()
+            return {"subject_detailed": subj, "style": st, "style_words": w,
+                    "check": {"banned_found": [], "retried": False, "removed": []}}
+    return {"subject_detailed": prompt.strip(), "style": None, "style_words": None,
+            "check": {"banned_found": [], "retried": False, "removed": []}}
 
 
 class FakeAdapter:
@@ -145,7 +282,7 @@ class FakeAdapter:
         self.last_ok: Optional[bool] = None
 
     def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "",
-               changed_from: Optional[dict] = None) -> dict:
+               changed_from: Optional[dict] = None, style: Optional[dict] = None, avoid: Optional[List[str]] = None) -> dict:
         out = fake_refine(scene_prompt, instruction, reject_history[-1] if reject_history else None)
         self.on_call({"job_id": job_id, "kind": "refine_changed" if changed_from else "refine", "model": self.model,
                       "input": {"scene": scene_prompt, "instruction": instruction, "history": reject_history,
@@ -155,6 +292,9 @@ class FakeAdapter:
 
     def detail_prompt(self, prompt: str, job_id: str = "") -> str:
         return prompt.strip()
+
+    def detail_style(self, prompt: str, job_id: str = "") -> dict:
+        return fake_detail_style(prompt)
 
     def classify(self, reason: str, refine: Optional[dict], history: List[str], job_id: str = "") -> dict:
         cat, guide = fake_classify(reason)
@@ -272,8 +412,9 @@ class ClaudeAdapter:
         return None
 
     def refine(self, scene_prompt: str, instruction: str, reject_history: List[str], job_id: str = "",
-               changed_from: Optional[dict] = None) -> dict:
-        """changed_from = {prev, reason, guidance}: S8 — prompt 거절 뒤 같은 문장이 나와 다시 부를 때."""
+               changed_from: Optional[dict] = None, style: Optional[dict] = None, avoid: Optional[List[str]] = None) -> dict:
+        """changed_from = {prev, reason, guidance}: S8 — prompt 거절 뒤 같은 문장이 나와 다시 부를 때.
+        style = {"style": None|str}: S11 자산 양식(None = 기본 실물형). avoid = S11 금지어 재요청 때 뺄 단어."""
         hist = "\n".join(f"- {h}" for h in reject_history) if reject_history else "(none)"
         user = (f"current scene: {json.dumps(scene_prompt or '', ensure_ascii=False)}\n"
                 f"instruction: {json.dumps(instruction, ensure_ascii=False)}\n"
@@ -285,9 +426,16 @@ class ClaudeAdapter:
                      f"Guidance: {json.dumps(changed_from.get('guidance') or '', ensure_ascii=False)}. "
                      "Write a different new_scene_prompt that actually changes how the target element is described, "
                      "reflecting the reason and guidance. Keep the same detail level and keep the rest of the scene.")
-        return self._call("refine_changed" if changed_from else "refine", REFINE_SYSTEM, user, REFINE_SCHEMA,
-                          self.check_refine, job_id, {"scene": scene_prompt, "instruction": instruction,
-                                                      "history": reject_history, "changed_from": changed_from})
+        if style is not None:
+            user += "\n\n" + style_note(style.get("style"))
+        if avoid:
+            user += (f"\n\nYour previous new_scene_prompt used {json.dumps(avoid)}, which do not fit the asset style "
+                     "and the instruction does not ask for them. Leave those words out.")
+        kind = "refine_changed" if changed_from else ("refine_style_retry" if avoid else "refine")
+        log = {"scene": scene_prompt, "instruction": instruction, "history": reject_history, "changed_from": changed_from}
+        if style is not None:
+            log.update(style=style.get("style"), avoid=avoid)
+        return self._call(kind, REFINE_SYSTEM, user, REFINE_SCHEMA, self.check_refine, job_id, log)
 
     # ── S6 생성 프롬프트 상세화(S4 영어 변환을 대체, 영어 입력도 항상 거친다) ──
     @staticmethod
@@ -310,6 +458,37 @@ class ClaudeAdapter:
         out = self._call("detail", DETAIL_SYSTEM, f"request: {json.dumps(prompt, ensure_ascii=False)}",
                          DETAIL_SCHEMA, self.check_detail, job_id, {"prompt": prompt})
         return out["subject_detailed"].strip()
+
+    # ── S11 상세화 + 양식 판정 ─────────────────────────────────────
+    @staticmethod
+    def check_detail_style(o: dict, request: str = "") -> Optional[str]:
+        if set(o) != set(DETAIL_STYLE_SCHEMA["properties"]):
+            return f"필드가 다르다: {sorted(o)}"
+        p = ClaudeAdapter.check_detail({"subject_detailed": o.get("subject_detailed")})
+        if p:
+            return p
+        st, sw = o.get("style"), o.get("style_words")
+        if (st is None) != (sw is None):
+            return "style 과 style_words 는 둘 다 null 이거나 둘 다 있어야 한다"
+        if st is not None:
+            st = str(st).strip()
+            if not st or len(st) > 40 or not is_english(st) or _NEG.search(st) or _STYLE_WORDS.search(st.replace("game asset", "")):
+                return f"style 값이 짧은 영어 양식 구가 아니다: {st!r}"
+            if str(sw).strip().lower() not in (request or "").lower():
+                return f"style_words {sw!r} 가 요청 원문에 없다(원문에서 그대로 옮겨야 한다)"
+        return None
+
+    def detail_style(self, prompt: str, job_id: str = "") -> dict:
+        """S11: {subject_detailed, style, style_words, check}. style null 인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다."""
+        user = f"request: {json.dumps(prompt, ensure_ascii=False)}"
+        chk = lambda o: self.check_detail_style(o, prompt)            # noqa: E731
+        out = self._call("detail_style", DETAIL_STYLE_SYSTEM, user, DETAIL_STYLE_SCHEMA, chk, job_id, {"prompt": prompt})
+        return _style_guard(out, prompt, lambda found: self._call(
+            "detail_style_retry", DETAIL_STYLE_SYSTEM,
+            user + f"\n\nYour previous subject_detailed {json.dumps(out['subject_detailed'], ensure_ascii=False)} used "
+                   f"{json.dumps(found)}, which the request does not ask for. Describe the real object at real-world "
+                   "proportions and leave those words out.",
+            DETAIL_STYLE_SCHEMA, chk, job_id, {"prompt": prompt, "banned_found": found}))
 
     # ── A4 분류 ────────────────────────────────────────────────────
     @staticmethod

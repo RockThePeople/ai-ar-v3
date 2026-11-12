@@ -32,7 +32,7 @@ class StubLLM:
         self.last_ok = True
         return x
 
-    def refine(self, scene, instruction, history, job_id=""):
+    def refine(self, scene, instruction, history, job_id="", **kw):
         return self._next(self.refines, ("refine", scene, instruction, list(history)))
 
     def classify(self, reason, refine, history, job_id=""):
@@ -104,7 +104,7 @@ def test_quality_and_region(tmp_path):
     j = c.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "흐릿함"}, headers=A).json()
     assert j["state"] == "inpainting" and j["attempt"] == 2
     c.eng.drain()
-    assert ("inpaint_args", "An Ironman riding" + INPAINT_SUFFIX, 1) in c.eng.be.calls   # 같은 프롬프트, seed + 1
+    assert ("inpaint_args", "An Ironman riding", 1) in c.eng.be.calls   # 같은 프롬프트, seed + 1
     j = c.post(f"/app/v1/jobs/{jid}/review2d", json={"accept": False, "reason": "다른 바퀴"}, headers=A).json()
     assert j["state"] == "needs_redraw"
 
@@ -183,11 +183,13 @@ def test_detail_failure_falls_back_to_raw(tmp_path):
     assert j["state"] == "committed" and raw["prompt_en"] == "빨간 트럭" and raw["translate"]["ok"] is False
 
 
-def test_inpaint_prompt_gets_style_suffix(tmp_path):
+def test_inpaint_prompt_gets_style_suffix_when_realstyle_off(tmp_path):
+    """S11 끔(APP_REALSTYLE=0) = S6 꼬리 그대로."""
     r = {"target_element": "the bumper", "replacement": "a chrome bull bar", "op": "replace",
          "new_scene_prompt": DETAILED.replace("a black front winch bumper", "a chrome steel bull bar")}
     llm = DetailLLM(DETAILED, refines=[r])
     c = _env(tmp_path, llm)
+    c.eng.s.realstyle = False
     c.eng.llm, keep = FakeAdapter(), llm
     aid = make_asset(c)
     c.eng.llm = keep
@@ -238,7 +240,7 @@ def _s8(c, outputs):
     calls = []
     seq = list(outputs)
 
-    def refine(scene, instruction, hist, job_id="", changed_from=None):
+    def refine(scene, instruction, hist, job_id="", changed_from=None, **kw):
         calls.append(changed_from)
         nsp = seq.pop(0)
         return {"target_element": "the man", "replacement": "Ironman", "op": "replace", "new_scene_prompt": nsp}
