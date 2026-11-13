@@ -542,6 +542,10 @@ class Engine:
                               "render_id": j["render"]["render_id"], "t": self.clock(), "inpaint_s": inpaint_s,
                               "crop": crop if self.s.inpaint_crop else {"off": True}, "inpaint_raw": info,
                               "render_reused": j.get("render_reused"), "inpaint_src": ip_src,
+                              # S17 시도별 기록: 그 시도에 쓰인 보정(그대로 모드 null)·보정 재요청·2D 판정
+                              "refine": None if j.get("raw_prompt") else
+                              {k: (j["refine"] or {}).get(k) for k in ("target_element", "replacement", "op", "new_scene_prompt")},
+                              "refine_retried": prompts_of(j).get("refine_retried"), "accepted": None,
                               **(j.get("refine_meta") or {})})
         if (j.get("refine_meta") or {}).get("refine_unchanged"):
             j["refine_unchanged"] = True
@@ -587,6 +591,8 @@ class Engine:
             if j["state"] != "awaiting_2d_review":
                 raise AppError(409, "WRONG_STATE", f"지금 상태: {j['state']}")
             if accept:
+                if j.get("attempts"):
+                    j["attempts"][-1]["accepted"] = True     # S17
                 self._set(j, "editing_3d", "editing_3d", 0.0)
                 self._enqueue(j, "edit3d")
                 return j
@@ -625,7 +631,7 @@ class Engine:
                 guide = strip_lateral(guide, reason) or guide
             j["review"] = {"reason": reason, "category": cat, "guidance": guide}
             if j.get("attempts"):                        # 시도별 거절 기록(S3)
-                j["attempts"][-1].update(rejected=True, reason=reason, category=cat, guidance=guide)
+                j["attempts"][-1].update(rejected=True, accepted=False, reason=reason, category=cat, guidance=guide)
             if j["attempt"] >= self.s.max_attempts:
                 self._finish(j, "failed", "RETRY_LIMIT", "2D 거절 3회")
                 return j
@@ -650,7 +656,7 @@ class Engine:
         guide = "그대로 모드: 거절 이유 원문을 새 인페인팅 문장으로 다시 그린다(seed +1)"
         j["review"] = {"reason": reason, "category": "prompt", "guidance": guide}
         if j.get("attempts"):
-            j["attempts"][-1].update(rejected=True, reason=reason, category="prompt", guidance=guide)
+            j["attempts"][-1].update(rejected=True, accepted=False, reason=reason, category="prompt", guidance=guide)
         if j["attempt"] >= self.s.max_attempts:
             self._finish(j, "failed", "RETRY_LIMIT", "2D 거절 3회")
             return j
