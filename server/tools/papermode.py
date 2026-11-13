@@ -67,12 +67,14 @@ def main(argv=None) -> int:
 
 def _generate(a) -> int:
     """앱 서버와 같은 Engine·실제 백엔드로 생성 1건을 이 프로세스에서 돌린다. 8083 은 멈춘 뒤 실행한다(GPU 큐 하나)."""
-    from server.app.backends import make_backend
+    from server.app.backends import RealBackend
     from server.app.config import Settings
     from server.app.engine import Engine
     s = Settings.from_env()
+    if s.mock:
+        raise SystemExit("APP_MOCK=1 에서는 쓰지 않는다")
     db, store = Db(s.data_dir / "app.sqlite3"), ChunkStore(s.data_dir)
-    eng = Engine(s, db, store, make_backend(s, store), start_thread=False)
+    eng = Engine(s, db, store, RealBackend(s, store), start_thread=False)
     if not db.qr_raw_prompt(a.qr):
         raise SystemExit(f"마커 {a.qr} 에 raw_prompt 가 켜져 있지 않다(먼저 flag … on)")
     j = eng.create_asset(a.qr, a.creator, a.prompt, a.seed)
