@@ -180,6 +180,15 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             raise AppError(404, "JOB_NOT_FOUND", f"작업 없음: {job_id}")
         return job_obj(j, dev)
 
+    @r.get("/assets/{asset_id}/history")
+    def asset_history_get(asset_id: str, req: Request):
+        """S17 app-api 1.0.6 3.8 — 자산 AI 기록(시간 순서). 권한은 작업 조회와 같다."""
+        a = S.db.asset(asset_id)
+        if a is None or a["deleted_at"] is not None:
+            raise AppError(404, "ASSET_NOT_FOUND", f"자산 없음: {asset_id}")
+        from .history import asset_history
+        return asset_history(S.engine, S.db, asset_id)
+
     @r.post("/jobs/{job_id}/review2d")
     async def review2d(job_id: str, req: Request):
         dev = device(req)
