@@ -97,6 +97,17 @@ class Review(BaseModel):
     guidance: Optional[str]
 
 
+class Prompts(BaseModel):
+    """app-api 1.0.5 4.4 — 항상 7키, 값은 없으면 null."""
+    input: Optional[str]
+    detailed: Optional[str]
+    style: Optional[str]
+    inpaint: Optional[str]
+    mask_ratio: Optional[float]
+    region_fit: Optional[str]
+    refine_retried: Optional[bool]
+
+
 class JobObj(BaseModel):
     job_id: str
     kind: Literal["generate", "edit"]
@@ -115,6 +126,7 @@ class JobObj(BaseModel):
     refine: Optional[Refine]
     preview: Optional[Preview]
     review: Optional[Review]
+    prompts: Prompts
     result: Optional[dict]
     expires_at: Optional[float]
     error_code: Optional[str]

@@ -14,6 +14,7 @@ from deltacontract import CONTRACT_VERSION  # type: ignore[import-not-found]
 
 from . import models as M
 from .config import APP_API
+from .engine import prompts_of
 from .engine import ACTIVE, AppError
 from .store import AssetNotFound, VersionNotFound
 
@@ -64,7 +65,8 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             progress=float(j["progress"]), queue_pos=S.engine.queue_pos(j["job_id"]),
             created_at=j["created_at"], updated_at=j["updated_at"], elapsed_s=round(end - j["created_at"], 3),
             attempt=j.get("attempt"), max_attempts=j.get("max_attempts"),
-            refine=j.get("refine"), preview=j.get("preview"), review=j.get("review"), result=j.get("result"),
+            refine=j.get("refine"), preview=j.get("preview"), review=j.get("review"), prompts=prompts_of(j),
+            result=j.get("result"),
             expires_at=j.get("expires_at"), error_code=j.get("error_code"), error_message=j.get("error_message"))
         return o.model_dump(mode="json")
 
