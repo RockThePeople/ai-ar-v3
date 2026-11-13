@@ -26,7 +26,7 @@ from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_w
                           strip_banned, strip_lateral, strip_realworld, style_from_request,
                           subject_head)
 from .regionimg import region_images
-from ..t2i import app_template
+from ..t2i import DEFAULT_TEMPLATE, app_template
 
 #: S6: 인페인팅 문장 꼬리. 시점·배경 문구는 넣지 않는다(조건 렌더가 라쏘 시점이다)
 INPAINT_SUFFIX = ", simple clean 3D game asset style"
@@ -58,6 +58,17 @@ class AppError(Exception):
 
 def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+PROMPT_KEYS = ("input", "detailed", "style", "inpaint", "mask_ratio", "region_fit", "refine_retried")
+
+
+def prompts_of(j: dict) -> dict:
+    """S15 app-api 1.0.5 4.4: 작업 객체의 prompts(항상 7키). S15 이전 작업은 input 만 채운다."""
+    p = {k: None for k in PROMPT_KEYS}
+    p["input"] = j.get("instruction") if j.get("kind") == "edit" else j.get("prompt")
+    p.update({k: v for k, v in (j.get("prompts") or {}).items() if k in PROMPT_KEYS})
+    return p
 
 
 def _norm(t: Optional[str]) -> str:
@@ -145,6 +156,8 @@ class Engine:
              "refine": None, "preview": None, "review": None, "result": None, "expires_at": None,
              "error_code": None, "error_message": None, "history": [{"t": t, "state": "queued"}],
              "attempts": [], "mock_fail": None, "finished_at": None, "reject_history": [], **kw}
+        j["prompts"] = {k: None for k in PROMPT_KEYS}           # S15 4.4: input 은 작업을 만들 때
+        j["prompts"]["input"] = j.get("instruction") if kind == "edit" else j.get("prompt")
         with self.lock:
             self.jobs[j["job_id"]] = j
         self._save(j)
@@ -182,7 +195,7 @@ class Engine:
             self.db.x("UPDATE assets SET qr_id=NULL, source='generate_failed' WHERE asset_id=?", (j["asset_id"],))
 
     def _run_generate(self, j: dict) -> None:
-        self._set(j, "generating", "t2i", 0.0)
+        # S15: 상세화를 먼저 하고, detailed·style 을 넣은 뒤에 generating/t2i 로 바꾼다(앱이 t2i 단계에서 본다)
         # S6: 거친 입력을 상세 물체 묘사(subject_detailed)로 바꾼다. 영어 입력도 항상 거친다(계약 3.2 영어 변환 포함).
         # T2I 는 여기에 서버 고정 꼬리를 붙인다(server/t2i.py DEFAULT_TEMPLATE). LLM 실패면 원문으로 진행(생성은 막지 않는다)
         raw = j["prompt"].strip()
@@ -195,6 +208,8 @@ class Engine:
             j["translate"] = {"ok": True, "mode": "raw"}
             j["paper_gen"] = {"t2i_seed": int(j["seed"]), "trellis_seed": PAPER_TRELLIS_SEED, "template": template}
             gen_kw = {"t2i_seed": int(j["seed"])}
+            j["prompts"] = dict(prompts_of(j), detailed=raw, style=None)    # 그대로 모드: detailed = input
+            self._set(j, "generating", "t2i", 0.0)
             return self._generate_with(j, prompt_en, template, None, PAPER_TRELLIS_SEED, gen_kw)
         try:
             if styled:                                   # S11: {subject_detailed, style} + 금지어 검사
@@ -214,6 +229,10 @@ class Engine:
             template = app_template(style)
             j.setdefault("style", {"mode": "real", "style": None, "words": None, "fallback": True})
             j["t2i_template"] = template
+        # S15: T2I 에 실제로 넣을 문장 전체(양식 꼬리 포함)
+        j["prompts"] = dict(prompts_of(j), detailed=(template or DEFAULT_TEMPLATE).replace("{subject}", prompt_en),
+                            style=style or "realistic")
+        self._set(j, "generating", "t2i", 0.0)
         return self._generate_with(j, prompt_en, template, style, int(j["seed"]), gen_kw)
 
     def _generate_with(self, j: dict, prompt_en: str, template: Optional[str], style: Optional[str], seed: int,
@@ -268,9 +287,12 @@ class Engine:
                 raise AppError(409, "VERSION_CONFLICT", f"최신 판본은 v{a['version']}",
                                {"latest_version": int(a["version"])})
             raw = self.db.qr_raw_prompt(a["qr_id"])        # S14 그대로 모드(작업 생성 때 고정)
+            ed_style = None if raw else (self._asset_style_src(asset_id)["style"] or "realistic")   # S15 4.4 편집 style
             j = self._new_job("edit", asset_id, device, a["qr_id"], base_version=int(base_version), raw_prompt=raw,
                               instruction=instruction, camera=camera, cells=cells, mock_fail=mock_fail,
                               idem=hashlib.sha256(f"{asset_id}|{base_version}|{uuid.uuid4().hex}".encode()).hexdigest()[:32])
+        j["prompts"]["style"] = ed_style
+        self._save(j)
         self._enqueue(j, "refine")
         return j
 
@@ -446,6 +468,7 @@ class Engine:
             if j["state"] != "refining":
                 return
             region = self._region(j)
+            j["prompts"] = dict(prompts_of(j), mask_ratio=(region or {}).get("mask_ratio"))   # S15 4.4
             self._set(j, stage="refining")
         try:
             scene, hist = self._scene(j["asset_id"]), list(j.get("reject_history") or [])
@@ -464,6 +487,8 @@ class Engine:
                 j["refine"] = again
                 j["refine_meta"] = {"refine_retry": True, "refine_unchanged": same}
             j["style_meta"] = smeta                        # S11: 이 시도의 양식 판정·금지어 처리(끔이면 None)
+            j["prompts"] = dict(prompts_of(j), region_fit=(smeta or {}).get("region_fit"),
+                                refine_retried=bool((smeta or {}).get("retried") or j["refine_meta"].get("refine_retry")))
         except LLMInvalid as e:
             raise StageError("REFINE_INVALID", str(e))
         except LLMUnavailable as e:
@@ -491,6 +516,7 @@ class Engine:
         ip = inpaint_prompt(base_text, self.s.realstyle, (j.get("style_meta") or {}).get("style"))
         if j.get("raw_prompt"):                           # S14: 원문 그대로(번역·상세화·양식 꼬리 없음)
             ip_src, ip = "raw_prompt", j["refine"]["inpaint_prompt"]
+        j["prompts"] = dict(prompts_of(j), inpaint=ip)    # S15 4.4: 시도마다 보낼 때 갱신
         crop, crop_files = None, None
         info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
         t0 = time.perf_counter()
@@ -615,6 +641,7 @@ class Engine:
                 self._enqueue(j, "refine_again")
             else:
                 j["refine_meta"] = {}                    # 품질 재시도는 보정을 다시 부르지 않는다
+                j["prompts"] = dict(prompts_of(j), refine_retried=None)   # S15: 이번 시도는 보정 없음
                 self._set(j, "inpainting", "inpainting", 0.0)
                 self._enqueue(j, "inpaint_again")
             return j

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-APP_API = "1.0.4"
+APP_API = "1.0.5"
 
 
 def default_env_file() -> Path:
