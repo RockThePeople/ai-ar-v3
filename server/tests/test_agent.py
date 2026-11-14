@@ -130,13 +130,15 @@ def test_prompt_cause_refines_again_seed_cause_does_not(env):
     assert [c[2] for c in env.be.calls if c[0] == "inpaint_args"][-2:] == [0, 1]
 
 
-def test_mask_check_failure_counts_as_backtrack(env):
+def test_mask_check_failure_counts_as_mask_retry(env):
+    """S20d: 마스크 확인 불합격 다시 칠하기는 되돌아가기와 따로(별도 한도 2)."""
     aid = make_asset(env)
     env.eng.agent_llm.mask_check_ok = [False, True]
     env.eng.agent_llm.judge_script = [PASS]
     j = _agent(env, aid)
-    assert j["state"] == "committed" and j["agent"]["backtracks"] == 1 and j["agent"]["attempt"] == 1
-    assert any(e["kind"] == "branch" and "1/3" in e["text"] for e in j["events"])
+    assert j["state"] == "committed" and j["agent"]["backtracks"] == 0 and j["agent"]["mask_retries"] == 1
+    assert j["agent"]["attempt"] == 1
+    assert any(e["kind"] == "branch" and "마스크 다시 칠하기 1/2" in e["text"] for e in j["events"])
     assert [c[0] for c in env.be.calls].count("inpaint") == 1
 
 

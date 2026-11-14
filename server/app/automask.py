@@ -219,3 +219,69 @@ def mosaic(imgs: Dict[str, np.ndarray], labels: bool = True) -> np.ndarray:
     top = np.concatenate(tiles[:2], 1)
     bot = np.concatenate(tiles[2:], 1)
     return np.concatenate([top, bot], 0)
+
+
+# ── S20d 좌우 규칙(사용자 결정 2026-11-14) ─────────────────────────────
+# "오른쪽·왼쪽"(위치) = 보는 사람 기준: 앞 시점 이미지의 그 쪽.
+# "오른손·왼손"처럼 캐릭터 몸 부위 = 캐릭터 기준: 캐릭터를 마주 보므로 앞 시점 이미지에서 반대쪽.
+import re as _re
+
+_BODY_KO = "손목|손등|손바닥|손|발목|발등|발|팔꿈치|팔|다리|무릎|허벅지|눈썹|눈|귀|어깨|뺨|볼|옆구리"
+_BODY_EN = "hands?|feet|foot|arms?|legs?|eyes?|ears?|shoulders?|knees?|wrists?|ankles?|elbows?|thighs?|cheeks?|hips?"
+_SIDE_RULES = (   # (패턴, 기준) — 몸 부위가 먼저(“오른쪽 손”도 캐릭터 기준)
+    (_re.compile(rf"(오른|왼)\s*(?:쪽\s*)?(?:{_BODY_KO})"), "character"),
+    (_re.compile(rf"\b(right|left)[\s-]+(?:{_BODY_EN})\b", _re.I), "character"),
+    (_re.compile(r"(오른|왼)\s*(?:쪽|편)"), "viewer"),
+    (_re.compile(r"\b(?:on|to|at)\s+the\s+(right|left)\b|\b(right|left)\s+side\b", _re.I), "viewer"),
+)
+
+
+def parse_side(text: str) -> Optional[dict]:
+    """지시문 → {"side": "right"|"left", "frame": "character"|"viewer", "word": 찾은 말}. 없거나 서로 다르면 None(애매)."""
+    found = []
+    for pat, frame in _SIDE_RULES:
+        for m in pat.finditer(text or ""):
+            w = next(g for g in m.groups() if g)
+            side = "right" if w.lower() in ("오른", "right") else "left"
+            if not any(m.start() < e and s < m.end() for s, e, *_ in found):   # 이미 잡은 구간과 겹치면 건너뜀
+                found.append((m.start(), m.end(), side, frame, m.group(0)))
+    kinds = {(f[2], f[3]) for f in found}
+    if len(kinds) != 1:
+        return None
+    s, e, side, frame, word = found[0]
+    return {"side": side, "frame": frame, "word": word.strip()}
+
+
+def expected_image_side(side: str, frame: str) -> str:
+    """앞 시점 이미지에서 칠해져야 할 쪽. 캐릭터 기준이면 뒤집힌다."""
+    if frame == "viewer":
+        return side
+    return "left" if side == "right" else "right"
+
+
+def _right_vec(cam: dict) -> np.ndarray:
+    f = np.asarray(cam["forward"], np.float64)
+    f = f / np.linalg.norm(f)
+    r = np.cross(f, np.asarray(cam["up"], np.float64))
+    return r / np.linalg.norm(r)
+
+
+def image_side_of(cells, occupied, cam: dict, margin_px: float = 8.0) -> dict:
+    """앞 시점 카메라에서 몸(점유 셀) 중심과 칠한 셀 중심의 이미지 x 비교 → {"side": left|right|center, "dx"}."""
+    body = centers(occupied).mean(0)
+    mask = centers(cells).mean(0)
+    bx = project(body[None], cam)[0][0]
+    mx = project(mask[None], cam)[0][0]
+    dx = float(mx - bx)
+    side = "center" if abs(dx) < margin_px else ("right" if dx > 0 else "left")
+    return {"side": side, "dx": round(dx, 1), "body_x": round(float(bx), 1), "mask_x": round(float(mx), 1)}
+
+
+def mirror_cells(cells, occupied, cam: dict) -> list:
+    """몸 중심을 지나고 앞 시점 카메라 오른쪽 방향에 수직인 면으로 셀을 뒤집는다(정수 셀로 반올림, 중복 제거)."""
+    c = centers(occupied).mean(0)
+    r = _right_vec(cam)
+    p = centers(cells)
+    q = p - 2.0 * ((p - c) @ r)[:, None] * r[None, :]
+    idx = np.clip(np.rint((q + 0.5) * GRID - 0.5), 0, GRID - 1).astype(int)
+    return np.unique(idx, axis=0).tolist()
