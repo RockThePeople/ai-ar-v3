@@ -108,4 +108,4 @@ def test_old_job_without_prompts_gets_input_only(env):
 
 
 def test_health_105(env):
-    assert env.get("/app/v1/health").json()["app_api"] == "1.1.0"
+    assert env.get("/app/v1/health").json()["app_api"] == "1.1.1"

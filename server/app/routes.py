@@ -90,7 +90,7 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         return M.HealthResp(ok=True, app_api=APP_API, contract_version=int(CONTRACT_VERSION), mock=S.settings.mock,
                             workers=M.Workers(a5000=w.get("a5000", "down"), inpaint=w.get("inpaint", "down"),
                                               llm=llm),
-                            features=["agent_edit"] if S.settings.agent else []).model_dump(mode="json")
+                            features=["agent_edit", "agent_lasso"] if S.settings.agent else []).model_dump(mode="json")
 
     @r.get("/samples")
     def samples():
@@ -149,15 +149,17 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     async def edit_create(asset_id: str, req: Request):
         dev = device(req)
         b = await body(req, M.EditReq)                       # 1. 입력 형식
-        if b.camera is None and b.volume_cells is None:      # S20 10.1 에이전트 편집
-            if not S.settings.agent:
-                raise AppError(400, "INVALID_REQUEST", "에이전트 편집이 꺼져 있다(APP_AGENT=0) — camera·volume_cells 가 필요하다")
+        if b.camera is None and b.volume_cells is None:      # S20 자동 마스킹 에이전트 편집 — S20e 부터 APP_AUTOMASK 뒤
+            if not (S.settings.agent and S.settings.automask):
+                raise AppError(400, "INVALID_REQUEST", "camera·volume_cells 가 필요하다(자동 마스킹은 꺼져 있다, 1.1.1 10.1)")
             ma = req.headers.get("X-Mock-Agent") if S.settings.mock else None    # 계약 7절 가짜 모드 시나리오
             j = S.engine.create_edit(asset_id, dev, b.base_version, b.instruction, None, None, mock_fail(req),
                                      mock_agent=ma)
             return M.EditCreated(job_id=j["job_id"]).model_dump(mode="json")
         if b.camera is None or b.volume_cells is None:
             raise AppError(400, "INVALID_REQUEST", "camera·volume_cells 는 둘 다 있거나 둘 다 없어야 한다")
+        if b.agent and not S.settings.agent:
+            raise AppError(400, "INVALID_REQUEST", "에이전트 편집이 꺼져 있다(APP_AGENT=0)")
         prob = M.camera_problem(b.camera)
         if prob:
             raise AppError(400, "INVALID_CAMERA", prob)
@@ -171,8 +173,10 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             raise AppError(400, "MASK_EMPTY", "편집 볼륨 셀이 없다")
         if len(cells) > MAX_CELLS:
             raise AppError(400, "MASK_TOO_LARGE", f"편집 볼륨 셀 {len(cells)} > {MAX_CELLS}")
+        ma = req.headers.get("X-Mock-Agent") if S.settings.mock else None
         j = S.engine.create_edit(asset_id, dev, b.base_version, b.instruction,   # 2–5. 404 → 403 → 잠금 → 판본
-                                 b.camera.model_dump(mode="json"), [list(c) for c in cells], mock_fail(req))
+                                 b.camera.model_dump(mode="json"), [list(c) for c in cells], mock_fail(req),
+                                 mock_agent=ma, agent_lasso=bool(b.agent))
         return M.EditCreated(job_id=j["job_id"]).model_dump(mode="json")
 
     def visible_job(job_id: str):
@@ -231,7 +235,7 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     @r.get("/jobs/{job_id}/agent/{seq}/{name}.png")
     def agent_image(job_id: str, seq: int, name: str):
         """S20 10.3 진행 보고 이미지."""
-        if name not in ("views", "overlay", "render", "mask", "edit", "result") or visible_job(job_id) is None:
+        if name not in ("views", "overlay", "render", "mask", "edit", "result", "grow") or visible_job(job_id) is None:
             raise AppError(404, "JOB_NOT_FOUND", "이미지 없음")
         p = S.settings.data_dir / "jobs" / job_id / "agent" / str(int(seq)) / f"{name}.png"
         if not p.is_file():

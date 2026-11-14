@@ -10,13 +10,15 @@
 from __future__ import annotations
 
 import json
+
+import numpy as np
 import shutil
 import time
 from typing import Optional
 
 from . import automask as am
 from .backends import StageError
-from .cropinpaint import decode_png, encode_png
+from .cropinpaint import decode_png, encode_png, mask_bool
 from .llm_adapter import MOCK_AGENT, LLMInvalid, LLMUnavailable, inpaint_ko_problem
 
 CHECKS = ("element", "position", "mask_fit", "shape_3d")
@@ -184,6 +186,167 @@ class AgentRun:
         j.setdefault("agent_side", []).append(rec)
         return cells
 
+    def preview_only(self) -> None:
+        """APP_AGENT_NO_COMMIT: A5000 에 반영해 그 판본을 4시점 렌더(A5000 은 staging 을 렌더하지 못한다) → 앱 저장소·DB·자산 판본은
+        그대로(다음 편집도 같은 앱 판본 위). 개발 자산의 A5000 쪽에 시험 판본이 남는다."""
+        j, eng = self.j, self.eng
+        to = int(j["result"]["to_version"])
+        try:
+            eng.be.commit(j["asset_id"], to, j["idem"])
+            occ2 = eng.be.slat_coords(j["asset_id"], to) or self.occ
+            cams = am.view_cameras(occ2)
+            mid = sorted(occ2)[len(occ2) // 2]
+            d = self.s.data_dir / "jobs" / j["job_id"] / "preview_views"
+            d.mkdir(parents=True, exist_ok=True)
+            imgs = {}
+            for v in am.VIEW_AZ:
+                png = eng.be.render(j["asset_id"], to, cams[v], [list(mid)])["render_png"]
+                (d / f"{v}.png").write_bytes(png)
+                imgs[v] = am.to_rgb(decode_png(png))
+            mos = encode_png(am.mosaic(imgs))
+        except StageError:
+            raise
+        except Exception as e:                              # noqa: BLE001
+            raise StageError("EDIT_FAILED", f"미리보기 렌더 실패: {type(e).__name__}: {e}")
+        eng.store.drop_staging(j["asset_id"], j["job_id"])
+        j["result"].update(preview_only=True, a5000_version=to, manifest_uri=None)
+        self.event("done", "done", f"미리보기만 남겼습니다(반영 안 함, 시험 모드 — A5000 판본 v{to})", {"result": mos})
+        eng._finish(j, "committed")
+
+    # ── S20e 사용자 라쏘 볼륨 다듬기 ─────────────────────────────
+    def lasso_start(self) -> None:
+        """사용자 카메라로 라쏘 볼륨 U 를 렌더하고, 판단에 줄 격자 이미지 2장(렌더, 라쏘 겹침)을 만든다."""
+        j, eng = self.j, self.eng
+        self._state("masking", "mask_refine", 0.05)
+        self.cam, self.U = j["user_camera"], [list(c) for c in j["user_cells"]]
+        self.occ = eng.occupied(j["asset_id"], j["base_version"])
+        self.consts = am.size_consts(self.occ, self.s.agent_depth_ratio, self.s.agent_merge_ratio)
+        j["agent_consts"] = self.consts
+        self.render_with(self.cam, self.U, "user")
+        rgb, m = self._render_arrays()
+        self.user_rgb = rgb
+        self.grid_render = encode_png(am.grid_full(rgb))
+        over = am.tint_mask(rgb, m)
+        self.grid_lasso = encode_png(am.grid_full(over))
+        self.event("masking", "tool", f"그린 영역을 봤습니다(라쏘 {len(self.U):,}셀)", {"overlay": encode_png(am.half(over))})
+
+    def _render_arrays(self):
+        rd = self.s.data_dir / "jobs" / self.j["job_id"] / "render"
+        r = decode_png((rd / "render.png").read_bytes())
+        return am.to_rgb(r), mask_bool(decode_png((rd / "mask.png").read_bytes()))
+
+    def render_with(self, cam: dict, cells: list, label: str) -> None:
+        j, eng = self.j, self.eng
+        j["camera"], j["cells"] = cam, cells
+        j.pop("render", None)
+        shutil.rmtree(self.s.data_dir / "jobs" / j["job_id"] / "region", ignore_errors=True)
+        eng._ensure_render(j)
+        j["render_view"] = label
+
+    def refine_mask(self, feedback: Optional[str]) -> dict:
+        """S20e 2.1 판단(오케스트레이터 1회, 이미지 2장) → 2.2 잘라내기·2.3 합치기(코드) → 다듬은 셀로 다시 렌더."""
+        j = self.j
+        self._state("masking", "mask_refine", 0.15)
+        self._mock("mask")
+        plan = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
+                          self.eng._scene(j["asset_id"]), feedback)
+        j["agent_plan"] = plan
+        if not plan.get("found"):
+            self.event("masking", "error", f"지시한 부위를 찾지 못했습니다 — {plan.get('note_ko') or ''}".strip(" —"))
+            raise StageError("NO_TARGET", plan.get("note_ko") or "지시한 부위를 찾지 못했다")
+        r = am.refine_volume(self.U, self.occ, self.cam, plan, self.consts)
+        j["agent_mask"] = {k: v for k, v in r.items() if k != "cells"} | {"consts": self.consts}
+        cells = r["cells"]
+        c = self.consts
+        tm = f"L {c['L']} · T {c['T']} · M {c['M']}"
+        if r["merged"]:
+            self.event("masking", "tool", f"{plan.get('old_object') or '원래 물건'}의 라쏘 밖 부분 {r['merged']:,}셀을 합쳤습니다",
+                       detail=f"26-neighbour merge inside old_object_box +5%, depth d0+2T, lasso bbox +M ({tm})")
+        self.render_with(self.cam, cells, "user")
+        rgb, m = self._render_arrays()
+        after = encode_png(am.half(am.tint_mask(rgb, m)))
+        if r["fallback"]:
+            text = f"다듬지 못해 그린 영역 그대로 씁니다(라쏘 {r['n_user']:,}셀)"
+        else:
+            cut = r["cut_depth"] + r["cut_side"] + r["cut_empty"]
+            text = (f"마스크를 다듬었습니다(라쏘 {r['n_user']:,}셀 → {r['n_final']:,}셀, 잘라냄 {cut:,}"
+                    + (f"·합침 {r['merged']:,}" if r["merged"] else "") + ")")
+        self.event("masking", "tool", text, {"overlay": after},
+                   detail=f"{tm}; cut depth {r['cut_depth']} side {r['cut_side']} empty {r['cut_empty']}; "
+                          f"op {plan['op']}; keep {plan.get('keep_box')} old {plan.get('old_object_box')} new {plan.get('new_space_box')}")
+        return {"plan": plan, "cells": cells, "n": len(cells)}
+
+    # ── S20f Gemini: 물건이 가장 잘 보이는 시점 고르기(볼륨은 라쏘 U 그대로) ──
+    def gemini_prepare(self, feedback: Optional[str]) -> dict:
+        j, eng = self.j, self.eng
+        if not getattr(self, "g_plan", None):
+            self._state("masking", "mask_refine", 0.15)
+            plan = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
+                              eng._scene(j["asset_id"]), feedback)
+            j["agent_plan"] = plan
+            if not plan.get("found"):
+                self.event("masking", "error", f"지시한 부위를 찾지 못했습니다 — {plan.get('note_ko') or ''}".strip(" —"))
+                raise StageError("NO_TARGET", plan.get("note_ko") or "지시한 부위를 찾지 못했다")
+            self.g_plan = plan
+        plan = self.g_plan
+        self._state("masking", "view_select", 0.2)        # 계약 10.2 1.1.1 보충(S20f): 방향 고르기
+        cams = am.view_cameras(self.occ)
+        names = ["user"] + list(am.VIEW_AZ)
+        if eng.be.name == "mock":                         # 8084 가짜 모드: 고정 방향·고정 문구
+            pk = {"view": "az090", "camera": cams["az090"], "counts": {n: 0 for n in names},
+                  "weights": {n: 1.0 for n in names}, "scores": {n: 0.0 for n in names}, "front_view": None,
+                  "back_view": None}
+            fv = None
+        else:
+            fv = am.front_from_user(self.cam, self.occ, plan.get("user_view_side"))   # S20f-2: 뒷모습 피하기
+            pk = am.pick_view(self.U, self.occ, cams, self.cam, front_view=fv)
+        j["agent_pick"] = {k: pk[k] for k in ("view", "counts", "weights", "scores", "front_view", "back_view")}
+        thumbs = self._pick_thumbs(cams, pk["view"])
+        label = "사용자 카메라" if pk["view"] == "user" else f"방위 {am.VIEW_KO[pk['view']]}"
+        self.event("masking", "tool", f"물건이 가장 잘 보이는 방향({label})을 골랐습니다"
+                   + ("(가짜)" if eng.be.name == "mock" else ""), {"views": thumbs},
+                   detail="visible lasso cells × weight per view: " + ", ".join(
+                       f"{n} {pk['counts'][n]}×{pk['weights'][n]:g}" for n in names)
+                   + f"; front {fv} (user side {plan.get('user_view_side')}), back {pk['back_view']}")
+        self.render_with(pk["camera"], self.U, pk["view"])
+        return {"plan": plan, "cells": self.U, "n": len(self.U)}
+
+    def _pick_thumbs(self, cams: dict, chosen: str) -> Optional[bytes]:
+        """5후보 축소 이미지(3×2, 고른 칸 빨간 테두리). 시점 렌더는 캐시(없으면 렌더)."""
+        import numpy as np
+        j, eng = self.j, self.eng
+        try:
+            v = eng.views_cached(j["asset_id"], j["base_version"]) or eng.render_views(j["asset_id"], j["base_version"])
+            imgs = {n: am.half(am.half(am.to_rgb(decode_png(b)))) for n, b in v["png"].items()}
+            rgb, _ = self._render_arrays_user()
+            imgs["user"] = am.half(am.half(rgb))
+        except Exception as e:                                 # noqa: BLE001 — 축소 이미지는 없어도 진행
+            j["agent_pick_thumb_error"] = f"{type(e).__name__}: {e}"
+            return None
+        tiles = []
+        for n in ["user"] + list(am.VIEW_AZ):
+            t = imgs[n].copy()
+            am.draw_text(t, n, 4, 4, scale=2)
+            if n == chosen:
+                t[:4], t[-4:], t[:, :4], t[:, -4:] = (255, 0, 0), (255, 0, 0), (255, 0, 0), (255, 0, 0)
+            tiles.append(t)
+        blank = np.full_like(tiles[0], 255)
+        tiles.append(blank)
+        return encode_png(np.concatenate([np.concatenate(tiles[:3], 1), np.concatenate(tiles[3:], 1)], 0))
+
+    def _render_arrays_user(self):
+        return self.user_rgb, None
+
+    def check_lasso(self, m: dict, region: Optional[dict]) -> dict:
+        j = self.j
+        ov = (region or {}).get("images", [None])[0]
+        self._state("masking", "mask_check", 0.3)
+        self._mock("check")
+        c = self._orch(self.llm.agent_mask_check, ov or b"", j["instruction"], m["plan"])
+        self.event("mask_check", "check", ("마스크 확인: 맞습니다" if c["ok"] else f"마스크 확인: {c['reason_ko']}"),
+                   detail=None if c["ok"] else (c.get("fix") or None))
+        return c
+
     def new_render(self, view: str, cells: list) -> None:
         j, eng = self.j, self.eng
         j["camera"], j["cells"] = self.cams[view], cells
@@ -252,20 +415,76 @@ class AgentRun:
     def inpaint(self) -> bytes:
         j, eng = self.j, self.eng
         self._state("inpainting", "inpainting", 0.5)
+        self.grown_region = None                          # 2.6: 넓히면 이 시도 채점에 넓힌 마스크 겹침을 쓴다
         eng._run_render_inpaint(j, new_render=False, agent=True)
         d = eng._preview_dir(j, j["attempt"])
         edit = (d / "edit.png").read_bytes()
         self.event("inpainting", "tool", f"편집 이미지를 그렸습니다(시도 {j['attempt']})", {"edit": edit})
+        if j.get("agent_source") == "lasso" and self.s.inpaint_backend == "gemini" and self.s.grow_from_image:
+            if eng.be.name == "mock":                     # 8084 가짜 모드: 고정 문구·고정 이미지(볼륨은 그대로)
+                self._state("inpainting", "volume_grow", 0.55)
+                self.event("inpainting", "tool", "새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+2,140셀)(가짜)",
+                           {"grow": edit})
+            else:
+                self.grow(d, edit)
         return edit
+
+    def grow(self, d, edit: bytes) -> None:
+        """S20f 2.6: 새 물건이 라쏘보다 크면 빈 셀로 볼륨을 넓히고, 같은 카메라로 다시 렌더해 이번 시도 렌더·마스크를 바꾼다
+        (A5000 은 편집 셀이 렌더 때 셀과 같아야 한다)."""
+        j, eng = self.j, self.eng
+        rgb = am.to_rgb(decode_png((d / "render.png").read_bytes()))
+        um = mask_bool(decode_png((d / "mask.png").read_bytes()))
+        er = am.to_rgb(decode_png(edit))
+        self._state("inpainting", "volume_grow", 0.55)    # 계약 10.2 1.1.1 보충(S20f): 볼륨 넓히기
+        cs = getattr(self, "consts", None) or am.size_consts(self.occ)
+        T, M = cs["T"], cs["M"]
+        plan = j.get("agent_plan") or {}
+        g = am.grow_from_image(rgb, er, um, self.U, self.occ, j["camera"], T, op=plan.get("op"), M=M)
+        rec = {k: v for k, v in g.items() if k not in ("grown", "s_mask", "merged")} | {"attempt": j["attempt"], "T": T, "M": M}
+        j.setdefault("agent_grow", []).append(rec)
+        if g["skip"] == "too_large":
+            self.force_prompt = True
+            self.event("inpainting", "check", f"그림 전체가 많이 바뀌어(화면 {g['diff_frac']:.0%}) 볼륨을 넓히지 않고 다시 그립니다",
+                       detail=f"diff fraction {g['diff_frac']} > {am.GROW_MAX_FRAC}")
+            return
+        if (g.get("merge") or {}).get("skipped"):
+            self.event("inpainting", "check", f"{plan.get('old_object') or '원래 물건'}의 라쏘 밖 부분이 몸통으로 번져 합치지 않았습니다",
+                       detail=f"merge skipped: {g['merge']}")
+        if not g["n_grown"] and not g.get("n_merged"):
+            return
+        if g.get("n_merged"):
+            self.event("inpainting", "tool", f"{plan.get('old_object') or '원래 물건'}의 라쏘 밖 부분 {g['n_merged']:,}셀을 합쳤습니다",
+                       detail=f"residue merge {g['merge']}")
+        final = [list(c) for c in {tuple(c) for c in self.U} | {tuple(c) for c in g["grown"]}
+                 | {tuple(c) for c in g.get("merged", [])}]
+        self.render_with(j["camera"], final, j.get("render_view") or "picked")
+        rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
+        for n in ("render.png", "mask.png"):
+            (d / n).write_bytes((rd / n).read_bytes())
+        if j.get("attempts"):
+            j["attempts"][-1].update(render_id=j["render"]["render_id"], grown=g["n_grown"], merged=g.get("n_merged", 0))
+        self.grown_region = self.region()                 # 채점이 넓히기 전 마스크로 "영역 밖"이라 판정하지 않게(G4 실측)
+        S = g["s_mask"]
+        big = np.repeat(np.repeat(S, er.shape[0] // S.shape[0], 0), er.shape[1] // S.shape[1], 1)
+        over = am.tint_mask(er, big[:er.shape[0], :er.shape[1]], color=(40, 120, 255))
+        if g["n_grown"]:
+            self.event("inpainting", "tool", f"새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+{g['n_grown']:,}셀)",
+                       {"grow": encode_png(am.half(over))},
+                       detail=f"diff {g['diff_frac']} silhouette {g['s_frac']} depth {g.get('depth_range')} T {T}; "
+                              f"cells {len(self.U)} -> {len(final)}")
 
     def judge(self, edit: bytes, region: Optional[dict]) -> dict:
         j, eng = self.j, self.eng
         self._state("judging", "judging", 0.6)
         self._mock("judge")
         d = eng._preview_dir(j, j["attempt"])
+        region = getattr(self, "grown_region", None) or region
         ov = (region or {}).get("images", [None])[0] or (d / "mask.png").read_bytes()
         return self._orch(self.llm.agent_judge, (d / "render.png").read_bytes(), ov, edit, j["instruction"],
-                          j["prompts"].get("inpaint") or "", side_hint=self.side_hint)   # S20d: 확인과 같은 기대 위치
+                          j["prompts"].get("inpaint") or "", side_hint=self.side_hint,   # S20d: 확인과 같은 기대 위치
+                          old_object=((j.get("agent_plan") or {}).get("old_object")
+                                      if (j.get("agent_plan") or {}).get("op") in ("replace", "remove") else None))
 
     # ── 루프 ─────────────────────────────────────────────────────
     def run(self) -> None:
@@ -276,14 +495,19 @@ class AgentRun:
         step = "mask"
         plan, region, m = None, None, None
         stop = None
+        lasso = j.get("agent_source") == "lasso"          # S20e: 사용자 라쏘 볼륨 다듬기(자동 마스킹 아님)
+        gem = lasso and s.inpaint_backend == "gemini"     # S20f: 라쏘 U 그대로 + 잘 보이는 시점 + Gemini
         try:
-            self.views()
+            if lasso:
+                self.lasso_start()
+            else:
+                self.views()
             while True:
                 if step == "mask":
-                    m = self.mask(feedback)
+                    m = self.gemini_prepare(feedback) if gem else (self.refine_mask(feedback) if lasso else self.mask(feedback))
                     plan = m["plan"]
                     region = self.region() if m["cells"] else None
-                    c = self.check(m, region)
+                    c = {"ok": True} if gem else (self.check_lasso(m, region) if lasso else self.check(m, region))
                     if not c["ok"] or not m["cells"]:
                         # S20d: 마스크 다시 칠하기는 되돌아가기(채점 뒤)와 따로 센다
                         mr, mmax = ag.get("mask_retries", 0), ag.get("max_mask_retries", s.agent_max_mask_retries)
@@ -291,7 +515,8 @@ class AgentRun:
                             ag["mask_retries"] = mr + 1
                             feedback = f"{c.get('reason_ko')} / {c.get('fix')}".strip(" /")
                             self.event("mask_check", "branch",
-                                       f"{c.get('reason_ko')} → 볼륨 마스킹을 다시 합니다(마스크 다시 칠하기 {mr + 1}/{mmax})")
+                                       f"{c.get('reason_ko')} → " + (f"마스크를 다시 다듬습니다(마스크 다시 다듬기 {mr + 1}/{mmax})"
+                                       if lasso else f"볼륨 마스킹을 다시 합니다(마스크 다시 칠하기 {mr + 1}/{mmax})"))
                             continue
                         if not m["cells"]:
                             raise StageError("MASK_EMPTY", "자동 마스킹 셀이 없다(마스크 다시 칠하기 한도)")
@@ -302,6 +527,10 @@ class AgentRun:
                 v = self.judge(edit, region)
                 checks = {k: bool(v["checks"].get(k)) for k in CHECKS}
                 cause = cause_of(checks)
+                if gem and cause:                             # S20f: 마스크 없음 → 원인이 무엇이든 프롬프트 다시 쓰기
+                    cause = "prompt"
+                if gem and getattr(self, "force_prompt", False):   # 2.6: 그림 전체가 바뀜 → 넓히지 않고 다시 그리기
+                    cause, self.force_prompt = cause or "prompt", False
                 ag["verdict"] = {"pass": cause is None, "checks": checks, "cause": cause}
                 tries.append({"attempt": j["attempt"], "checks": checks, "cause": cause, "render": dict(j["render"]),
                               "camera": j["camera"], "cells": j["cells"], "refine": j["refine"],
@@ -323,7 +552,7 @@ class AgentRun:
                 ag["backtracks"] += 1
                 feedback = f"{v.get('reason_ko')} / {v.get('fix')}".strip(" /")
                 self.event("judging", "judge", detail=v.get("fix") or None,
-                           text=f"{v.get('reason_ko')}(불합격: {bad}) → {CAUSE_KO[cause]} 다시 합니다"
+                           text=f"{v.get('reason_ko')}(불합격: {bad}) → {('마스크 다듬기부터' if lasso and cause == 'mask' else CAUSE_KO[cause])} 다시 합니다"
                                                f"(되돌아가기 {ag['backtracks']}/{ag['max_backtracks']})")
                 step = cause
                 j["attempt"] += 1
@@ -352,6 +581,8 @@ class AgentRun:
         if j["state"] != "editing_3d":
             return
         self.event("editing_3d", "tool", f"3D 편집을 했습니다({len(t['cells']):,}셀)")
+        if self.s.agent_no_commit:                         # S20f-2 시험 전용: 앱에는 반영하지 않고 4시점 미리보기만
+            return self.preview_only()
         try:
             eng._commit(j)
         except Exception as e:                              # noqa: BLE001 — AppError(반영 실패)

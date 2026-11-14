@@ -86,6 +86,7 @@ def test_cause_rules_and_best_attempt():
 
 # ══════════════════════════════════════════════════════════ 제어 루프
 def _agent(env, aid, text="오른손에 칼을 들게 해줘", base=1):
+    env.eng.s.automask = True                                 # S20e: 자동 마스킹 시험은 토글을 켠다
     r = env.post(f"/app/v1/assets/{aid}/edits", headers=A, json={"base_version": base, "instruction": text})
     assert r.status_code == 202, r.text
     env.eng.drain()
@@ -227,6 +228,7 @@ def test_claude_agent_adapter_retries_once_then_invalid(monkeypatch):
 # ══════════════════════════════════════════════════════════ 계약 모양
 def test_contract_shapes(env):
     aid = make_asset(env)
+    env.eng.s.automask = True                                     # S20e: 자동 마스킹(1.1.0 모양) 시험
     r = env.post(f"/app/v1/assets/{aid}/edits", headers=A, json={"base_version": 1, "instruction": "x", "camera": CAM})
     assert r.status_code == 400 and r.json()["error_code"] == "INVALID_REQUEST"
     r = env.post(f"/app/v1/assets/{aid}/edits", headers=A, json={"base_version": 1, "instruction": "x", "volume_cells": CELLS})

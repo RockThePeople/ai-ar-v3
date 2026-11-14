@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
-from .cropinpaint import crop_inpaint
+from .cropinpaint import crop_inpaint, decode_png
 from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, placement_ok,
                           make_agent_adapter, FakeAgentAdapter,
                           strip_banned, strip_lateral, strip_realworld, style_from_request,
@@ -91,6 +91,7 @@ class Engine:
         self.s, self.db, self.store, self.be, self.clock = s, db, store, backend, clock
         self.llm = llm or make_adapter(s.mock, on_call=db.log_llm)
         # S20 오케스트레이터(AGENT_MODEL). 시험이 llm 만 넘기면 규칙 기반 가짜
+        self.gemini = None                                # S20f: 시험이 가짜 클라이언트를 넣는다(None = 환경변수로 실제)
         self.agent_llm = agent_llm or (FakeAgentAdapter(db.log_llm) if llm is not None else
                                        make_agent_adapter(s.mock, on_call=db.log_llm))
         self.lock = threading.RLock()
@@ -298,10 +299,11 @@ class Engine:
 
     # ── 편집 ───────────────────────────────────────────────────────
     def create_edit(self, asset_id: str, device: str, base_version: int, instruction: str, camera: Optional[dict],
-                    cells: Optional[List[list]], mock_fail: Optional[str] = None, mock_agent: Optional[str] = None) -> dict:
+                    cells: Optional[List[list]], mock_fail: Optional[str] = None, mock_agent: Optional[str] = None,
+                    agent_lasso: bool = False) -> dict:
         """검사 순서(1.0.1 3.3): 입력(라우트) → 404 → 403 → 잠금 → 판본.
         S20: camera·cells 가 둘 다 None 이면 에이전트 편집(1.1.0 10절, 라우트가 APP_AGENT·한쪽만 있음을 막는다)."""
-        agent = camera is None and cells is None
+        agent = (camera is None and cells is None) or agent_lasso   # S20e: 라쏘 + agent:true 도 에이전트
         with self.lock:
             a = self.db.live_asset(asset_id)
             if a is None or a["version"] == 0 and not a["is_sample"]:
@@ -321,8 +323,11 @@ class Engine:
             kw = {}
             if agent:                                      # S20b: 그대로 모드 마커는 보정 없이 지시문 그대로 인페인팅
                 kw = {"mode": "agent", "events": [], "agent_calls": 0, "mock_agent": mock_agent,
+                      "agent_source": "lasso" if agent_lasso else "auto", "user_camera": camera, "user_cells": cells,
                       "agent": {"model": getattr(self.agent_llm, "model", None), "attempt": 1, "backtracks": 0,
-                                "max_backtracks": self.s.agent_max_backtracks, "mask_retries": 0,
+                                # 계약 10.2 1.1.1 보충(S20f): Gemini 일 때 되돌아가기 1(편집 1회당 Gemini 최대 2회)
+                                "max_backtracks": 1 if (agent_lasso and self.s.inpaint_backend == "gemini")
+                                else self.s.agent_max_backtracks, "mask_retries": 0,
                                 "max_mask_retries": self.s.agent_max_mask_retries, "verdict": None, "below_bar": False}}
             j = self._new_job("edit", asset_id, device, a["qr_id"], base_version=int(base_version), raw_prompt=raw,
                               instruction=instruction, camera=camera, cells=cells, mock_fail=mock_fail,
@@ -557,7 +562,29 @@ class Engine:
         crop, crop_files = None, None
         info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
         t0 = time.perf_counter()
-        if self.s.inpaint_crop:                           # S7: 마스크 주변만 잘라 1024² 로 키워 보내고 원래 자리에 붙인다
+        if self.s.inpaint_backend == "gemini" and j.get("mode") == "agent":   # S20f: 마스크 없이 렌더 1장 + 프롬프트
+            from .gemini import GeminiClient, GeminiError, fit_to, full_prompt, outside_diff
+            plan = j.get("agent_plan") or {}
+            target = plan.get("old_object") or plan.get("target_part") or ""
+            gp = full_prompt(ip, target, plan.get("op"), plan.get("old_object"), plan.get("new_object"))
+            ip_src, ip = "gemini", gp
+            j["prompts"] = dict(prompts_of(j), inpaint=ip)
+            h, w = decode_png(rpng).shape[:2]
+            gc = self.gemini or GeminiClient(cache_dir=self.s.data_dir / "gemini_cache")
+            loose = (f"{j['asset_id']}|{j['base_version']}|{j.get('render_view')}|{j['instruction']}|{j['attempt']}"
+                     if self.s.gemini_cache_loose else None)      # 시험 전용: 끔/켬 비교에 같은 이미지
+            try:
+                if self.be.name == "mock":                # 8084 가짜 모드: 실제 Gemini 를 부르지 않는다(고정 edit.png)
+                    raw, ginfo = self.be.inpaint(rpng, mpng, gp, seed), {"model": "mock-gemini", "latency_s": 0.0,
+                                                                         "prompt": gp, "finish": "STOP"}
+                else:
+                    raw, ginfo = (gc.edit_cached(rpng, gp, loose=loose) if hasattr(gc, "edit_cached") else gc.edit(rpng, gp))
+            except GeminiError as e:
+                raise StageError("INPAINT_FAILED", str(e))
+            edit = fit_to(raw, h, w)
+            info.update({"backend": "gemini", **ginfo, "raw_size": list(decode_png(raw).shape[:2]),
+                         "outside": outside_diff(rpng, edit, mpng)})
+        elif self.s.inpaint_crop:                         # S7: 마스크 주변만 잘라 1024² 로 키워 보내고 원래 자리에 붙인다
             edit, crop, crop_files = crop_inpaint(rpng, mpng,
                                                   lambda r, m: self.be.inpaint(r, m, ip, seed, info=info))
         else:
@@ -818,7 +845,8 @@ class Engine:
 
     def enqueue_views(self, asset_id: str, version: int, job_id: Optional[str] = None) -> None:
         """반영 직후 같은 대기열 뒤에 미리 렌더. 시험용 가짜 백엔드(name 'fake')에서는 하지 않는다."""
-        if self.be.name not in ("real", "mock") or not self.s.agent:
+        if self.be.name not in ("real", "mock") or not self.s.agent or not (self.s.automask or self.s.inpaint_backend == "gemini"):
+            # S20e: 자동 마스킹 때만, S20f: Gemini 시점 고르기 축소 이미지에도
             return
         self.q.put(("views", json.dumps([asset_id, int(version), job_id])))
 

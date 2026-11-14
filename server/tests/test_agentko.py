@@ -8,6 +8,7 @@ from server.tests.test_app_server import A, CAM, CELLS, env, make_asset  # noqa:
 
 
 def _agent(env, aid, text="오른손에 칼을 들게 해줘", base=1):
+    env.eng.s.automask = True                                 # S20e: 자동 마스킹 시험은 토글을 켠다
     r = env.post(f"/app/v1/assets/{aid}/edits", headers=A, json={"base_version": base, "instruction": text})
     assert r.status_code == 202, r.text
     env.eng.drain()
