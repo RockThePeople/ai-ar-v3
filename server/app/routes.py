@@ -152,7 +152,9 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         if b.camera is None and b.volume_cells is None:      # S20 10.1 에이전트 편집
             if not S.settings.agent:
                 raise AppError(400, "INVALID_REQUEST", "에이전트 편집이 꺼져 있다(APP_AGENT=0) — camera·volume_cells 가 필요하다")
-            j = S.engine.create_edit(asset_id, dev, b.base_version, b.instruction, None, None, mock_fail(req))
+            ma = req.headers.get("X-Mock-Agent") if S.settings.mock else None    # 계약 7절 가짜 모드 시나리오
+            j = S.engine.create_edit(asset_id, dev, b.base_version, b.instruction, None, None, mock_fail(req),
+                                     mock_agent=ma)
             return M.EditCreated(job_id=j["job_id"]).model_dump(mode="json")
         if b.camera is None or b.volume_cells is None:
             raise AppError(400, "INVALID_REQUEST", "camera·volume_cells 는 둘 다 있거나 둘 다 없어야 한다")

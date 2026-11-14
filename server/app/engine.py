@@ -298,7 +298,7 @@ class Engine:
 
     # ── 편집 ───────────────────────────────────────────────────────
     def create_edit(self, asset_id: str, device: str, base_version: int, instruction: str, camera: Optional[dict],
-                    cells: Optional[List[list]], mock_fail: Optional[str] = None) -> dict:
+                    cells: Optional[List[list]], mock_fail: Optional[str] = None, mock_agent: Optional[str] = None) -> dict:
         """검사 순서(1.0.1 3.3): 입력(라우트) → 404 → 403 → 잠금 → 판본.
         S20: camera·cells 가 둘 다 None 이면 에이전트 편집(1.1.0 10절, 라우트가 APP_AGENT·한쪽만 있음을 막는다)."""
         agent = camera is None and cells is None
@@ -320,9 +320,10 @@ class Engine:
             ed_style = None if raw else (self._asset_style_src(asset_id)["style"] or "realistic")   # S15 4.4 편집 style
             kw = {}
             if agent:                                      # S20b: 그대로 모드 마커는 보정 없이 지시문 그대로 인페인팅
-                kw = {"mode": "agent", "events": [], "agent_calls": 0,
+                kw = {"mode": "agent", "events": [], "agent_calls": 0, "mock_agent": mock_agent,
                       "agent": {"model": getattr(self.agent_llm, "model", None), "attempt": 1, "backtracks": 0,
-                                "max_backtracks": self.s.agent_max_backtracks, "verdict": None, "below_bar": False}}
+                                "max_backtracks": self.s.agent_max_backtracks, "mask_retries": 0,
+                                "max_mask_retries": self.s.agent_max_mask_retries, "verdict": None, "below_bar": False}}
             j = self._new_job("edit", asset_id, device, a["qr_id"], base_version=int(base_version), raw_prompt=raw,
                               instruction=instruction, camera=camera, cells=cells, mock_fail=mock_fail,
                               idem=hashlib.sha256(f"{asset_id}|{base_version}|{uuid.uuid4().hex}".encode()).hexdigest()[:32],

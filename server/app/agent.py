@@ -17,7 +17,7 @@ from typing import Optional
 from . import automask as am
 from .backends import StageError
 from .cropinpaint import decode_png, encode_png
-from .llm_adapter import LLMInvalid, LLMUnavailable, inpaint_ko_problem
+from .llm_adapter import MOCK_AGENT, LLMInvalid, LLMUnavailable, inpaint_ko_problem
 
 CHECKS = ("element", "position", "mask_fit", "shape_3d")
 CHECK_KO = {"element": "요소", "position": "위치", "mask_fit": "마스크 적합", "shape_3d": "3D 적합"}
@@ -54,6 +54,10 @@ class AgentRun:
         self.eng, self.j, self.s = eng, j, eng.s
         self.llm = eng.agent_llm
         self.t0 = eng.clock()
+        self.side_hint: Optional[str] = None
+        sc = MOCK_AGENT.get(j.get("mock_agent") or "")           # 계약 7절 가짜 모드 X-Mock-Agent(규칙 기반 어댑터만)
+        if sc is not None and hasattr(self.llm, "per_job"):
+            self.llm.per_job[j["job_id"]] = sc
 
     # ── 기록 ─────────────────────────────────────────────────────
     def event(self, step: str, kind: str, text: str, images: Optional[dict] = None,
@@ -131,10 +135,54 @@ class AgentRun:
         if bp["too_large"]:
             raise StageError("MASK_TOO_LARGE", f"자동 마스킹 셀 {bp['n']} > {am.MAX_CELLS}(0.9배 축소 3번 뒤)")
         cells = bp["cells"]
+        if cells:
+            cells = self.side_rule(plan, cells)
         if cells:                                          # 인페인팅 시점으로 조건 렌더(셀 = 결과)
             self._state("masking", "masking", 0.25)
             self.new_render(plan["inpaint_view"], cells)
         return {"plan": plan, "cells": cells, "n": bp["n"]}
+
+    def side_rule(self, plan: dict, cells: list) -> list:
+        """S20d 좌우 규칙(LLM 호출 없음). 지시문 낱말을 코드로 판정(애매하면 오케스트레이터 side·side_frame), 앞 시점에서
+        칠한 셀 중심이 기대한 쪽의 반대면 몸 중심을 지나는 좌우 대칭면으로 뒤집는다."""
+        j = self.j
+        side, src = am.parse_side(j["instruction"]), "code"
+        if side is None and plan.get("side") in ("left", "right") and plan.get("side_frame") in ("viewer", "character"):
+            side, src = {"side": plan["side"], "frame": plan["side_frame"], "word": None}, "orchestrator"
+        fv = plan.get("front_view") if plan.get("front_view") in self.cams else "az000"
+        rec: dict = {"parsed": side, "source": src if side else None, "front_view": fv, "flipped": False}
+        self.side_hint = None
+        if side:
+            exp = am.expected_image_side(side["side"], side["frame"])
+            got = am.image_side_of(cells, self.occ, self.cams[fv])
+            rec.update(expected=exp, got=got)
+            if got["side"] not in (exp, "center"):
+                flipped = am.mirror_cells(cells, self.occ, self.cams[fv])
+                near = am.dilate(self.occ, 2)
+                if plan.get("op") in ("replace", "remove", "recolor"):
+                    flipped = [c for c in flipped if near[c[0], c[1], c[2]]]
+                if flipped and len(flipped) <= am.MAX_CELLS and any(near[c[0], c[1], c[2]] for c in flipped):
+                    cells = flipped
+                    rec.update(flipped=True, n_after=len(cells),
+                               got_after=am.image_side_of(cells, self.occ, self.cams[fv]))
+                    ko = {"left": "왼쪽", "right": "오른쪽"}
+                    target = side["word"] or (plan.get("target_part_ko") if side["frame"] == "character"
+                                              else ko[side["side"]])
+                    self.event("masking", "check", f"{ko[got['side']]}에 칠해져 {target} 쪽으로 옮겼습니다(좌우 규칙)",
+                               detail=f"{src}: side={side['side']} frame={side['frame']} word={side['word']!r}; "
+                                      f"{fv} image x body {got['body_x']} mask {got['mask_x']} → mirrored, {len(cells)} cells")
+                else:
+                    rec["flip_failed"] = {"n": len(flipped), "touches_body": bool(flipped)}
+            # 마스크 확인에 줄 기대 위치(인페인팅 시점이 앞 시점이거나 그 반대일 때만 좌우가 뜻이 있다)
+            iv = plan.get("inpaint_view")
+            off = (am.VIEW_AZ.get(iv, 0) - am.VIEW_AZ[fv]) % 360
+            img_side = exp if off == 0 else ({"left": "right", "right": "left"}[exp] if off == 180 else None)
+            if img_side:
+                frame_en = "the character's own side" if side["frame"] == "character" else "the viewer's side"
+                self.side_hint = (f"the instruction's {side['side']} ({side['word'] or side['side']}) is {frame_en}; "
+                                  f"in this image the edit area should be on the IMAGE {img_side.upper()} of the character")
+        j.setdefault("agent_side", []).append(rec)
+        return cells
 
     def new_render(self, view: str, cells: list) -> None:
         j, eng = self.j, self.eng
@@ -161,7 +209,7 @@ class AgentRun:
             return {"ok": False, "reason_ko": "칠한 셀이 없습니다", "fix": "make the boxes overlap the same 3D place"}
         self._state("masking", "mask_check", 0.3)
         self._mock("check")
-        c = self._orch(self.llm.agent_mask_check, ov or b"", j["instruction"], plan)
+        c = self._orch(self.llm.agent_mask_check, ov or b"", j["instruction"], plan, side_hint=self.side_hint)
         self.event("mask_check", "check", ("마스크 확인: 맞습니다" if c["ok"] else f"마스크 확인: {c['reason_ko']}"),
                    detail=None if c["ok"] else (c.get("fix") or None))
         return c
@@ -217,7 +265,7 @@ class AgentRun:
         d = eng._preview_dir(j, j["attempt"])
         ov = (region or {}).get("images", [None])[0] or (d / "mask.png").read_bytes()
         return self._orch(self.llm.agent_judge, (d / "render.png").read_bytes(), ov, edit, j["instruction"],
-                          j["prompts"].get("inpaint") or "")
+                          j["prompts"].get("inpaint") or "", side_hint=self.side_hint)   # S20d: 확인과 같은 기대 위치
 
     # ── 루프 ─────────────────────────────────────────────────────
     def run(self) -> None:
@@ -237,15 +285,17 @@ class AgentRun:
                     region = self.region() if m["cells"] else None
                     c = self.check(m, region)
                     if not c["ok"] or not m["cells"]:
-                        if ag["backtracks"] < ag["max_backtracks"]:
-                            ag["backtracks"] += 1
+                        # S20d: 마스크 다시 칠하기는 되돌아가기(채점 뒤)와 따로 센다
+                        mr, mmax = ag.get("mask_retries", 0), ag.get("max_mask_retries", s.agent_max_mask_retries)
+                        if mr < mmax:
+                            ag["mask_retries"] = mr + 1
                             feedback = f"{c.get('reason_ko')} / {c.get('fix')}".strip(" /")
                             self.event("mask_check", "branch",
-                                       f"{c.get('reason_ko')} → 볼륨 마스킹을 다시 합니다(되돌아가기 {ag['backtracks']}/{ag['max_backtracks']})")
+                                       f"{c.get('reason_ko')} → 볼륨 마스킹을 다시 합니다(마스크 다시 칠하기 {mr + 1}/{mmax})")
                             continue
                         if not m["cells"]:
-                            raise StageError("MASK_EMPTY", "자동 마스킹 셀이 없다(되돌아가기 한도)")
-                        self.event("mask_check", "branch", "되돌아가기 한도라 이 마스크로 진행합니다")
+                            raise StageError("MASK_EMPTY", "자동 마스킹 셀이 없다(마스크 다시 칠하기 한도)")
+                        self.event("mask_check", "branch", "마스크 다시 칠하기 한도라 이 마스크로 진행합니다")
                 if step in ("mask", "prompt"):
                     self.refine(plan, feedback, region)
                 edit = self.inpaint()
