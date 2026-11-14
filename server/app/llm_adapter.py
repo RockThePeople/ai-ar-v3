@@ -159,6 +159,28 @@ REFINE_REGION_IP_SCHEMA = {
     "additionalProperties": False,
 }
 
+# S20b: 에이전트 진행 보고용 한국어 요약(에이전트 보정만 — 1.0.6 수동 흐름 요청은 그대로)
+REFINE_REGION_IP_KO_SCHEMA = {
+    "type": "object",
+    "properties": {**REFINE_REGION_IP_SCHEMA["properties"], "inpaint_ko": {"type": "string"}},
+    "required": REFINE_REGION_IP_SCHEMA["required"] + ["inpaint_ko"],
+    "additionalProperties": False,
+}
+_INPAINT_KO_RULE = """
+- inpaint_ko: ONE short Korean line (at most 40 characters) summarizing what inpaint_prompt draws, for the user's
+  progress screen (e.g. "오른손에 쥔 짧은 강철 칼"). Korean only, no English words."""
+
+
+def inpaint_ko_problem(t) -> Optional[str]:
+    """S20b inpaint_ko 검사: 비었거나 한글이 없으면 문제."""
+    t = str(t or "").strip()
+    if not t:
+        return "inpaint_ko 가 비었다"
+    if not _HANGUL.search(t):
+        return "inpaint_ko 에 한글이 없다(한국어 한 줄로)"
+    return None
+
+
 _INPAINT_RULES = """
 - inpaint_prompt: a separate English prompt for the image inpainting model, which repaints ONLY the selected region.
   Start with what will be visible inside the region after the edit (the changed element), in detail: shape, color, material.
@@ -556,6 +578,8 @@ class FakeAdapter:
                 nsp = f"{head} with {repl}" + (f",{rest}" if rest else "") if head else repl
             if region.get("inpaint_prompt"):
                 out["inpaint_prompt"] = repl or nsp
+                if region.get("inpaint_ko"):                 # S20b 가짜: 한글 지시문이면 그대로(40자), 아니면 빈 값 → 대체 문장
+                    out["inpaint_ko"] = instruction.strip()[:40] if _HANGUL.search(instruction or "") else ""
             out = dict(out, new_scene_prompt=nsp, selected_part=out.get("target_element") or "the selected part", region_fit="ok",
                        region_reason="fake adapter")
         self.on_call({"job_id": job_id, "kind": "refine_changed" if changed_from else "refine", "model": self.model,
@@ -763,10 +787,25 @@ class ClaudeAdapter:
             log.update(region={"mask_ratio": ratio, "n_images": len(imgs)})
             content = [_img_block(b) for b in imgs] + [{"type": "text", "text": utext}]
             ip = bool(region.get("inpaint_prompt"))
+            ko = ip and bool(region.get("inpaint_ko"))         # S20b: 에이전트 보정만
+            if ko:
+                log["inpaint_ko"] = True
+                seen = {"n": 0}
+
+                def chk(o: dict) -> Optional[str]:
+                    """inpaint_ko 문제는 첫 응답에서만 재요청(1회). 두 번째도 틀리면 받아 두고 호출한 쪽이 대체 문장."""
+                    base = self.check_refine_region_ip({k: v for k, v in o.items() if k != "inpaint_ko"}) \
+                        if set(o) == set(REFINE_REGION_IP_KO_SCHEMA["properties"]) else f"필드가 다르다: {sorted(o)}"
+                    if base:
+                        return base
+                    seen["n"] += 1
+                    return inpaint_ko_problem(o.get("inpaint_ko")) if seen["n"] == 1 else None
             try:
-                return self._call(kind, system + "\n" + _REGION_RULES + (_INPAINT_RULES if ip else ""), content,
-                                  REFINE_REGION_IP_SCHEMA if ip else REFINE_REGION_SCHEMA,
-                                  self.check_refine_region_ip if ip else self.check_refine_region, job_id, log)
+                return self._call(kind, system + "\n" + _REGION_RULES + (_INPAINT_RULES if ip else "")
+                                  + (_INPAINT_KO_RULE if ko else ""), content,
+                                  REFINE_REGION_IP_KO_SCHEMA if ko else (REFINE_REGION_IP_SCHEMA if ip else REFINE_REGION_SCHEMA),
+                                  chk if ko else (self.check_refine_region_ip if ip else self.check_refine_region),
+                                  job_id, log)
             except LLMUnavailable as e:
                 if not imgs or "API 4" not in str(e):
                     raise

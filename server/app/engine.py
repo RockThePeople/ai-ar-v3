@@ -319,9 +319,7 @@ class Engine:
             raw = self.db.qr_raw_prompt(a["qr_id"])        # S14 그대로 모드(작업 생성 때 고정)
             ed_style = None if raw else (self._asset_style_src(asset_id)["style"] or "realistic")   # S15 4.4 편집 style
             kw = {}
-            if agent:                                      # S20: 그대로 모드 마커도 에이전트 편집은 에이전트 흐름
-                raw = None
-                ed_style = self._asset_style_src(asset_id)["style"] or "realistic"
+            if agent:                                      # S20b: 그대로 모드 마커는 보정 없이 지시문 그대로 인페인팅
                 kw = {"mode": "agent", "events": [], "agent_calls": 0,
                       "agent": {"model": getattr(self.agent_llm, "model", None), "attempt": 1, "backtracks": 0,
                                 "max_backtracks": self.s.agent_max_backtracks, "verdict": None, "below_bar": False}}
@@ -358,7 +356,7 @@ class Engine:
         return {"style": st, "source": "pre_s11_request", "words": w, "request": g.get("prompt")}
 
     def _refine_styled(self, j: dict, scene: str, hist: list, changed_from: Optional[dict] = None,
-                       region: Optional[dict] = None, instruction: Optional[str] = None):
+                       region: Optional[dict] = None, instruction: Optional[str] = None, ko: bool = False):
         """S11: 자산 양식을 보정에 알리고, 실물형인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다.
         S12: 관계어 보정 템플릿, 명령형 동사가 있으면 1회 재요청, 남으면 기록만.
         S13: 라쏘 이미지·mask_ratio(region). mask_ratio < 0.6 인데 주어가 바뀌면, 또는 바뀐 부위가 첫 구에 없으면
@@ -375,6 +373,8 @@ class Engine:
         if region is not None:
             kw["region"] = {"images": region.get("images"), "mask_ratio": region.get("mask_ratio"),
                             "inpaint_prompt": self.s.inpaintprompt}
+            if ko:                                        # S20b: 에이전트 진행 보고용 한국어 요약
+                kw["region"]["inpaint_ko"] = True
 
         def clean(o: dict) -> dict:
             """문구·좌우 정리(S13 7, S13b 2). 인페인팅 문장에는 금지어 삭제도(실물형)."""
@@ -551,12 +551,7 @@ class Engine:
         rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
         rpng, mpng = (rd / "render.png").read_bytes(), (rd / "mask.png").read_bytes()
         seed = 0 + j["attempt"] - 1                       # 내부 규약 5절: 기본 seed + attempt − 1
-        # S13b: 보정이 인페인팅 전용 문장을 주면 그것을(장면 문장은 자산 갱신용으로 그대로)
-        ip_src = "inpaint_prompt" if (self.s.inpaintprompt and (j["refine"] or {}).get("inpaint_prompt")) else "scene"
-        base_text = j["refine"]["inpaint_prompt"] if ip_src == "inpaint_prompt" else j["refine"]["new_scene_prompt"]
-        ip = inpaint_prompt(base_text, self.s.realstyle, (j.get("style_meta") or {}).get("style"))
-        if j.get("raw_prompt"):                           # S14: 원문 그대로(번역·상세화·양식 꼬리 없음)
-            ip_src, ip = "raw_prompt", j["refine"]["inpaint_prompt"]
+        ip_src, ip = self._inpaint_text(j)
         j["prompts"] = dict(prompts_of(j), inpaint=ip)    # S15 4.4: 시도마다 보낼 때 갱신
         crop, crop_files = None, None
         info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
@@ -594,6 +589,16 @@ class Engine:
             self._save(j)
             return
         self._set(j, "awaiting_2d_review", "inpainting", 1.0)
+
+    def _inpaint_text(self, j: dict) -> tuple:
+        """인페인팅에 보낼 문장 (출처, 문장). S20b: 에이전트 진행 보고 detail 도 이 값."""
+        # S13b: 보정이 인페인팅 전용 문장을 주면 그것을(장면 문장은 자산 갱신용으로 그대로)
+        ip_src = "inpaint_prompt" if (self.s.inpaintprompt and (j["refine"] or {}).get("inpaint_prompt")) else "scene"
+        base_text = j["refine"]["inpaint_prompt"] if ip_src == "inpaint_prompt" else j["refine"]["new_scene_prompt"]
+        ip = inpaint_prompt(base_text, self.s.realstyle, (j.get("style_meta") or {}).get("style"))
+        if j.get("raw_prompt"):                           # S14: 원문 그대로(번역·상세화·양식 꼬리 없음)
+            ip_src, ip = "raw_prompt", j["refine"]["inpaint_prompt"]
+        return ip_src, ip
 
     def _run_edit3d(self, j: dict, agent: bool = False) -> None:
         self._set(j, "editing_3d", "editing_3d", 0.05)

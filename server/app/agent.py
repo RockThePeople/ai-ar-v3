@@ -17,7 +17,7 @@ from typing import Optional
 from . import automask as am
 from .backends import StageError
 from .cropinpaint import decode_png, encode_png
-from .llm_adapter import LLMInvalid, LLMUnavailable
+from .llm_adapter import LLMInvalid, LLMUnavailable, inpaint_ko_problem
 
 CHECKS = ("element", "position", "mask_fit", "shape_3d")
 CHECK_KO = {"element": "요소", "position": "위치", "mask_fit": "마스크 적합", "shape_3d": "3D 적합"}
@@ -56,10 +56,13 @@ class AgentRun:
         self.t0 = eng.clock()
 
     # ── 기록 ─────────────────────────────────────────────────────
-    def event(self, step: str, kind: str, text: str, images: Optional[dict] = None) -> dict:
+    def event(self, step: str, kind: str, text: str, images: Optional[dict] = None,
+              detail: Optional[str] = None) -> dict:
         j = self.j
         seq = len(j["events"]) + 1
         ev = {"seq": seq, "t": round(self.eng.clock(), 3), "step": step, "kind": kind, "text": text}
+        if detail:                                          # S20b 10.3: 접어서 보일 원문
+            ev["detail"] = detail
         if images:
             d = self.s.data_dir / "jobs" / j["job_id"] / "agent" / str(seq)
             d.mkdir(parents=True, exist_ok=True)
@@ -159,7 +162,8 @@ class AgentRun:
         self._state("masking", "mask_check", 0.3)
         self._mock("check")
         c = self._orch(self.llm.agent_mask_check, ov or b"", j["instruction"], plan)
-        self.event("mask_check", "check", ("마스크 확인: 맞습니다" if c["ok"] else f"마스크 확인: {c['reason_ko']}"))
+        self.event("mask_check", "check", ("마스크 확인: 맞습니다" if c["ok"] else f"마스크 확인: {c['reason_ko']}"),
+                   detail=None if c["ok"] else (c.get("fix") or None))
         return c
 
     def refine(self, plan: dict, feedback: Optional[str], region: Optional[dict]) -> None:
@@ -170,10 +174,19 @@ class AgentRun:
         verb = {"add": "Add", "replace": "Replace with", "remove": "Remove", "recolor": "Recolor to"}[plan["op"]]
         ins = (f"Selected part: {plan['target_part']}. {verb}: {plan['new_object']}."
                + (f" Previous attempt problem: {feedback}." if feedback else "") + f" User instruction: {j['instruction']}")
+        if j.get("raw_prompt"):                             # S20b: 그대로 모드 마커 — 보정 없이 지시문 그대로(S14 _run_raw 와 같다)
+            raw = j["instruction"].strip()
+            scene = eng._scene(j["asset_id"])
+            j["refine"] = {"target_element": None, "replacement": raw, "op": "replace",
+                           "new_scene_prompt": f"{scene}; {raw}" if scene else raw, "inpaint_prompt": raw}
+            j["refine_meta"], j["style_meta"] = {"raw_prompt": True}, None
+            self.event("refining", "tool", "그릴 내용: 지시문 그대로", detail=eng._inpaint_text(j)[1])
+            return
         if getattr(eng.llm, "name", "") == "fake":         # 가짜 보정은 지시문을 그대로 옮기므로 사용자 원문을(앱 화면용)
             ins = j["instruction"]
         try:
-            j["refine"], smeta = eng._refine_styled(j, eng._scene(j["asset_id"]), [], region=region, instruction=ins)
+            j["refine"], smeta = eng._refine_styled(j, eng._scene(j["asset_id"]), [], region=region, instruction=ins,
+                                                    ko=True)
         except LLMInvalid as e:
             raise StageError("REFINE_INVALID", str(e))
         except LLMUnavailable as e:
@@ -181,7 +194,12 @@ class AgentRun:
         j["refine_meta"], j["style_meta"], j["agent_refine_input"] = {}, smeta, ins
         j["prompts"] = dict(j["prompts"], region_fit=(smeta or {}).get("region_fit"),
                             refine_retried=bool((smeta or {}).get("retried")))
-        self.event("refining", "tool", f"그릴 문장을 정했습니다: {j['refine'].get('inpaint_prompt') or j['refine']['new_scene_prompt']}")
+        ko = str(j["refine"].get("inpaint_ko") or "").strip()
+        if inpaint_ko_problem(ko):                          # S20b: 재요청 뒤에도 없으면 대체 문장
+            ko = f"{plan.get('target_part_ko') or plan.get('target_part')} → {plan.get('new_object')}"
+            j["agent_inpaint_ko_fallback"] = True
+        j["agent_inpaint_ko"] = ko
+        self.event("refining", "tool", f"그릴 내용: {ko}", detail=eng._inpaint_text(j)[1])
 
     def inpaint(self) -> bytes:
         j, eng = self.j, self.eng
@@ -254,7 +272,8 @@ class AgentRun:
                     break
                 ag["backtracks"] += 1
                 feedback = f"{v.get('reason_ko')} / {v.get('fix')}".strip(" /")
-                self.event("judging", "judge", f"{v.get('reason_ko')}(불합격: {bad}) → {CAUSE_KO[cause]} 다시 합니다"
+                self.event("judging", "judge", detail=v.get("fix") or None,
+                           text=f"{v.get('reason_ko')}(불합격: {bad}) → {CAUSE_KO[cause]} 다시 합니다"
                                                f"(되돌아가기 {ag['backtracks']}/{ag['max_backtracks']})")
                 step = cause
                 j["attempt"] += 1
