@@ -32,9 +32,11 @@ from ..t2i import DEFAULT_TEMPLATE, app_template
 INPAINT_SUFFIX = ", simple clean 3D game asset style"
 #: S14 논문 X3 생성 설정의 TRELLIS seed(`x3/track_a/*/gen/gen.json`, 단계는 A5000 기본 25/25)
 PAPER_TRELLIS_SEED = 42
-#: S22 이름만으로 정해지는 대상의 T2I 문장 = 영어 이름 + 꼬리. B = 이름만, C = 이름 + 한 얼굴 문구(부정어 없음)
-NAMED_SUFFIX = {"B": "", "C": ", one face on the front, plain smooth back of the head"}
-NAMED_METHOD = "C"   # 시험 결과로 정한다(S22 보고)
+#: S22 이름만으로 정해지는 대상의 T2I 문장 = 영어 이름 + 꼬리. B = 이름만, C = 이름 + 한 얼굴 문구(부정어 없음),
+#: D = C + 전신 문구(C 는 헬로키티가 머리만 나옴 — 보고 9절)
+NAMED_SUFFIX = {"B": "", "C": ", one face on the front, plain smooth back of the head",
+                "D": ", full body, one face on the front, plain smooth back of the head"}
+NAMED_METHOD = "D"   # 사용자 확정 2026-11-14(헬로키티 양면 위험은 받아들임)
 
 
 def inpaint_prompt(new_scene_prompt: str, realstyle: bool, style: Optional[str]) -> str:
