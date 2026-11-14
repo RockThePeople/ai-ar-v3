@@ -298,3 +298,25 @@ def test_health_chain_and_admin(env):
     reg = env.get("/app/v1/agent-registration.json").json()
     assert reg["type"] == "https://eips.ethereum.org/EIPS/eip-8004#registration-v1"
     assert reg["registrations"][0]["agentId"] == 7 and reg["supportedTrust"] == ["reputation"]
+
+
+def test_tune_does_not_clobber_submitted(env):
+    """S21 실측 결함: 조정 스레드가 LLM 응답을 기다리는 사이 submitted 가 되면, 오래된 사본 저장으로 awaiting 으로 되돌아갔다."""
+    aid = _edited_asset(env)
+    R = _ratings(env)
+    o = env.post(f"/app/v1/assets/{aid}/ratings", headers=A,
+                 json={"stars": 5, "review": "좋아요", "signer_pubkey": PUB}).json()
+    rid, h = o["rating_id"], o["chain"]["user_op_hash"]
+    real = env.eng.agent_llm.agent_tune
+
+    def slow_tune(*a, **k):                                   # LLM 대기 중에 기기가 제출
+        assert env.post(f"/app/v1/ratings/{rid}/submitted", json={"user_op_hash": h}).status_code == 200
+        return real(*a, **k)
+    env.eng.agent_llm.agent_tune = slow_tune
+    R.tune(rid)
+    b = R._body(rid)
+    assert b["chain"]["status"] == "submitted" and b["tuning"]["reason"] == "none(규칙)"
+    # 감시 스레드의 오래된 사본도 상태가 바뀐 뒤에는 덮지 않는다
+    stale = dict(b["chain"], status="failed")
+    assert R._set_chain(rid, stale, "awaiting_signature") is False
+    assert R._body(rid)["chain"]["status"] == "submitted"

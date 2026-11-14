@@ -100,6 +100,23 @@ class Ratings:
     def _save(self, o: dict) -> None:
         self.db.x("UPDATE ratings SET body=? WHERE rating_id=?", (json.dumps(o, ensure_ascii=False), o["rating_id"]))
 
+    def _set_field(self, rid: str, key: str, value) -> None:
+        """다른 스레드(조정·감시)가 늦게 쓰는 칸만 새로 읽은 본문에 넣는다 — 오래된 사본으로 chain 상태를 덮지 않게."""
+        with self.lock:
+            o = self._body(rid)
+            o[key] = value
+            self._save(o)
+
+    def _set_chain(self, rid: str, ch: dict, expect: str) -> bool:
+        """chain 이 아직 expect 상태일 때만 바꾼다(감시 스레드용). 바뀌었으면 False."""
+        with self.lock:
+            o = self._body(rid)
+            if (o.get("chain") or {}).get("status") != expect:
+                return False
+            o["chain"] = ch
+            self._save(o)
+            return True
+
     def _feedback_file(self, o: dict, account: Optional[str]) -> bytes:
         """ERC-8004 필수 칸 + 서비스 칸(계약 11.4) + 1.0.x 칸(호환). sort_keys 로 바이트 고정."""
         aid = o["asset_id"]
@@ -217,7 +234,7 @@ class Ratings:
         ch = o.get("chain") or {}
         if ch.get("status") == "awaiting_signature" and self.eng.clock() > float(ch.get("expires_at") or 0):
             ch["status"] = "expired"
-            self._save(o)
+            self._set_chain(o["rating_id"], ch, "awaiting_signature")
             return True
         return False
 
@@ -337,14 +354,14 @@ class Ratings:
                     tx = "0x" + secrets.token_hex(32)
                     ch.update(status="confirmed", tx_hash=tx, block_number=9000000 + n, feedback_index=n,
                               explorer_url=explorer_tx(tx))
-                    self._save(o)
+                    self._set_chain(o["rating_id"], ch, "submitted")
                 continue
             h = ch.get("bundler_hash") or ch.get("user_op_hash")
             try:
                 rec = self.client.receipt(h)
             except ChainError as e:
                 ch["last_error"] = str(e)
-                self._save(o)
+                self._set_chain(o["rating_id"], ch, "submitted")
                 continue
             if rec:
                 tr = rec.get("receipt") or {}
@@ -364,10 +381,10 @@ class Ratings:
                 else:
                     ch.update(status="failed", error=f"실행 실패: {rec.get('reason') or 'reverted'}",
                               tx_hash=tr.get("transactionHash"))
-                self._save(o)
+                self._set_chain(o["rating_id"], ch, "submitted")
             elif age > WATCH_MAX_S:
                 ch.update(status="failed", error="5분 안에 영수증 없음")
-                self._save(o)
+                self._set_chain(o["rating_id"], ch, "submitted")
 
     # ── 에이전트 등록(/admin) ─────────────────────────────────────
     def registration(self, req_base: str) -> dict:
@@ -461,8 +478,7 @@ class Ratings:
         if tgt not in ("masking", "refine") or act not in ("add", "replace", "remove") or \
                 (o["stars"] >= 4 and not out.get("specific_problem")):
             rec["reason"] = "none(규칙)"
-            o["tuning"] = rec
-            self._save(o)
+            self._set_field(rid, "tuning", rec)
             return rec
         cur = list(lines.get(tgt) or [])
         before = list(cur)
@@ -470,8 +486,7 @@ class Ratings:
         if act == "add":
             if len(cur) >= TUNE_MAX_LINES or not line:
                 rec["reason"] = "8줄 상한" if line else "빈 줄"
-                o["tuning"] = rec
-                self._save(o)
+                self._set_field(rid, "tuning", rec)
                 return rec
             cur.append(line)
         elif act == "replace" and 0 <= i < len(cur) and line:
@@ -480,8 +495,7 @@ class Ratings:
             cur.pop(i)
         else:
             rec["reason"] = "index 범위 밖"
-            o["tuning"] = rec
-            self._save(o)
+            self._set_field(rid, "tuning", rec)
             return rec
         lines[tgt] = cur
         ver = self.tuning_version() + 1
@@ -492,8 +506,7 @@ class Ratings:
                    self.eng.clock()))
         self._apply_notes()
         rec.update(applied=True, version=ver, target=tgt, action=act, line=line)
-        o["tuning"] = rec
-        self._save(o)
+        self._set_field(rid, "tuning", rec)
         return rec
 
     def _tune_context(self, o: dict) -> list:
