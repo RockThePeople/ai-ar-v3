@@ -883,3 +883,206 @@ def make_adapter(mock: bool, on_call: Optional[Callable[[dict], None]] = None, m
         return ClaudeAdapter(model=model, on_call=on_call)
     except ImportError:
         return FakeAdapter(on_call)
+
+
+# ══════════════════════════════════════════════════════════ S20 에이전트 오케스트레이터
+#: 시점 이름(automask.VIEW_AZ 와 같다)
+AGENT_VIEWS = ("az000", "az090", "az180", "az270")
+_BOX = {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]}
+AGENT_MASK_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["target_part", "target_part_ko", "new_object", "op", "front_view", "inpaint_view", "regions", "found",
+                 "note_ko"],
+    "properties": {
+        "target_part": {"type": "string"}, "target_part_ko": {"type": "string"}, "new_object": {"type": "string"},
+        "op": {"type": "string", "enum": ["add", "replace", "remove", "recolor"]},
+        "front_view": {"type": "string", "enum": list(AGENT_VIEWS)},
+        "inpaint_view": {"type": "string", "enum": list(AGENT_VIEWS)},
+        "regions": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["name", "boxes"],
+            "properties": {"name": {"type": "string"},
+                           "boxes": {"type": "object", "additionalProperties": False, "required": list(AGENT_VIEWS),
+                                     "properties": {v: _BOX for v in AGENT_VIEWS}}}}},
+        "found": {"type": "boolean"}, "note_ko": {"type": "string"}},
+}
+AGENT_MASK_SYSTEM = """You are the planning step of an automatic 3D editing service. The user wrote ONE edit instruction
+(usually Korean) for a single 3D object. You see four renders of the object from four directions around it at the same
+height: az000, az090, az180, az270 (azimuth in degrees, camera circling the vertical axis; az090 is 90 degrees around
+from az000). Each image has a 0-1000 coordinate grid (x to the right, y downward; lines every 100, numbers on the top
+and left edges). Mark where the edit must happen with boxes; the server turns the boxes into a 3D volume.
+
+Return JSON:
+- target_part: the English name of the part to change (e.g. "right hand", "both shoes", "hat"); target_part_ko: Korean.
+- new_object: the English name of what appears after the edit (e.g. "torch"); for remove, what is removed.
+- op: add (a new thing appears, e.g. holding a sword), replace (a part becomes something else), remove, recolor.
+- front_view: the view that shows the character's face / the object's front most directly.
+- inpaint_view: the view where the edited part and the new object are seen most clearly and largest, unhidden
+  (often the front view or a side view). The image model repaints the box area in this view.
+- regions: one region per separate place. Two shoes or two feet = two regions. Each region gives boxes
+  [x0, y0, x1, y1] in grid units for AT LEAST TWO views that are 90 degrees apart (e.g. az000 and az090), null for the
+  others. The server keeps the cells that fall inside the boxes of every view you gave, so each box must cover the
+  same 3D place seen from that view.
+- found: false only when the part does not exist on the object at all (then regions may be empty).
+- note_ko: one short Korean sentence for the user about what you marked (e.g. "오른손과 칼이 들어갈 자리를 칠했습니다").
+Rules:
+- Left/right are the CHARACTER's own sides. In the front view the character's right hand is on the IMAGE LEFT.
+  In other views work it out from where the front is.
+- If the instruction does not name a part (e.g. "칼을 들게 해줘"), use the character's right hand.
+- For holding a new object, the box covers the hand AND the empty space the object will occupy, generously
+  (a sword is long: extend the box well beyond the hand along the likely blade direction, up or outward).
+- For replacing an object (e.g. sword -> torch), cover the old object and leave room for the new one's size.
+- For shoes/boots/feet cover each foot fully (two regions). Keep boxes tight to the target elsewhere: do not cover
+  the head or body when the edit is about a hand.
+- Boxes are integers 0-1000 with x0 < x1 and y0 < y1."""
+
+AGENT_CHECK_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["ok", "reason_ko", "fix"],
+                      "properties": {"ok": {"type": "boolean"}, "reason_ko": {"type": "string"}, "fix": {"type": "string"}}}
+AGENT_CHECK_SYSTEM = """You check an automatically made edit mask before an image model repaints it. The image shows
+one render of a 3D object; the tinted area with an outline is what will be repainted (the edit volume seen from this
+view). Given the user's instruction and the plan, decide whether the tinted area is on the right part (character's own
+left/right: in a front view the character's right hand is on the image left) and leaves enough room for the new object.
+Return JSON {"ok": bool, "reason_ko": one short Korean sentence, "fix": short English hint for the next masking
+(e.g. "extend upward above the right hand for the blade", "move to the character's left hand"), "" when ok}."""
+
+AGENT_JUDGE_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["checks", "reason_ko", "fix"],
+    "properties": {"checks": {"type": "object", "additionalProperties": False,
+                              "required": ["element", "position", "mask_fit", "shape_3d"],
+                              "properties": {k: {"type": "boolean"} for k in ("element", "position", "mask_fit", "shape_3d")}},
+                   "reason_ko": {"type": "string"}, "fix": {"type": "string"}}}
+AGENT_JUDGE_SYSTEM = """You grade one 2D edit before it is lifted to 3D. Images in order: (1) the original render,
+(2) the same render with the editable area tinted and outlined, (3) the edited image from the image model.
+Grade four checks, each true (pass) or false (fail):
+- element: the requested thing is clearly drawn (e.g. a torch really looks like a torch).
+- position: it is on the requested part (character's own left/right; in a front view the character's right hand is on
+  the image left; both feet when shoes are asked).
+- mask_fit: the new thing lies inside the editable area and is not cut off at the area's edge.
+- shape_3d: it reads as one clear solid piece, not too small for the area, not smeared, not flat decoration.
+Return JSON {"checks": {...}, "reason_ko": one short Korean sentence describing the main problem (or "합격" style
+praise when all pass), "fix": short English hint for the retry, "" when all pass}."""
+
+
+def _check_mask_plan(o: dict) -> Optional[str]:
+    if not o.get("found"):
+        return None
+    regs = o.get("regions") or []
+    if not regs:
+        return "found 인데 regions 가 비었다"
+    for rg in regs:
+        given = [v for v in AGENT_VIEWS if rg["boxes"].get(v) is not None]
+        for v in given:
+            b = rg["boxes"][v]
+            if len(b) != 4 or not all(0 <= x <= 1000 for x in b) or not (b[0] < b[2] and b[1] < b[3]):
+                return f"region {rg.get('name')!r} {v} 상자가 [x0,y0,x1,y1] 0–1000, x0<x1, y0<y1 이 아니다: {b}"
+        idx = sorted(AGENT_VIEWS.index(v) for v in given)
+        if not any((b - a) % 2 == 1 for i, a in enumerate(idx) for b in idx[i + 1:]):
+            return f"region {rg.get('name')!r} 는 서로 90° 떨어진 시점 2개 이상에 상자가 있어야 한다: {given}"
+    return None
+
+
+def _labeled(images: List[tuple], text: str) -> list:
+    """[(이름, png)…] → [글자 이름, 이미지, …, 지시 글자] 블록."""
+    out: list = []
+    for name, b in images:
+        out += [{"type": "text", "text": name}, _img_block(b)]
+    return out + [{"type": "text", "text": text}]
+
+
+class AgentMixin:
+    """S20 오케스트레이터 호출 3종. ClaudeAdapter 는 _call 로 JSON 스키마 응답(1회 재요청 뒤 LLMInvalid)."""
+
+    def agent_mask(self, views: dict, instruction: str, scene: str, feedback: Optional[str], job_id: str = "") -> dict:
+        txt = (f"instruction: {json.dumps(instruction, ensure_ascii=False)}\n"
+               f"object description: {json.dumps(scene, ensure_ascii=False)}"
+               + (f"\nprevious attempt problem (fix it this time): {feedback}" if feedback else ""))
+        imgs = [(v, views[v]) for v in AGENT_VIEWS]
+        return self._call("agent_mask", AGENT_MASK_SYSTEM, _labeled(imgs, txt), AGENT_MASK_SCHEMA, _check_mask_plan,
+                          job_id, {"instruction": instruction, "scene": scene, "feedback": feedback, "n_images": 4})
+
+    def agent_mask_check(self, overlay: bytes, instruction: str, plan: dict, job_id: str = "") -> dict:
+        txt = (f"instruction: {json.dumps(instruction, ensure_ascii=False)}\n"
+               f"plan: {json.dumps({k: plan.get(k) for k in ('target_part', 'new_object', 'op', 'inpaint_view')})}")
+        return self._call("agent_mask_check", AGENT_CHECK_SYSTEM, _labeled([("edit area", overlay)], txt),
+                          AGENT_CHECK_SCHEMA, lambda o: None, job_id, {"instruction": instruction, "n_images": 1})
+
+    def agent_judge(self, render: bytes, overlay: bytes, edit: bytes, instruction: str, prompt: str,
+                    job_id: str = "") -> dict:
+        txt = (f"instruction: {json.dumps(instruction, ensure_ascii=False)}\n"
+               f"image model prompt: {json.dumps(prompt, ensure_ascii=False)}")
+        return self._call("agent_judge", AGENT_JUDGE_SYSTEM,
+                          _labeled([("(1) original", render), ("(2) editable area", overlay), ("(3) edited", edit)], txt),
+                          AGENT_JUDGE_SCHEMA, lambda o: None, job_id,
+                          {"instruction": instruction, "prompt": prompt, "n_images": 3})
+
+
+class ClaudeAgentAdapter(AgentMixin, ClaudeAdapter):
+    """AGENT_MODEL(기본 claude-opus-5-5). 기록은 같은 on_call(/clients)."""
+
+
+class FakeAgentAdapter:
+    """가짜 모드·시험. 스크립트: judge_script = [checks dict …](작업마다 순서대로, 끝나면 마지막을 반복),
+    mask_found·mask_check_ok·mask_boxes 로 바꿀 수 있다. fail = {'agent_mask': n} 이면 그 호출이 n 번 LLMInvalid."""
+
+    name = "fake"
+    model = "rule-based"
+
+    def __init__(self, on_call: Optional[Callable[[dict], None]] = None) -> None:
+        self.on_call = on_call or (lambda r: None)
+        self.judge_script: List[dict] = [
+            {"element": True, "position": False, "mask_fit": True, "shape_3d": True},
+            {"element": True, "position": True, "mask_fit": True, "shape_3d": True}]
+        self.mask_found = True
+        self.mask_check_ok: List[bool] = [True]
+        self.mask_boxes = {"az000": [300, 300, 700, 700], "az090": [300, 300, 700, 700], "az180": None, "az270": None}
+        self.op = "add"
+        self.fail: Dict[str, int] = {}
+        self._n: Dict[tuple, int] = {}
+
+    def _next(self, kind: str, job_id: str) -> int:
+        k = (kind, job_id)
+        self._n[k] = self._n.get(k, 0) + 1
+        return self._n[k] - 1
+
+    def _rec(self, kind: str, job_id: str, out: dict) -> dict:
+        if self.fail.get(kind):
+            self.fail[kind] -= 1
+            self.on_call({"job_id": job_id, "kind": kind, "model": self.model, "input": {}, "output": None,
+                          "latency_s": 0.0, "in_tokens": 0, "out_tokens": 0, "retried": True, "ok": False,
+                          "error": "LLMInvalid: fake"})
+            raise LLMInvalid(f"{kind}: 가짜 스키마 위반")
+        self.on_call({"job_id": job_id, "kind": kind, "model": self.model, "input": {}, "output": out,
+                      "latency_s": 0.0, "in_tokens": 0, "out_tokens": 0, "retried": False, "ok": True, "error": None})
+        return out
+
+    def agent_mask(self, views: dict, instruction: str, scene: str, feedback: Optional[str], job_id: str = "") -> dict:
+        self._next("agent_mask", job_id)
+        out = {"target_part": "right hand", "target_part_ko": "오른손", "new_object": "the new object", "op": self.op,
+               "front_view": "az000", "inpaint_view": "az000",
+               "regions": [{"name": "right hand", "boxes": dict(self.mask_boxes)}] if self.mask_found else [],
+               "found": self.mask_found, "note_ko": "오른손과 새 물건이 들어갈 자리를 칠했습니다(가짜)"}
+        return self._rec("agent_mask", job_id, out)
+
+    def agent_mask_check(self, overlay: bytes, instruction: str, plan: dict, job_id: str = "") -> dict:
+        i = self._next("agent_mask_check", job_id)
+        ok = self.mask_check_ok[min(i, len(self.mask_check_ok) - 1)]
+        return self._rec("agent_mask_check", job_id, {"ok": ok, "reason_ko": "칠한 자리가 맞습니다" if ok else
+                                                      "칠한 자리가 너무 좁습니다", "fix": "" if ok else "extend upward"})
+
+    def agent_judge(self, render: bytes, overlay: bytes, edit: bytes, instruction: str, prompt: str,
+                    job_id: str = "") -> dict:
+        i = self._next("agent_judge", job_id)
+        c = dict(self.judge_script[min(i, len(self.judge_script) - 1)])
+        ok = all(c.values())
+        return self._rec("agent_judge", job_id, {"checks": c, "reason_ko": "요청대로 그려졌습니다" if ok else
+                                                 "새 물건이 다른 손 쪽에 그려졌습니다", "fix": "" if ok else "use the other hand"})
+
+
+def make_agent_adapter(mock: bool, on_call: Optional[Callable[[dict], None]] = None):
+    """AGENT_MODEL(기본 claude-opus-5-5). 키가 없거나 가짜 모드면 규칙 기반."""
+    if mock or not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+        return FakeAgentAdapter(on_call)
+    try:
+        return ClaudeAgentAdapter(model=os.environ.get("AGENT_MODEL") or "claude-opus-5-5", on_call=on_call,
+                                  effort=os.environ.get("AGENT_EFFORT") or "low")
+    except ImportError:
+        return FakeAgentAdapter(on_call)

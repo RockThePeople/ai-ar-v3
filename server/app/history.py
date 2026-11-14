@@ -69,8 +69,10 @@ def _attempts(j: dict) -> list:
             rr = None
         review = ({"reason": a.get("reason"), "category": a.get("category"), "guidance": a.get("guidance")}
                   if a.get("rejected") else None)
-        if a.get("accepted") is not None:
-            acc: Optional[bool] = a["accepted"]
+        if j.get("mode") == "agent":                    # S20: 사람 확인 없음 — 3D 로 간 시도만 true
+            acc: Optional[bool] = (a.get("attempt") == j["agent_chosen"]) if j.get("agent_chosen") else None
+        elif a.get("accepted") is not None:
+            acc = a["accepted"]
         elif a.get("rejected"):
             acc = False
         elif last and j.get("state") in AFTER_2D:
@@ -91,6 +93,7 @@ def asset_history(engine, db, asset_id: str) -> dict:
             continue
         jobs.append({"job_id": j["job_id"], "kind": j["kind"], "created_at": j["created_at"], "state": j["state"],
                      "prompts": _job_prompts(j), "attempts": _attempts(j), "outcome": OUTCOME.get(j["state"]),
-                     "error_code": j.get("error_code") if j["state"] == "failed" else None})
+                     "error_code": j.get("error_code") if j["state"] == "failed" else None,
+                     **({"mode": "agent", "events": list(j.get("events") or [])} if j.get("mode") == "agent" else {})})
     jobs.sort(key=lambda x: x["created_at"])
     return {"asset_id": asset_id, "jobs": jobs}

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-APP_API = "1.0.6"
+APP_API = "1.1.0"
 
 
 def default_env_file() -> Path:
@@ -62,6 +62,10 @@ class Settings:
     relphrase: bool = True  # S12 APP_RELPHRASE: 보정 문장에서 바뀐 부위를 대상 뒤 관계어로(끔 = S4–S11 보정 템플릿)
     realstyle: bool = True  # S11 APP_REALSTYLE: 기본 실물형 + 사용자 양식만(끔 = S6 'game asset' 꼬리)
     named_nodetail: bool = True  # S22 APP_NAMED_NODETAIL: 이름만으로 정해지는 대상(헬로키티 등)은 상세화 없이 이름으로 T2I
+    agent: bool = True  # S20 APP_AGENT: camera·volume_cells 없는 편집 = 에이전트 편집(끔 = 400 INVALID_REQUEST)
+    agent_max_backtracks: int = 3  # S20 AGENT_MAX_BACKTRACKS
+    agent_max_calls: int = 12  # S20 작업당 오케스트레이터 호출 상한
+    agent_time_s: float = 600.0  # S20 작업 실행 한도(넘으면 가장 나은 시도로 3D)
     inpaint_crop: bool = False  # S7 APP_INPAINT_CROP: 마스크 주변만 잘라 인페인팅(기본 0, 사용자 결정 — 켬이 장면 재생성·R→B)
 
     @classmethod
@@ -88,4 +92,6 @@ class Settings:
             rejectraw=_flag("APP_REJECTRAW", "1"),
             inpaintprompt=_flag("APP_INPAINTPROMPT", "1"),
             named_nodetail=_flag("APP_NAMED_NODETAIL", "1"),
+            agent=_flag("APP_AGENT", "1"),
+            agent_max_backtracks=int(os.environ.get("AGENT_MAX_BACKTRACKS") or 3),
         )
