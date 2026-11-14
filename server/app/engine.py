@@ -298,10 +298,11 @@ class Engine:
 
     # ── 편집 ───────────────────────────────────────────────────────
     def create_edit(self, asset_id: str, device: str, base_version: int, instruction: str, camera: Optional[dict],
-                    cells: Optional[List[list]], mock_fail: Optional[str] = None, mock_agent: Optional[str] = None) -> dict:
+                    cells: Optional[List[list]], mock_fail: Optional[str] = None, mock_agent: Optional[str] = None,
+                    agent_lasso: bool = False) -> dict:
         """검사 순서(1.0.1 3.3): 입력(라우트) → 404 → 403 → 잠금 → 판본.
         S20: camera·cells 가 둘 다 None 이면 에이전트 편집(1.1.0 10절, 라우트가 APP_AGENT·한쪽만 있음을 막는다)."""
-        agent = camera is None and cells is None
+        agent = (camera is None and cells is None) or agent_lasso   # S20e: 라쏘 + agent:true 도 에이전트
         with self.lock:
             a = self.db.live_asset(asset_id)
             if a is None or a["version"] == 0 and not a["is_sample"]:
@@ -321,6 +322,7 @@ class Engine:
             kw = {}
             if agent:                                      # S20b: 그대로 모드 마커는 보정 없이 지시문 그대로 인페인팅
                 kw = {"mode": "agent", "events": [], "agent_calls": 0, "mock_agent": mock_agent,
+                      "agent_source": "lasso" if agent_lasso else "auto", "user_camera": camera, "user_cells": cells,
                       "agent": {"model": getattr(self.agent_llm, "model", None), "attempt": 1, "backtracks": 0,
                                 "max_backtracks": self.s.agent_max_backtracks, "mask_retries": 0,
                                 "max_mask_retries": self.s.agent_max_mask_retries, "verdict": None, "below_bar": False}}
@@ -818,7 +820,7 @@ class Engine:
 
     def enqueue_views(self, asset_id: str, version: int, job_id: Optional[str] = None) -> None:
         """반영 직후 같은 대기열 뒤에 미리 렌더. 시험용 가짜 백엔드(name 'fake')에서는 하지 않는다."""
-        if self.be.name not in ("real", "mock") or not self.s.agent:
+        if self.be.name not in ("real", "mock") or not self.s.agent or not self.s.automask:   # S20e: 자동 마스킹 때만
             return
         self.q.put(("views", json.dumps([asset_id, int(version), job_id])))
 

@@ -1172,3 +1172,102 @@ def make_agent_adapter(mock: bool, on_call: Optional[Callable[[dict], None]] = N
         return ad
     except ImportError:
         return FakeAgentAdapter(on_call)
+
+# ══════════════════════════════════════════════════════════ S20e 사용자 라쏘 볼륨 다듬기 판단
+_OBOX = {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]}
+AGENT_REFINE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["op", "target_part", "target_part_ko", "new_object", "old_object", "keep_box", "old_object_box",
+                 "new_space_box", "found", "note_ko"],
+    "properties": {
+        "op": {"type": "string", "enum": ["add", "replace", "remove", "recolor"]},
+        "target_part": {"type": "string"}, "target_part_ko": {"type": "string"},
+        "new_object": {"type": "string"}, "old_object": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "keep_box": _OBOX, "old_object_box": _OBOX, "new_space_box": _OBOX,
+        "found": {"type": "boolean"}, "note_ko": {"type": "string"}},
+}
+AGENT_REFINE_SYSTEM = """You are the mask-refining step of a 3D editing service. The user drew a lasso on one view of a 3D
+object and wrote ONE edit instruction (usually Korean). The lasso volume goes straight through the object, so it can
+include parts the instruction does not mean (the body behind a hand, a shoulder, the face). Image 1 is the render from the
+user's camera; image 2 is the same render with the lasso area tinted. Both have a 0-1000 grid over the WHOLE image
+(x to the right, y downward; lines every 100). Give boxes [x0, y0, x1, y1] in these grid units; the server cuts the volume
+with them.
+
+Return JSON:
+- op: add (a new thing appears, e.g. holding a sword), replace (a part becomes something else), remove, recolor.
+- target_part / target_part_ko: the part named or meant (e.g. "right hand" / "오른손", "front wheel" / "앞바퀴").
+- new_object: what appears after the edit (for remove: what is removed). old_object: the thing being replaced or removed
+  (e.g. "shield"), null for add and recolor.
+- keep_box: where the target part is visible in the image, tight (the hand, not the arm and body). It may stay inside the
+  tinted area.
+- old_object_box: for replace and remove only, the WHOLE old object as visible in the image, even the parts outside the
+  tinted area (so nothing of it is left behind). null otherwise.
+- new_space_box: for add and replace, the empty space the new object will take (a sword is long, a tower is tall), inside
+  or near the tinted area. null otherwise.
+- found: false only when the target part is not in the image at all.
+- note_ko: one short Korean sentence for the user (e.g. "오른손과 칼이 들어갈 자리만 남겼습니다").
+Rules:
+- Left/right: a plain position word (오른쪽·왼쪽) is the viewer's side of the image; a body part (오른손·왼손 ...) is the
+  character's own side, which is the opposite image side when the character faces the camera.
+- Boxes are integers 0-1000 with x0 < x1 and y0 < y1. Never include the face or head unless the instruction is about them."""
+
+
+def _check_refine_plan(o: dict) -> Optional[str]:
+    if not o.get("found"):
+        return None
+    for k in ("keep_box", "old_object_box", "new_space_box"):
+        b = o.get(k)
+        if b is not None and (len(b) != 4 or not all(0 <= v <= 1000 for v in b) or not (b[0] < b[2] and b[1] < b[3])):
+            return f"{k} 가 [x0,y0,x1,y1] 0–1000, x0<x1, y0<y1 이 아니다: {b}"
+    if o.get("keep_box") is None:
+        return "keep_box 가 없다"
+    if o.get("op") in ("replace", "remove") and o.get("old_object_box") is None:
+        return "replace·remove 인데 old_object_box 가 없다"
+    return None
+
+
+def _agent_refine_plan(self, render: bytes, overlay: bytes, instruction: str, scene: str, feedback: Optional[str],
+                       job_id: str = "") -> dict:
+    txt = (f"instruction: {json.dumps(instruction, ensure_ascii=False)}\n"
+           f"object description: {json.dumps(scene, ensure_ascii=False)}"
+           + (f"\nprevious attempt problem (fix it this time): {feedback}" if feedback else ""))
+    base = getattr(self, "effort", None)
+    if base is not None:
+        self.effort = getattr(self, "mask_effort", None) or base
+    try:
+        return self._call("agent_refine", AGENT_REFINE_SYSTEM,
+                          _labeled([("(1) render", render), ("(2) lasso area tinted", overlay)], txt),
+                          AGENT_REFINE_SCHEMA, _check_refine_plan, job_id,
+                          {"instruction": instruction, "feedback": feedback, "n_images": 2,
+                           "effort": getattr(self, "effort", None)})
+    finally:
+        if base is not None:
+            self.effort = base
+
+
+AgentMixin.agent_refine_plan = _agent_refine_plan
+
+
+def _fake_refine_plan(self, render: bytes, overlay: bytes, instruction: str, scene: str, feedback: Optional[str],
+                      job_id: str = "") -> dict:
+    self._next("agent_refine", job_id)
+    op = self.op
+    out = {"op": op, "target_part": "right hand", "target_part_ko": "오른손", "new_object": "the new object",
+           "old_object": "the old object" if op in ("replace", "remove") else None,
+           "keep_box": list(self.refine_boxes["keep"]),
+           "old_object_box": list(self.refine_boxes["old"]) if op in ("replace", "remove") else None,
+           "new_space_box": list(self.refine_boxes["new"]) if op in ("add", "replace") else None,
+           "found": self.mask_found, "note_ko": "지시 부위와 새 물건 자리만 남겼습니다(가짜)"}
+    return self._rec("agent_refine", job_id, out)
+
+
+FakeAgentAdapter.agent_refine_plan = _fake_refine_plan
+_fake_init = FakeAgentAdapter.__init__
+
+
+def _fake_init2(self, on_call=None):
+    _fake_init(self, on_call)
+    self.refine_boxes = {"keep": [0, 0, 1000, 1000], "old": [0, 0, 1000, 1000], "new": [0, 0, 1000, 1000]}
+
+
+FakeAgentAdapter.__init__ = _fake_init2

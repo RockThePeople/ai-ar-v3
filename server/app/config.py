@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-APP_API = "1.1.0"
+APP_API = "1.1.1"
 
 
 def default_env_file() -> Path:
@@ -64,6 +64,9 @@ class Settings:
     named_nodetail: bool = True  # S22 APP_NAMED_NODETAIL: 이름만으로 정해지는 대상(헬로키티 등)은 상세화 없이 이름으로 T2I
     agent: bool = True  # S20 APP_AGENT: camera·volume_cells 없는 편집 = 에이전트 편집(끔 = 400 INVALID_REQUEST)
     agent_max_backtracks: int = 3  # S20 AGENT_MAX_BACKTRACKS(채점 뒤 되돌아가기)
+    automask: bool = False  # S20e APP_AUTOMASK: 1 이면 camera·volume_cells 없는 자동 마스킹(S20d). 기본 0 = 400
+    agent_depth_ratio: float = 0.10  # S20e AGENT_DEPTH_RATIO: 깊이 여유 T = clamp(round(ratio·L), 3, 16)
+    agent_merge_ratio: float = 0.13  # S20e AGENT_MERGE_RATIO: 합치기 상자 넓힘 M = clamp(round(ratio·L), 4, 16)
     agent_max_mask_retries: int = 2  # S20d AGENT_MAX_MASK_RETRIES: 마스크 확인 불합격 다시 칠하기(별도 한도)
     agent_max_calls: int = 12  # S20 작업당 오케스트레이터 호출 상한
     agent_time_s: float = 600.0  # S20 작업 실행 한도(넘으면 가장 나은 시도로 3D)
@@ -96,4 +99,7 @@ class Settings:
             agent=_flag("APP_AGENT", "1"),
             agent_max_backtracks=int(os.environ.get("AGENT_MAX_BACKTRACKS") or 3),
             agent_max_mask_retries=int(os.environ.get("AGENT_MAX_MASK_RETRIES") or 2),
+            automask=_flag("APP_AUTOMASK", "0"),
+            agent_depth_ratio=float(os.environ.get("AGENT_DEPTH_RATIO") or 0.10),
+            agent_merge_ratio=float(os.environ.get("AGENT_MERGE_RATIO") or 0.13),
         )

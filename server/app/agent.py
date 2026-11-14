@@ -16,7 +16,7 @@ from typing import Optional
 
 from . import automask as am
 from .backends import StageError
-from .cropinpaint import decode_png, encode_png
+from .cropinpaint import decode_png, encode_png, mask_bool
 from .llm_adapter import MOCK_AGENT, LLMInvalid, LLMUnavailable, inpaint_ko_problem
 
 CHECKS = ("element", "position", "mask_fit", "shape_3d")
@@ -184,6 +184,78 @@ class AgentRun:
         j.setdefault("agent_side", []).append(rec)
         return cells
 
+    # ── S20e 사용자 라쏘 볼륨 다듬기 ─────────────────────────────
+    def lasso_start(self) -> None:
+        """사용자 카메라로 라쏘 볼륨 U 를 렌더하고, 판단에 줄 격자 이미지 2장(렌더, 라쏘 겹침)을 만든다."""
+        j, eng = self.j, self.eng
+        self._state("masking", "mask_refine", 0.05)
+        self.cam, self.U = j["user_camera"], [list(c) for c in j["user_cells"]]
+        self.occ = eng.occupied(j["asset_id"], j["base_version"])
+        self.consts = am.size_consts(self.occ, self.s.agent_depth_ratio, self.s.agent_merge_ratio)
+        j["agent_consts"] = self.consts
+        self.render_with(self.cam, self.U, "user")
+        rgb, m = self._render_arrays()
+        self.grid_render = encode_png(am.grid_full(rgb))
+        over = am.tint_mask(rgb, m)
+        self.grid_lasso = encode_png(am.grid_full(over))
+        self.event("masking", "tool", f"그린 영역을 봤습니다(라쏘 {len(self.U):,}셀)", {"overlay": encode_png(am.half(over))})
+
+    def _render_arrays(self):
+        rd = self.s.data_dir / "jobs" / self.j["job_id"] / "render"
+        r = decode_png((rd / "render.png").read_bytes())
+        return am.to_rgb(r), mask_bool(decode_png((rd / "mask.png").read_bytes()))
+
+    def render_with(self, cam: dict, cells: list, label: str) -> None:
+        j, eng = self.j, self.eng
+        j["camera"], j["cells"] = cam, cells
+        j.pop("render", None)
+        shutil.rmtree(self.s.data_dir / "jobs" / j["job_id"] / "region", ignore_errors=True)
+        eng._ensure_render(j)
+        j["render_view"] = label
+
+    def refine_mask(self, feedback: Optional[str]) -> dict:
+        """S20e 2.1 판단(오케스트레이터 1회, 이미지 2장) → 2.2 잘라내기·2.3 합치기(코드) → 다듬은 셀로 다시 렌더."""
+        j = self.j
+        self._state("masking", "mask_refine", 0.15)
+        self._mock("mask")
+        plan = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
+                          self.eng._scene(j["asset_id"]), feedback)
+        j["agent_plan"] = plan
+        if not plan.get("found"):
+            self.event("masking", "error", f"지시한 부위를 찾지 못했습니다 — {plan.get('note_ko') or ''}".strip(" —"))
+            raise StageError("NO_TARGET", plan.get("note_ko") or "지시한 부위를 찾지 못했다")
+        r = am.refine_volume(self.U, self.occ, self.cam, plan, self.consts)
+        j["agent_mask"] = {k: v for k, v in r.items() if k != "cells"} | {"consts": self.consts}
+        cells = r["cells"]
+        c = self.consts
+        tm = f"L {c['L']} · T {c['T']} · M {c['M']}"
+        if r["merged"]:
+            self.event("masking", "tool", f"{plan.get('old_object') or '원래 물건'}의 라쏘 밖 부분 {r['merged']:,}셀을 합쳤습니다",
+                       detail=f"26-neighbour merge inside old_object_box +5%, depth d0+2T, lasso bbox +M ({tm})")
+        self.render_with(self.cam, cells, "user")
+        rgb, m = self._render_arrays()
+        after = encode_png(am.half(am.tint_mask(rgb, m)))
+        if r["fallback"]:
+            text = f"다듬지 못해 그린 영역 그대로 씁니다(라쏘 {r['n_user']:,}셀)"
+        else:
+            cut = r["cut_depth"] + r["cut_side"] + r["cut_empty"]
+            text = (f"마스크를 다듬었습니다(라쏘 {r['n_user']:,}셀 → {r['n_final']:,}셀, 잘라냄 {cut:,}"
+                    + (f"·합침 {r['merged']:,}" if r["merged"] else "") + ")")
+        self.event("masking", "tool", text, {"overlay": after},
+                   detail=f"{tm}; cut depth {r['cut_depth']} side {r['cut_side']} empty {r['cut_empty']}; "
+                          f"op {plan['op']}; keep {plan.get('keep_box')} old {plan.get('old_object_box')} new {plan.get('new_space_box')}")
+        return {"plan": plan, "cells": cells, "n": len(cells)}
+
+    def check_lasso(self, m: dict, region: Optional[dict]) -> dict:
+        j = self.j
+        ov = (region or {}).get("images", [None])[0]
+        self._state("masking", "mask_check", 0.3)
+        self._mock("check")
+        c = self._orch(self.llm.agent_mask_check, ov or b"", j["instruction"], m["plan"])
+        self.event("mask_check", "check", ("마스크 확인: 맞습니다" if c["ok"] else f"마스크 확인: {c['reason_ko']}"),
+                   detail=None if c["ok"] else (c.get("fix") or None))
+        return c
+
     def new_render(self, view: str, cells: list) -> None:
         j, eng = self.j, self.eng
         j["camera"], j["cells"] = self.cams[view], cells
@@ -276,14 +348,18 @@ class AgentRun:
         step = "mask"
         plan, region, m = None, None, None
         stop = None
+        lasso = j.get("agent_source") == "lasso"          # S20e: 사용자 라쏘 볼륨 다듬기(자동 마스킹 아님)
         try:
-            self.views()
+            if lasso:
+                self.lasso_start()
+            else:
+                self.views()
             while True:
                 if step == "mask":
-                    m = self.mask(feedback)
+                    m = self.refine_mask(feedback) if lasso else self.mask(feedback)
                     plan = m["plan"]
                     region = self.region() if m["cells"] else None
-                    c = self.check(m, region)
+                    c = self.check_lasso(m, region) if lasso else self.check(m, region)
                     if not c["ok"] or not m["cells"]:
                         # S20d: 마스크 다시 칠하기는 되돌아가기(채점 뒤)와 따로 센다
                         mr, mmax = ag.get("mask_retries", 0), ag.get("max_mask_retries", s.agent_max_mask_retries)
@@ -291,7 +367,8 @@ class AgentRun:
                             ag["mask_retries"] = mr + 1
                             feedback = f"{c.get('reason_ko')} / {c.get('fix')}".strip(" /")
                             self.event("mask_check", "branch",
-                                       f"{c.get('reason_ko')} → 볼륨 마스킹을 다시 합니다(마스크 다시 칠하기 {mr + 1}/{mmax})")
+                                       f"{c.get('reason_ko')} → " + (f"마스크를 다시 다듬습니다(마스크 다시 다듬기 {mr + 1}/{mmax})"
+                                       if lasso else f"볼륨 마스킹을 다시 합니다(마스크 다시 칠하기 {mr + 1}/{mmax})"))
                             continue
                         if not m["cells"]:
                             raise StageError("MASK_EMPTY", "자동 마스킹 셀이 없다(마스크 다시 칠하기 한도)")
@@ -323,7 +400,7 @@ class AgentRun:
                 ag["backtracks"] += 1
                 feedback = f"{v.get('reason_ko')} / {v.get('fix')}".strip(" /")
                 self.event("judging", "judge", detail=v.get("fix") or None,
-                           text=f"{v.get('reason_ko')}(불합격: {bad}) → {CAUSE_KO[cause]} 다시 합니다"
+                           text=f"{v.get('reason_ko')}(불합격: {bad}) → {('마스크 다듬기부터' if lasso and cause == 'mask' else CAUSE_KO[cause])} 다시 합니다"
                                                f"(되돌아가기 {ag['backtracks']}/{ag['max_backtracks']})")
                 step = cause
                 j["attempt"] += 1

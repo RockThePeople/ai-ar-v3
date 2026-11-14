@@ -32,6 +32,7 @@ class EditReq(BaseModel):
     instruction: str = Field(min_length=1, max_length=300)
     camera: Optional[Camera] = None          # S20 1.1.0: camera·volume_cells 둘 다 없으면 에이전트 편집
     volume_cells: Optional[List[List[int]]] = None
+    agent: Optional[bool] = None             # S20e 1.1.1: true + camera + volume_cells = 에이전트가 라쏘 볼륨을 다듬는 편집
 
 
 class Review2DReq(BaseModel):

@@ -285,3 +285,177 @@ def mirror_cells(cells, occupied, cam: dict) -> list:
     q = p - 2.0 * ((p - c) @ r)[:, None] * r[None, :]
     idx = np.clip(np.rint((q + 0.5) * GRID - 0.5), 0, GRID - 1).astype(int)
     return np.unique(idx, axis=0).tolist()
+
+
+# ══════════════════════════════════════════════════════════ S20e 사용자 라쏘 볼륨 다듬기
+# 사용자 결정(2026-11-14 21:09): 자동 마스킹 대신 사용자 라쏘 볼륨 U 를 다듬는다. 상수는 물체 크기 L 에 비례(21:20).
+DEPTH_RATIO = 0.10      # T = clamp(round(0.10·L), 3, 16)
+MERGE_RATIO = 0.13      # M = clamp(round(0.13·L), 4, 16)
+SIDE_PAD = 30           # 옆 자르기·빈 셀 화면 여유 3%(0–1000 단위)
+MERGE_PAD = 50          # 합치기 화면 여유 5%
+ZRES = 256              # 깊이 버퍼 해상도
+
+
+def size_consts(occupied, depth_ratio: float = DEPTH_RATIO, merge_ratio: float = MERGE_RATIO,
+                fixed: Optional[tuple] = None) -> dict:
+    """L = 점유 셀 경계 상자 최장 변(셀), T·M. fixed=(T, M) 이면 고정 상수(비교용)."""
+    c = np.asarray(occupied, int).reshape(-1, 3)
+    L = int((c.max(0) - c.min(0) + 1).max()) if len(c) else 0
+    if fixed:
+        return {"L": L, "T": int(fixed[0]), "M": int(fixed[1]), "fixed": True}
+    T = int(min(16, max(3, round(depth_ratio * L))))
+    M = int(min(16, max(4, round(merge_ratio * L))))
+    return {"L": L, "T": T, "M": M, "fixed": False}
+
+
+def _grid_xy(points: np.ndarray, cam: dict) -> tuple:
+    """복셀 점 → (x, y, z), x·y 는 0–1000 화면 단위(렌더 정사각 전체 = 0–1000)."""
+    px, py, z = project(points, cam)
+    s = 1000.0 / RES
+    return px * s, py * s, z
+
+
+def lasso_cells(cam: dict, polygon: Sequence[Sequence[float]]) -> list:
+    """시험·실측 도구: 카메라 시선 방향 관통 볼륨 — 중심이 다각형(0–1000 화면 단위) 안에 투영되는 64³ 셀 전부(빈 셀 포함)."""
+    cells = _all_cells()
+    x, y, z = _grid_xy(centers(cells), cam)
+    poly = np.asarray(polygon, float)
+    inside = np.zeros(len(cells), bool)
+    j = len(poly) - 1
+    for i in range(len(poly)):                     # 짝홀 규칙
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        cross = ((yi > y) != (yj > y)) & (x < (xj - xi) * (y - yi) / np.where(yj - yi == 0, 1e-9, yj - yi) + xi)
+        inside ^= cross
+        j = i
+    return cells[inside & (z > 0)].tolist()
+
+
+def depth_buffer(occupied, cam: dict, res: int = ZRES) -> tuple:
+    """사용자 카메라에서 화소마다 첫 점유 셀 깊이 d₀(복셀 단위 = z·64). 셀은 화면에 비친 크기만큼(반경 ≥ 1, ≤ 12 화소) 찍어
+    셀 사이 틈이 생기지 않게 한다. → (zbuf, fn(셀들)→d₀)."""
+    import math
+    p = centers(occupied)
+    x, y, z = _grid_xy(p, cam)
+    fy = math.radians(float(cam["fov_y_deg"]))
+    fx = 2.0 * math.atan(float(cam.get("aspect", 1.0)) * math.tan(fy / 2))
+    t = math.tan(max(fy, fx) / 2)
+    zs = np.where(z > 1e-6, z, 1e-6)
+    half_px = (0.5 / GRID) / (zs * t) * 0.5 * res                 # 셀 반 크기(화소)
+    rad = np.clip(np.ceil(half_px * 1.5), 1, 12).astype(int)      # 대각선 여유
+    ix = np.clip((x / 1000 * res).astype(int), 0, res - 1)
+    iy = np.clip((y / 1000 * res).astype(int), 0, res - 1)
+    zb = np.full((res, res), np.inf)
+    zc = z * GRID
+    R = int(rad.max()) if len(rad) else 1
+    for dx in range(-R, R + 1):
+        for dy in range(-R, R + 1):
+            sel = rad >= max(abs(dx), abs(dy))
+            if sel.any():
+                np.minimum.at(zb, (np.clip(iy[sel] + dy, 0, res - 1), np.clip(ix[sel] + dx, 0, res - 1)), zc[sel])
+
+    def d0_of(cells) -> np.ndarray:
+        q = centers(cells)
+        qx, qy, _ = _grid_xy(q, cam)
+        jx = np.clip((qx / 1000 * res).astype(int), 0, res - 1)
+        jy = np.clip((qy / 1000 * res).astype(int), 0, res - 1)
+        return zb[jy, jx]
+    return zb, d0_of
+
+
+def _in_box(x, y, box, pad: float) -> np.ndarray:
+    if not box:
+        return np.zeros(len(x), bool)
+    return (x >= box[0] - pad) & (x <= box[2] + pad) & (y >= box[1] - pad) & (y <= box[3] + pad)
+
+
+def refine_volume(user_cells, occupied, cam: dict, plan: dict, consts: dict) -> dict:
+    """S20e 2.2 잘라내기 + 2.3 합치기. plan = {op, keep_box, old_object_box, new_space_box}(0–1000 화면 단위).
+    → {cells, n_user, cut_depth, cut_side, cut_empty, merged, n_final, fallback, ...}."""
+    T, M = consts["T"], consts["M"]
+    op = plan.get("op") or "add"
+    keep, old, new = plan.get("keep_box"), plan.get("old_object_box"), plan.get("new_space_box")
+    if op not in ("replace", "remove"):
+        old = None
+    if op not in ("add", "replace"):
+        new = None
+    U = np.unique(np.asarray(user_cells, int).reshape(-1, 3), axis=0)
+    occ_grid = np.zeros((GRID,) * 3, bool)
+    O = np.asarray(occupied, int).reshape(-1, 3)
+    occ_grid[O[:, 0], O[:, 1], O[:, 2]] = True
+    is_occ = occ_grid[U[:, 0], U[:, 1], U[:, 2]]
+    x, y, z = _grid_xy(centers(U), cam)
+    zc = z * GRID
+    _, d0_of = depth_buffer(O, cam)
+    d0 = d0_of(U)
+    in_old = _in_box(x, y, old, 0)
+    # 1 깊이 자르기(점유 셀만): d₀ + T 보다 먼 셀 제외, 원래 물건 상자 안은 2T
+    lim = d0 + np.where(in_old, 2 * T, T)
+    depth_ok = zc <= lim + 0.5
+    # 2 옆 자르기(점유 셀만): keep ∪ old (+3%) 밖 제외
+    side_ok = _in_box(x, y, keep, SIDE_PAD) | _in_box(x, y, old, SIDE_PAD)
+    # 3 빈 셀: new ∪ keep (+3%) 안만, recolor 는 전부 제외
+    empty_ok = np.zeros(len(U), bool) if op == "recolor" else (_in_box(x, y, new, SIDE_PAD) | _in_box(x, y, keep, SIDE_PAD))
+    keep_occ = is_occ & depth_ok & side_ok
+    keep_emp = (~is_occ) & empty_ok
+    kept = U[keep_occ | keep_emp]
+    out = {"n_user": int(len(U)), "n_user_occupied": int(is_occ.sum()),
+           "cut_depth": int((is_occ & ~depth_ok).sum()), "cut_side": int((is_occ & depth_ok & ~side_ok).sum()),
+           "cut_empty": int(((~is_occ) & ~empty_ok).sum()), "merged": 0, "fallback": False, "dropped_far": 0}
+    merged = np.zeros((0, 3), int)
+    if old is not None and len(kept):
+        # 2.3 합치기: 씨앗 = 다듬은 셀 중 old 상자 안 점유 셀, 26-이웃으로 점유 셀을 넓힘(세 제한 모두)
+        kx, ky, _ = _grid_xy(centers(kept), cam)
+        seed_mask = occ_grid[kept[:, 0], kept[:, 1], kept[:, 2]] & _in_box(kx, ky, old, 0)
+        seeds = kept[seed_mask]
+        lo, hi = U.min(0) - M, U.max(0) + M
+        allowed = np.zeros((GRID,) * 3, bool)
+        ax, ay, az = _grid_xy(centers(O), cam)
+        a_ok = (_in_box(ax, ay, old, MERGE_PAD) & (az * GRID <= d0_of(O) + 2 * T + 0.5)
+                & np.all((O >= lo) & (O <= hi), axis=1))
+        allowed[O[a_ok, 0], O[a_ok, 1], O[a_ok, 2]] = True
+        have = np.zeros((GRID,) * 3, bool)
+        have[kept[:, 0], kept[:, 1], kept[:, 2]] = True
+        frontier = np.zeros((GRID,) * 3, bool)
+        if len(seeds):
+            frontier[seeds[:, 0], seeds[:, 1], seeds[:, 2]] = True
+        reach = frontier.copy()
+        while frontier.any():
+            grown = _shift_or(frontier) & allowed & ~reach
+            reach |= grown
+            frontier = grown
+        add = reach & ~have
+        merged = np.argwhere(add)
+        out["merged"] = int(len(merged))
+        if len(merged):
+            kept = np.concatenate([kept, merged])
+        if len(kept) > MAX_CELLS:                     # 4 넘으면 합친 부분부터 먼 것을 뺀다
+            c0 = centers(seeds).mean(0) if len(seeds) else centers(kept).mean(0)
+            mset = {tuple(m) for m in merged.tolist()}
+            base = [c for c in kept.tolist() if tuple(c) not in mset]
+            room = max(0, MAX_CELLS - len(base))
+            far = np.argsort(np.linalg.norm(centers(merged) - c0, axis=1))
+            keep_m = merged[far[:room]]
+            out["dropped_far"] = int(len(merged) - len(keep_m))
+            out["merged"] = int(len(keep_m))
+            kept = np.concatenate([np.asarray(base, int).reshape(-1, 3), keep_m])
+    if not len(kept):                                  # 4 결과가 비면 사용자 볼륨 그대로
+        kept, out["fallback"] = U, True
+    kept = np.unique(kept, axis=0)
+    if len(kept) > MAX_CELLS:
+        kept = kept[:MAX_CELLS]
+    out["cells"] = kept.tolist()
+    out["n_final"] = int(len(kept))
+    return out
+
+
+def grid_full(rgb: np.ndarray, label: str = "") -> np.ndarray:
+    """정사각 렌더 전체에 0–1000 격자(자르지 않음 — 상자 좌표가 렌더 화소와 맞게)."""
+    return grid_image(rgb, label)
+
+
+def tint_mask(rgb: np.ndarray, mask: np.ndarray, color=(255, 40, 90), alpha: float = 0.45) -> np.ndarray:
+    """렌더 전체 크기 그대로 마스크를 칠한다(자르지 않음)."""
+    out = rgb.astype(np.float32).copy()
+    out[mask] = out[mask] * (1 - alpha) + np.asarray(color, np.float32) * alpha
+    return out.astype(np.uint8)
