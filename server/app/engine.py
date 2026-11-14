@@ -23,6 +23,7 @@ from typing import Callable, Dict, List, Optional
 from .backends import StageError
 from .cropinpaint import crop_inpaint
 from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, placement_ok,
+                          make_agent_adapter, FakeAgentAdapter,
                           strip_banned, strip_lateral, strip_realworld, style_from_request,
                           subject_head)
 from .regionimg import region_images
@@ -37,6 +38,8 @@ PAPER_TRELLIS_SEED = 42
 NAMED_SUFFIX = {"B": "", "C": ", one face on the front, plain smooth back of the head",
                 "D": ", full body, one face on the front, plain smooth back of the head"}
 NAMED_METHOD = "D"   # 사용자 확정 2026-11-14(헬로키티 양면 위험은 받아들임)
+#: S20 시점 이름(automask.VIEW_AZ 와 같은 순서)
+VIEW_NAMES = ("az000", "az090", "az180", "az270")
 
 
 def inpaint_prompt(new_scene_prompt: str, realstyle: bool, style: Optional[str]) -> str:
@@ -48,8 +51,9 @@ def inpaint_prompt(new_scene_prompt: str, realstyle: bool, style: Optional[str])
 from .config import Settings
 from .store import ChunkStore, Db
 
-ACTIVE = {"queued", "generating", "refining", "inpainting", "awaiting_2d_review", "editing_3d", "awaiting_3d_review"}
-RUNNING = {"queued", "generating", "refining", "inpainting", "editing_3d"}
+ACTIVE = {"queued", "generating", "refining", "inpainting", "awaiting_2d_review", "editing_3d", "awaiting_3d_review",
+          "masking", "judging"}   # S20 에이전트 상태
+RUNNING = {"queued", "generating", "refining", "inpainting", "editing_3d", "masking", "judging"}
 TERMINAL = {"committed", "discarded", "cancelled", "failed", "needs_redraw"}
 
 
@@ -83,9 +87,12 @@ def _norm(t: Optional[str]) -> str:
 
 class Engine:
     def __init__(self, s: Settings, db: Db, store: ChunkStore, backend, clock: Callable[[], float] = time.time,
-                 start_thread: bool = True, llm=None) -> None:
+                 start_thread: bool = True, llm=None, agent_llm=None) -> None:
         self.s, self.db, self.store, self.be, self.clock = s, db, store, backend, clock
         self.llm = llm or make_adapter(s.mock, on_call=db.log_llm)
+        # S20 오케스트레이터(AGENT_MODEL). 시험이 llm 만 넘기면 규칙 기반 가짜
+        self.agent_llm = agent_llm or (FakeAgentAdapter(db.log_llm) if llm is not None else
+                                       make_agent_adapter(s.mock, on_call=db.log_llm))
         self.lock = threading.RLock()
         self.jobs: Dict[str, dict] = {}
         self.q: "queue.Queue[tuple]" = queue.Queue()
@@ -287,11 +294,14 @@ class Engine:
         j["result"] = {"to_version": 1, "manifest_uri": f"/v2/assets/{j['asset_id']}/manifest.v1.json"}
         j["progress"] = 1.0
         self._finish(j, "committed")
+        self.enqueue_views(j["asset_id"], 1)               # S20 2.1: 다음 편집이 기다리지 않게
 
     # ── 편집 ───────────────────────────────────────────────────────
-    def create_edit(self, asset_id: str, device: str, base_version: int, instruction: str, camera: dict,
-                    cells: List[list], mock_fail: Optional[str] = None) -> dict:
-        """검사 순서(1.0.1 3.3): 입력(라우트) → 404 → 403 → 잠금 → 판본."""
+    def create_edit(self, asset_id: str, device: str, base_version: int, instruction: str, camera: Optional[dict],
+                    cells: Optional[List[list]], mock_fail: Optional[str] = None) -> dict:
+        """검사 순서(1.0.1 3.3): 입력(라우트) → 404 → 403 → 잠금 → 판본.
+        S20: camera·cells 가 둘 다 None 이면 에이전트 편집(1.1.0 10절, 라우트가 APP_AGENT·한쪽만 있음을 막는다)."""
+        agent = camera is None and cells is None
         with self.lock:
             a = self.db.live_asset(asset_id)
             if a is None or a["version"] == 0 and not a["is_sample"]:
@@ -308,12 +318,22 @@ class Engine:
                                {"latest_version": int(a["version"])})
             raw = self.db.qr_raw_prompt(a["qr_id"])        # S14 그대로 모드(작업 생성 때 고정)
             ed_style = None if raw else (self._asset_style_src(asset_id)["style"] or "realistic")   # S15 4.4 편집 style
+            kw = {}
+            if agent:                                      # S20: 그대로 모드 마커도 에이전트 편집은 에이전트 흐름
+                raw = None
+                ed_style = self._asset_style_src(asset_id)["style"] or "realistic"
+                kw = {"mode": "agent", "events": [], "agent_calls": 0,
+                      "agent": {"model": getattr(self.agent_llm, "model", None), "attempt": 1, "backtracks": 0,
+                                "max_backtracks": self.s.agent_max_backtracks, "verdict": None, "below_bar": False}}
             j = self._new_job("edit", asset_id, device, a["qr_id"], base_version=int(base_version), raw_prompt=raw,
                               instruction=instruction, camera=camera, cells=cells, mock_fail=mock_fail,
-                              idem=hashlib.sha256(f"{asset_id}|{base_version}|{uuid.uuid4().hex}".encode()).hexdigest()[:32])
+                              idem=hashlib.sha256(f"{asset_id}|{base_version}|{uuid.uuid4().hex}".encode()).hexdigest()[:32],
+                              **kw)
+            if agent:
+                j["max_attempts"] = None
         j["prompts"]["style"] = ed_style
         self._save(j)
-        self._enqueue(j, "refine")
+        self._enqueue(j, "agent" if agent else "refine")
         return j
 
     def _scene(self, asset_id: str) -> str:
@@ -338,12 +358,13 @@ class Engine:
         return {"style": st, "source": "pre_s11_request", "words": w, "request": g.get("prompt")}
 
     def _refine_styled(self, j: dict, scene: str, hist: list, changed_from: Optional[dict] = None,
-                       region: Optional[dict] = None):
+                       region: Optional[dict] = None, instruction: Optional[str] = None):
         """S11: 자산 양식을 보정에 알리고, 실물형인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다.
         S12: 관계어 보정 템플릿, 명령형 동사가 있으면 1회 재요청, 남으면 기록만.
         S13: 라쏘 이미지·mask_ratio(region). mask_ratio < 0.6 인데 주어가 바뀌면, 또는 바뀐 부위가 첫 구에 없으면
         같은 1회 재요청에 묶는다. 'real-world proportions' 문구는 지운다(토글 없음)."""
         rs, rp = self.s.realstyle, self.s.relphrase
+        ins_text = instruction or j["instruction"]          # S20: 에이전트가 정한 부위·물건을 앞에 붙인 지시문
         kw: dict = {"changed_from": changed_from} if changed_from else {}
         src_info = self._asset_style_src(j["asset_id"]) if rs else {"style": None}
         st = src_info["style"]
@@ -358,7 +379,7 @@ class Engine:
         def clean(o: dict) -> dict:
             """문구·좌우 정리(S13 7, S13b 2). 인페인팅 문장에는 금지어 삭제도(실물형)."""
             o = dict(o, new_scene_prompt=strip_realworld(o["new_scene_prompt"]))
-            ins = j["instruction"]
+            ins = ins_text
             for k in ("selected_part", "target_element"):
                 if o.get(k):
                     o[k] = strip_lateral(o[k], ins) or o[k]
@@ -370,7 +391,7 @@ class Engine:
                         t = strip_banned(t, left)
                 o["inpaint_prompt"] = t
             return o
-        out = clean(self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw))
+        out = clean(self.llm.refine(scene, ins_text, hist, job_id=j["job_id"], **kw))
         if not (rs or rp or region is not None):
             return out, None
         meta: dict = {"retried": False}
@@ -397,7 +418,7 @@ class Engine:
             meta.update(region=True, mask_ratio=ratio, selected_part=out.get("selected_part"),
                         region_fit=out.get("region_fit"), region_reason=out.get("region_reason"),
                         images=region.get("files"), region_found=[], region_left=[])
-        src = f"{scene} {j['instruction']}"
+        src = f"{scene} {ins_text}"
         check_banned = rs and not st
         banned = banned_words(out["new_scene_prompt"], src) if check_banned else []
         imp = imperative_words(out["new_scene_prompt"]) if rp else []
@@ -420,7 +441,7 @@ class Engine:
                     fix.append("Put the element changed in this edit right after the subject as the first relation phrase "
                                "(before any relation phrase from earlier edits).")
                 extra["fix"] = fix
-            out = clean(self.llm.refine(scene, j["instruction"], hist, job_id=j["job_id"], **kw, **extra))
+            out = clean(self.llm.refine(scene, ins_text, hist, job_id=j["job_id"], **kw, **extra))
             left = banned_words(out["new_scene_prompt"], src) if check_banned else []
             if left:
                 out = dict(out, new_scene_prompt=strip_banned(out["new_scene_prompt"], left))
@@ -516,7 +537,7 @@ class Engine:
         self._save(j)
         self._run_render_inpaint(j, new_render=False)    # S13 5: 첫 시도 렌더를 재사용(카메라·볼륨 같음)
 
-    def _run_render_inpaint(self, j: dict, new_render: bool) -> None:
+    def _run_render_inpaint(self, j: dict, new_render: bool, agent: bool = False) -> None:
         if j["state"] not in ("refining", "inpainting", "queued"):
             return
         self._mock_gate(j)
@@ -569,9 +590,12 @@ class Engine:
                               **(j.get("refine_meta") or {})})
         if (j.get("refine_meta") or {}).get("refine_unchanged"):
             j["refine_unchanged"] = True
+        if agent:                                         # S20: 사람 확인 없이 채점으로
+            self._save(j)
+            return
         self._set(j, "awaiting_2d_review", "inpainting", 1.0)
 
-    def _run_edit3d(self, j: dict) -> None:
+    def _run_edit3d(self, j: dict, agent: bool = False) -> None:
         self._set(j, "editing_3d", "editing_3d", 0.05)
         self._mock_gate(j)
         d = self._preview_dir(j, j["attempt"])
@@ -593,6 +617,9 @@ class Engine:
         j["raw_edit3d"] = dict(out.get("raw") or {}, attempt=j["attempt"])   # S9: A5000 /edit 요청·결과 전문
         j["result"] = {"base_version": j["base_version"], "to_version": out["to_version"], "chunks": entries,
                        "removed_chunk_ids": out["removed"]}
+        if agent:                                         # S20: 3D 확인 없이 바로 반영(호출한 쪽이 _commit)
+            self._save(j)
+            return
         j["expires_at"] = self.clock() + self.s.review3d_s
         self._set(j, "awaiting_3d_review", "chunking", 1.0)
 
@@ -724,6 +751,7 @@ class Engine:
         self.db.x("INSERT OR REPLACE INTO commits VALUES(?,?,?,?)", (j["asset_id"], to, j["job_id"], self.clock()))
         j["result"]["manifest_uri"] = f"/v2/assets/{j['asset_id']}/manifest.v{to}.json"
         self._finish(j, "committed")
+        self.enqueue_views(j["asset_id"], to, j["job_id"] if j.get("mode") == "agent" else None)   # S20 2.1
 
     def _discard(self, j: dict, why: str) -> None:
         note = self.be.discard(j["asset_id"], j.get("worker_job_id") or "")
@@ -737,6 +765,70 @@ class Engine:
         self.store.drop_staging(j["asset_id"], j["job_id"])
         j["discard_note"] = f"{why}{' · ' + note if note else ''}"
         self._finish(j, "discarded")
+
+    # ── S20 2.1 시점 렌더(캐시 data_dir/views/<asset>/<version>/) ─────────
+    def _views_dir(self, asset_id: str, version: int) -> Path:
+        return self.s.data_dir / "views" / asset_id / str(int(version))
+
+    def occupied(self, asset_id: str, version: int) -> list:
+        """점유 셀 = slat_coords(앱 저장소, 없으면 A5000 에서 받아 저장)."""
+        c = self.store.slat_coords(asset_id, version)
+        if not c:
+            c = self.be.slat_coords(asset_id, version)
+            if c:
+                try:
+                    self.store.put_slat_coords(asset_id, version, c)
+                except Exception:                         # noqa: BLE001 — 저장 못 해도 이번에는 쓴다
+                    pass
+        if not c:
+            raise StageError("RENDER_FAILED", f"점유 셀(slat_coords)이 없다: {asset_id} v{version}")
+        return c
+
+    def views_cached(self, asset_id: str, version: int) -> Optional[dict]:
+        d = self._views_dir(asset_id, version)
+        try:
+            meta = json.loads((d / "views.json").read_text())
+            png = {v: (d / f"{v}.png").read_bytes() for v in VIEW_NAMES}
+        except (OSError, ValueError):
+            return None
+        return {"png": png, "cameras": meta["cameras"], "occupied": self.occupied(asset_id, version), "cached": True,
+                "render_s": meta.get("render_s")}
+
+    def render_views(self, asset_id: str, version: int) -> dict:
+        """방위 0·90·180·270° 렌더 4장(cells 는 중심 셀 1개 — 렌더 이미지만 쓴다) → 캐시."""
+        from .automask import view_cameras
+        occ = self.occupied(asset_id, version)
+        cams = view_cameras(occ)
+        mid = sorted(occ)[len(occ) // 2]
+        t0 = time.perf_counter()
+        png = {v: self.be.render(asset_id, version, cams[v], [list(mid)])["render_png"] for v in VIEW_NAMES}
+        rs = round(time.perf_counter() - t0, 3)
+        d = self._views_dir(asset_id, version)
+        d.mkdir(parents=True, exist_ok=True)
+        for v, b in png.items():
+            (d / f"{v}.png").write_bytes(b)
+        (d / "views.json").write_text(json.dumps({"cameras": cams, "render_s": rs, "t": self.clock()}))
+        return {"png": png, "cameras": cams, "occupied": occ, "cached": False, "render_s": rs}
+
+    def enqueue_views(self, asset_id: str, version: int, job_id: Optional[str] = None) -> None:
+        """반영 직후 같은 대기열 뒤에 미리 렌더. 시험용 가짜 백엔드(name 'fake')에서는 하지 않는다."""
+        if self.be.name not in ("real", "mock") or not self.s.agent:
+            return
+        self.q.put(("views", json.dumps([asset_id, int(version), job_id])))
+
+    def _run_views(self, key: str) -> None:
+        asset_id, version, job_id = json.loads(key)
+        try:
+            v = self.views_cached(asset_id, version) or self.render_views(asset_id, version)
+        except Exception as e:                            # noqa: BLE001 — 실패해도 무시(편집 때 다시)
+            print(f"[views] {asset_id} v{version}: {type(e).__name__}: {e}", flush=True)
+            return
+        j = self.get(job_id) if job_id else None
+        if j is not None and j.get("mode") == "agent":    # 10.3: 반영 뒤 result 이미지(새 판본 앞 시점 1장)
+            from .agent import AgentRun
+            front = ((j.get("agent_plan") or {}).get("front_view")) or "az000"
+            with self.lock:
+                AgentRun(self, j).event("done", "tool", "새 판본을 앞에서 본 모습입니다", {"result": v["png"][front]})
 
     # ── 시간 ───────────────────────────────────────────────────────
     def tick(self, now: Optional[float] = None) -> None:
@@ -775,6 +867,8 @@ class Engine:
         return self.s.data_dir / "jobs" / j["job_id"] / str(attempt)
 
     def run_task(self, task: str, job_id: str) -> None:
+        if task == "views":                               # S20 2.1 미리 렌더(작업 아님, 실패는 무시)
+            return self._run_views(job_id)
         with self.lock:
             if job_id in self.order:
                 self.order.remove(job_id)
@@ -797,6 +891,10 @@ class Engine:
                 self._run_render_inpaint(j, new_render=False)
             elif task == "edit3d":
                 self._run_edit3d(j)
+            elif task == "agent":
+                from .agent import AgentRun
+                self._mock_gate(j)
+                AgentRun(self, j).run()
         except StageError as e:
             if j["state"] not in TERMINAL:
                 self._finish(j, "failed", e.code, str(e))
@@ -806,7 +904,7 @@ class Engine:
             traceback.print_exc()
             if j and j["state"] not in TERMINAL:
                 code = {"generate": "GENERATE_FAILED", "refine": "RENDER_FAILED", "refine_again": "RENDER_FAILED",
-                        "inpaint_again": "INPAINT_FAILED", "edit3d": "EDIT_FAILED"}[task]
+                        "inpaint_again": "INPAINT_FAILED", "edit3d": "EDIT_FAILED", "agent": "AGENT_FAILED"}[task]
                 self._finish(j, "failed", code, f"{type(e).__name__}: {e}")
                 if j["kind"] == "generate":
                     self._drop_unborn(j)

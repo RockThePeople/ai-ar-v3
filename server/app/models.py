@@ -30,8 +30,8 @@ class Camera(BaseModel):
 class EditReq(BaseModel):
     base_version: int
     instruction: str = Field(min_length=1, max_length=300)
-    camera: Camera
-    volume_cells: List[List[int]]
+    camera: Optional[Camera] = None          # S20 1.1.0: camera·volume_cells 둘 다 없으면 에이전트 편집
+    volume_cells: Optional[List[List[int]]] = None
 
 
 class Review2DReq(BaseModel):
@@ -131,6 +131,9 @@ class JobObj(BaseModel):
     expires_at: Optional[float]
     error_code: Optional[str]
     error_message: Optional[str]
+    mode: Optional[str] = None               # S20 10.3: "agent" 일 때만
+    agent: Optional[dict] = None
+    events: Optional[List[dict]] = None
 
 
 class RatingResp(BaseModel):
@@ -157,6 +160,7 @@ class HealthResp(BaseModel):
     contract_version: int
     mock: bool
     workers: Optional[Workers]
+    features: List[str] = []                 # S20 10.4: "agent_edit"
 
 
 class Sample(BaseModel):

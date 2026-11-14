@@ -108,6 +108,10 @@ def build_clients(S) -> APIRouter:
                 "raw_generate": j.get("raw_generate"), "raw_edit3d": j.get("raw_edit3d"),
                 "render_record": (j.get("render") or {}).get("record"),
                 "a5000_trace": j.get("a5000_trace"),
+                "mode": j.get("mode"), "agent": j.get("agent"), "events": j.get("events"),   # S20 에이전트
+                "agent_tries": j.get("agent_tries"), "agent_plan": j.get("agent_plan"), "agent_mask": j.get("agent_mask"),
+                "agent_views": j.get("agent_views"), "agent_refine_input": j.get("agent_refine_input"),
+                "agent_chosen": j.get("agent_chosen"),
                 "raw_prompt": bool(j.get("raw_prompt")),        # S14 그대로 모드            # S10: 접수·폴링 회차(실패 포함)
                 "job_json": f"/clients/api/jobs/{j['job_id']}"}
 
@@ -306,6 +310,13 @@ function styleView(st,gen){if(st&&!gen&&st.relphrase&&!st.mode)return relView(st
 function trView(t,label){if(!t)return '';const s=t.submit||{},ps=t.polls||[],r=t.result||{},t0=s.t||(ps[0]||{}).t||0;
  const rows=ps.map(p=>`<tr${p.error||p.retry_wait_s?' class="bad"':''}><td>${p.n}</td><td>+${(p.t-t0).toFixed(2)}s</td><td>${p.status??''}</td><td>${esc(p.error||'')}${p.body?' '+esc(JSON.stringify(p.body)):''}</td><td>${esc(p.state||'')}${p.stage?' / '+esc(p.stage):''}${p.progress!=null?' '+p.progress:''}</td><td>${p.retry_wait_s?p.retry_wait_s+'s 뒤 재시도':''}${p.recovered_after_s?'회복('+p.recovered_after_s+'s 끊김)':''}</td></tr>`).join('');
  return `<details class="raw"${ps.some(p=>p.error||p.retry_wait_s)||r.failed?' open':''}><summary>A5000 ${label} 접수·폴링 ${ps.length}회${ps.filter(p=>p.retry_wait_s).length?' · 재시도 '+ps.filter(p=>p.retry_wait_s).length+'회':''}${r.failed?' · <span class="bad">실패 '+esc(r.failed)+'</span>':''}</summary><div class="cap">접수 ${s.t?ts(s.t):'-'} · HTTP ${s.status??'-'} · ${esc(JSON.stringify(s.response||''))}</div><table><tr><th>회</th><th>시각(접수 기준)</th><th>HTTP</th><th>오류</th><th>A5000 상태</th><th>재시도</th></tr>${rows}</table></details>`;}
+function agentView(j){const a=j.agent||{},v=a.verdict||{};
+ const ev=(j.events||[]).map(e=>`<tr><td>${e.seq}</td><td>${ts(e.t)}</td><td>${esc(e.step)}</td><td>${esc(e.kind)}</td><td>${esc(e.text)}<div class="imgs">${Object.entries(e.images||{}).map(([n,u])=>thumb(u,n)).join('')}</div></td></tr>`).join('');
+ const tr=(j.agent_tries||[]).map(t=>`<tr><td>${t.attempt}${t.attempt===j.agent_chosen?' ★3D':''}</td><td>${['element','position','mask_fit','shape_3d'].map(k=>t.checks[k]?'✓':'✗').join(' ')}</td><td>${esc(t.cause||'합격')}</td><td>${esc(t.reason_ko||'')}<div class="cap">${esc(t.fix||'')}</div></td><td>${t.n_cells} · ${esc(t.render_view||'')}</td><td class="cap">${esc(t.inpaint||'')}</td></tr>`).join('');
+ return `<div class="cap">에이전트 ${esc(a.model||'')} · 되돌아가기 ${a.backtracks}/${a.max_backtracks} · 시도 ${a.attempt}${a.below_bar?' · <span class="bad">기준 미달로 진행(below_bar)</span>':''} · 시점 렌더 ${j.agent_views?(j.agent_views.cached?'캐시':'새로 '+j.agent_views.render_s+'s'):'-'}</div>
+ <table class="cap"><tr><th>#</th><th>시각</th><th>단계</th><th>종류</th><th>진행 보고(앱 화면 그대로)</th></tr>${ev}</table>
+ <table class="cap"><tr><th>시도</th><th>요소 위치 마스크 3D</th><th>원인</th><th>이유·고칠 방법</th><th>셀·시점</th><th>인페인팅 문장</th></tr>${tr}</table>
+ ${RAW('마지막 마스킹 계획(오케스트레이터 응답)',j.agent_plan)}${RAW('역투영 결과',j.agent_mask)}${RAW('보정에 넣은 지시문',j.agent_refine_input)}`;}
 function e3Raw(j){const r=j.raw_edit3d;if(!r)return '';const n=r.attempt,b=`/clients/img/${j.job_id}/${n}/`;
  return `<div><b>3D 편집 입력</b> (A5000 /v2/trellis/edit, 시도 ${n} 승인본) · ${esc(r.text||'')}<div class="imgs">${thumb(b+'render.png','2d_render')}${thumb(b+'mask.png','2d_mask')}${thumb(b+'edit.png','2d_edit')}</div><div class="cap">[2d_render | 2d_mask | 2d_edit]</div>`+RAW('meta JSON 전문',r.meta)+RAW('보낸 파일(이름·바이트·sha256)',r.files)+RAW('A5000 접수 응답',r.submit_response)+RAW('A5000 작업 결과 전문(설정·단계 시간·청크)',r.job_result)+`</div>`;}
 const ts=t=>t?new Date(t*1000).toLocaleString('ko-KR'):'';const aid=location.pathname.split('/').pop();
@@ -336,7 +347,8 @@ fetch('/clients/api/assets/'+aid).then(r=>r.json()).then(d=>{D=d;
  try{init3d()}catch(e){document.querySelector('.views')?.insertAdjacentHTML('beforebegin','<div class="cap bad">3D 보기를 열 수 없다(WebGL 없음): '+esc(e.message)+'</div>')}const o=opts();['selA','selB'].forEach((id,i)=>{const s=document.getElementById(id);s.innerHTML=o.map(x=>`<option value="${x.k}">${esc(x.cap)}</option>`).join('');s.onchange=()=>pick(i);});
  if(o.length){document.getElementById('selA').value=o[0].k;document.getElementById('selB').value=o[o.length-1].k;pick(0);pick(1);}
  const qj=new URLSearchParams(location.search).get('job');
- document.getElementById('edits').innerHTML=d.jobs.filter(j=>j.kind==='edit').map(j=>`<details><summary>${ts(j.created_at)} · ${esc(j.instruction)} → <span class="${j.outcome==='유지'?'ok':(j.outcome==='실패'?'bad':'')}">${j.outcome}${j.error_code?' '+j.error_code:''}</span> · v${j.base_version}${j.to_version?' → v'+j.to_version:''} · 바뀐 ${j.n_changed} · 제거 ${j.n_removed}</summary>
+ document.getElementById('edits').innerHTML=d.jobs.filter(j=>j.kind==='edit').map(j=>`<details><summary>${ts(j.created_at)} · ${esc(j.instruction)} → <span class="${j.outcome==='유지'?'ok':(j.outcome==='실패'?'bad':'')}">${j.outcome}${j.error_code?' '+j.error_code:''}</span> · v${j.base_version}${j.to_version?' → v'+j.to_version:''} · 바뀐 ${j.n_changed} · 제거 ${j.n_removed}${j.mode==='agent'?' · <b>에이전트</b>':''}</summary>
+  ${j.mode==='agent'?agentView(j):''}
   <div>보정: ${j.refine?`target <b>${esc(j.refine.target_element)}</b> · replacement <b>${esc(j.refine.replacement)}</b> · op ${esc(j.refine.op)}<br>new_scene_prompt: ${esc(j.refine.new_scene_prompt)}`:'-'}</div>
   <div class="cap">볼륨 셀 ${j.n_cells} · 기기 ${esc(j.device)} · 경과 ${j.elapsed_s}s · 단계 시간 ${esc(JSON.stringify(j.stage_s))} · GPU 대기 ${esc(JSON.stringify(j.queue_waits))}${j.discard_note?' · '+esc(j.discard_note):''}</div>
   ${(j.to_version||j.archive)?`<button onclick='compare(D.jobs.find(x=>x.job_id==="${j.job_id}"))'>이 편집 3D 비교</button>`:''}

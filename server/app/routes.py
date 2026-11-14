@@ -68,7 +68,13 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             refine=j.get("refine"), preview=j.get("preview"), review=j.get("review"), prompts=prompts_of(j),
             result=j.get("result"),
             expires_at=j.get("expires_at"), error_code=j.get("error_code"), error_message=j.get("error_message"))
-        return o.model_dump(mode="json")
+        out = o.model_dump(mode="json")
+        if j.get("mode") == "agent":                      # S20 10.3: 에이전트 작업만 세 필드
+            out.update(mode="agent", agent=j.get("agent"), events=j.get("events") or [])
+        else:
+            for k in ("mode", "agent", "events"):
+                out.pop(k, None)
+        return out
 
     # ── health · samples ───────────────────────────────────────────
     @r.get("/health")
@@ -83,7 +89,8 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             llm = "error" if ad.last_ok is False else "configured"
         return M.HealthResp(ok=True, app_api=APP_API, contract_version=int(CONTRACT_VERSION), mock=S.settings.mock,
                             workers=M.Workers(a5000=w.get("a5000", "down"), inpaint=w.get("inpaint", "down"),
-                                              llm=llm)).model_dump(mode="json")
+                                              llm=llm),
+                            features=["agent_edit"] if S.settings.agent else []).model_dump(mode="json")
 
     @r.get("/samples")
     def samples():
@@ -142,6 +149,13 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     async def edit_create(asset_id: str, req: Request):
         dev = device(req)
         b = await body(req, M.EditReq)                       # 1. 입력 형식
+        if b.camera is None and b.volume_cells is None:      # S20 10.1 에이전트 편집
+            if not S.settings.agent:
+                raise AppError(400, "INVALID_REQUEST", "에이전트 편집이 꺼져 있다(APP_AGENT=0) — camera·volume_cells 가 필요하다")
+            j = S.engine.create_edit(asset_id, dev, b.base_version, b.instruction, None, None, mock_fail(req))
+            return M.EditCreated(job_id=j["job_id"]).model_dump(mode="json")
+        if b.camera is None or b.volume_cells is None:
+            raise AppError(400, "INVALID_REQUEST", "camera·volume_cells 는 둘 다 있거나 둘 다 없어야 한다")
         prob = M.camera_problem(b.camera)
         if prob:
             raise AppError(400, "INVALID_CAMERA", prob)
@@ -211,6 +225,16 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         if visible_job(job_id) is None:
             raise AppError(404, "JOB_NOT_FOUND", f"작업 없음: {job_id}")
         return job_obj(S.engine.cancel(job_id, dev), dev)
+
+    @r.get("/jobs/{job_id}/agent/{seq}/{name}.png")
+    def agent_image(job_id: str, seq: int, name: str):
+        """S20 10.3 진행 보고 이미지."""
+        if name not in ("views", "overlay", "render", "mask", "edit", "result") or visible_job(job_id) is None:
+            raise AppError(404, "JOB_NOT_FOUND", "이미지 없음")
+        p = S.settings.data_dir / "jobs" / job_id / "agent" / str(int(seq)) / f"{name}.png"
+        if not p.is_file():
+            raise AppError(404, "JOB_NOT_FOUND", "이미지 없음")
+        return FileResponse(p, media_type="image/png")
 
     @r.get("/jobs/{job_id}/preview/{attempt}/{name}.png")
     def preview(job_id: str, attempt: int, name: str):
