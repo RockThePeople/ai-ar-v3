@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import json
+
+import numpy as np
 import shutil
 import time
 from typing import Optional
@@ -379,7 +381,42 @@ class AgentRun:
         d = eng._preview_dir(j, j["attempt"])
         edit = (d / "edit.png").read_bytes()
         self.event("inpainting", "tool", f"편집 이미지를 그렸습니다(시도 {j['attempt']})", {"edit": edit})
+        if j.get("agent_source") == "lasso" and self.s.inpaint_backend == "gemini" and self.s.grow_from_image:
+            self.grow(d, edit)
         return edit
+
+    def grow(self, d, edit: bytes) -> None:
+        """S20f 2.6: 새 물건이 라쏘보다 크면 빈 셀로 볼륨을 넓히고, 같은 카메라로 다시 렌더해 이번 시도 렌더·마스크를 바꾼다
+        (A5000 은 편집 셀이 렌더 때 셀과 같아야 한다)."""
+        j, eng = self.j, self.eng
+        rgb = am.to_rgb(decode_png((d / "render.png").read_bytes()))
+        um = mask_bool(decode_png((d / "mask.png").read_bytes()))
+        er = am.to_rgb(decode_png(edit))
+        T = (getattr(self, "consts", None) or am.size_consts(self.occ))["T"]
+        g = am.grow_from_image(rgb, er, um, self.U, self.occ, j["camera"], T)
+        rec = {k: v for k, v in g.items() if k not in ("grown", "s_mask")} | {"attempt": j["attempt"], "T": T}
+        j.setdefault("agent_grow", []).append(rec)
+        if g["skip"] == "too_large":
+            self.force_prompt = True
+            self.event("inpainting", "check", f"그림 전체가 많이 바뀌어(화면 {g['diff_frac']:.0%}) 볼륨을 넓히지 않고 다시 그립니다",
+                       detail=f"diff fraction {g['diff_frac']} > {am.GROW_MAX_FRAC}")
+            return
+        if not g["n_grown"]:
+            return
+        final = [list(c) for c in {tuple(c) for c in self.U} | {tuple(c) for c in g["grown"]}]
+        self.render_with(j["camera"], final, j.get("render_view") or "picked")
+        rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
+        for n in ("render.png", "mask.png"):
+            (d / n).write_bytes((rd / n).read_bytes())
+        if j.get("attempts"):
+            j["attempts"][-1].update(render_id=j["render"]["render_id"], grown=g["n_grown"])
+        S = g["s_mask"]
+        big = np.repeat(np.repeat(S, er.shape[0] // S.shape[0], 0), er.shape[1] // S.shape[1], 1)
+        over = am.tint_mask(er, big[:er.shape[0], :er.shape[1]], color=(40, 120, 255))
+        self.event("inpainting", "tool", f"새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+{g['n_grown']:,}셀)",
+                   {"overlay": encode_png(am.half(over))},
+                   detail=f"diff {g['diff_frac']} silhouette {g['s_frac']} depth {g.get('depth_range')} T {T}; "
+                          f"cells {len(self.U)} -> {len(final)}")
 
     def judge(self, edit: bytes, region: Optional[dict]) -> dict:
         j, eng = self.j, self.eng
@@ -433,6 +470,8 @@ class AgentRun:
                 cause = cause_of(checks)
                 if gem and cause:                             # S20f: 마스크 없음 → 원인이 무엇이든 프롬프트 다시 쓰기
                     cause = "prompt"
+                if gem and getattr(self, "force_prompt", False):   # 2.6: 그림 전체가 바뀜 → 넓히지 않고 다시 그리기
+                    cause, self.force_prompt = cause or "prompt", False
                 ag["verdict"] = {"pass": cause is None, "checks": checks, "cause": cause}
                 tries.append({"attempt": j["attempt"], "checks": checks, "cause": cause, "render": dict(j["render"]),
                               "camera": j["camera"], "cells": j["cells"], "refine": j["refine"],

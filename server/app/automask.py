@@ -482,3 +482,102 @@ def pick_view(cells, occupied, cams: dict, user_cam: dict) -> dict:
     counts = {name: visible_count(cells, occupied, cam) for name, cam in order}
     best = max(order, key=lambda it: (counts[it[0]], -[n for n, _ in order].index(it[0])))
     return {"view": best[0], "camera": best[1], "counts": counts}
+
+
+# ── S20f 2.6 이미지 차이로 볼륨 넓히기(사용자 지적 2026-11-15 00:52, APP_GROW_FROM_IMAGE) ──
+GROW_THR = 0.12         # 색 거리 문턱(0–1, RGB 유클리드 / (255·√3))
+GROW_MIN_AREA = 0.002   # 작은 조각 제거(화면 면적 비율)
+GROW_MAX_FRAC = 0.30    # 차이가 이보다 크면 넓히지 않음(그림 전체가 옮겨짐)
+GROW_RES = 256
+
+
+def _down_bool(m: np.ndarray, res: int) -> np.ndarray:
+    """bool (H, W) → (res, res) 칸에 하나라도 True 면 True."""
+    H, W = m.shape
+    ys = (np.arange(H) * res // H)
+    xs = (np.arange(W) * res // W)
+    out = np.zeros((res, res), bool)
+    yy, xx = np.nonzero(m)
+    out[ys[yy], xs[xx]] = True
+    return out
+
+
+def _components(m: np.ndarray) -> tuple:
+    """8-이웃 연결 성분 라벨(작은 격자용 BFS). → (labels, n)."""
+    lab = np.zeros(m.shape, np.int32)
+    n = 0
+    H, W = m.shape
+    for y0, x0 in zip(*np.nonzero(m)):
+        if lab[y0, x0]:
+            continue
+        n += 1
+        stack = [(y0, x0)]
+        lab[y0, x0] = n
+        while stack:
+            y, x = stack.pop()
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    yy, xx = y + dy, x + dx
+                    if 0 <= yy < H and 0 <= xx < W and m[yy, xx] and not lab[yy, xx]:
+                        lab[yy, xx] = n
+                        stack.append((yy, xx))
+    return lab, n
+
+
+def grow_from_image(render_rgb: np.ndarray, edit_rgb: np.ndarray, u_mask: np.ndarray, user_cells, occupied,
+                    cam: dict, T: int, thr: float = GROW_THR, min_area: float = GROW_MIN_AREA,
+                    max_frac: float = GROW_MAX_FRAC) -> dict:
+    """2.6: 원본 렌더와 편집 이미지의 차이 → 작은 조각 제거 → U 투영과 닿는 성분 = 새 물건 실루엣 S →
+    S 를 카메라 방향으로 밀고 깊이 [d_min − T, d_max + T](원래 물건 U∩O 의 깊이) 안의 **빈 셀만** 넓힌다.
+    → {grown, n_grown, diff_frac, s_frac, skip, s_mask(GROW_RES² bool)}."""
+    r = render_rgb.astype(np.float32)
+    e = edit_rgb.astype(np.float32)
+    d = np.sqrt(((r - e) ** 2).sum(axis=2)) / (255.0 * np.sqrt(3.0))
+    D = d > thr
+    frac = float(D.mean())
+    out = {"diff_frac": round(frac, 4), "grown": [], "n_grown": 0, "skip": None, "s_frac": 0.0,
+           "s_mask": np.zeros((GROW_RES, GROW_RES), bool)}
+    if frac > max_frac:
+        out["skip"] = "too_large"
+        return out
+    Dd = _down_bool(D, GROW_RES)
+    Ud = _down_bool(u_mask, GROW_RES)
+    Ud = Ud | np.roll(Ud, 1, 0) | np.roll(Ud, -1, 0) | np.roll(Ud, 1, 1) | np.roll(Ud, -1, 1)   # 닿음 = 1칸 여유
+    lab, n = _components(Dd)
+    S = np.zeros_like(Dd)
+    min_px = min_area * GROW_RES * GROW_RES
+    for k in range(1, n + 1):
+        comp = lab == k
+        if comp.sum() >= min_px and (comp & Ud).any():
+            S |= comp
+    out["s_mask"], out["s_frac"] = S, round(float(S.mean()), 4)
+    if not S.any():
+        return out
+    O = np.asarray(occupied, int).reshape(-1, 3)
+    occ = np.zeros((GRID,) * 3, bool)
+    occ[O[:, 0], O[:, 1], O[:, 2]] = True
+    U = np.asarray(user_cells, int).reshape(-1, 3)
+    uo = U[occ[U[:, 0], U[:, 1], U[:, 2]]] if len(U) else U
+    base = uo if len(uo) else U
+    _, _, uz = _grid_xy(centers(base), cam)
+    dmin, dmax = float((uz * GRID).min()) - T, float((uz * GRID).max()) + T
+    cells = _all_cells()
+    x, y, z = _grid_xy(centers(cells), cam)
+    ix = np.clip((x / 1000 * GROW_RES).astype(int), 0, GROW_RES - 1)
+    iy = np.clip((y / 1000 * GROW_RES).astype(int), 0, GROW_RES - 1)
+    inS = S[iy, ix] & (z > 0) & (x >= 0) & (x < 1000) & (y >= 0) & (y < 1000)
+    zc = z * GRID
+    have = np.zeros((GRID,) * 3, bool)
+    if len(U):
+        have[U[:, 0], U[:, 1], U[:, 2]] = True
+    pick = inS & (zc >= dmin) & (zc <= dmax) & ~occ[cells[:, 0], cells[:, 1], cells[:, 2]] \
+        & ~have[cells[:, 0], cells[:, 1], cells[:, 2]]
+    g = cells[pick]
+    room = MAX_CELLS - len(U)
+    if len(g) > room:                                   # 65,536 넘으면 카메라에서 먼 넓힌 셀부터 뺀다
+        order = np.argsort(zc[pick])
+        g = g[order[:max(0, room)]]
+        out["dropped_far"] = int(pick.sum() - len(g))
+    out["grown"], out["n_grown"] = g.tolist(), int(len(g))
+    out["depth_range"] = [round(dmin, 1), round(dmax, 1)]
+    return out

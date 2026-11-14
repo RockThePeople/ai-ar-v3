@@ -168,3 +168,63 @@ def test_to_png_converts_jpeg():
     out = to_png(jpg)
     assert out[:8] == b"\x89PNG\r\n\x1a\n" and decode_png(out).shape[:2] == (16, 16)
     assert io is not None
+
+
+# ══════════════════════════════════════════════════════════ 2.6 이미지 차이로 볼륨 넓히기
+def _proj_mask(cells, cam, res=1024, r=6):
+    m = np.zeros((res, res), bool)
+    px, py, _ = am.project(am.centers(cells), cam)
+    for x, y in zip(px.astype(int), py.astype(int)):
+        m[max(0, y - r):y + r, max(0, x - r):x + r] = True
+    return m
+
+
+def test_grow_from_image_adds_only_empty_cells_touching_lasso():
+    body = [[x, 40, z] for x in range(20, 44) for z in range(10, 54)]            # 앞판(몸)
+    rod = [[x, 38, 30] for x in range(30, 34)]                                    # 판 앞 짧은 막대 = 원래 물건(라쏘)
+    occ = body + rod
+    cam = _cam0(occ)
+    U = rod
+    um = _proj_mask(U, cam)
+    render = np.full((1024, 1024, 3), 255, np.uint8)
+    edit = render.copy()
+    ys, xs = np.nonzero(um)
+    y0, y1, x0, x1 = ys.min() - 120, ys.max() + 120, xs.min() - 60, xs.max() + 60
+    edit[y0:y1, x0:x1] = (90, 60, 30)                                             # 라쏘보다 큰 새 물건(방패)
+    edit[20:40, 20:40] = (0, 0, 0)                                                # 떨어진 작은 조각(제거)
+    edit[900:1000, 900:1000] = (0, 0, 0)                                          # 떨어진 큰 조각(라쏘와 안 닿음 → 제거)
+    g = am.grow_from_image(render, edit, um, U, occ, cam, T=4)
+    assert g["skip"] is None and g["n_grown"] > 0
+    occset, uset = {tuple(c) for c in occ}, {tuple(c) for c in U}
+    grown = {tuple(c) for c in g["grown"]}
+    assert not (grown & occset) and not (grown & uset)                            # 빈 셀만, 새 셀만
+    _, _, z = am._grid_xy(am.centers(g["grown"]), cam)
+    zr = g["depth_range"]
+    assert (z * 64 >= zr[0] - 1e-6).all() and (z * 64 <= zr[1] + 1e-6).all()
+    gx, gy, _ = am._grid_xy(am.centers(g["grown"]), cam)
+    assert gx.max() < 900 and gy.max() < 900                                      # 떨어진 큰 조각 쪽으로는 안 넓힘
+    S = g["s_mask"]
+    assert not S[:15, :15].any() and not S[230:, 230:].any()
+
+
+def test_grow_skips_when_whole_image_changes():
+    occ = [[x, 40, z] for x in range(20, 44) for z in range(10, 54)]
+    cam = _cam0(occ)
+    render = np.full((256, 256, 3), 255, np.uint8)
+    edit = np.zeros((256, 256, 3), np.uint8)
+    g = am.grow_from_image(render, edit, np.ones((256, 256), bool), occ[:10], occ, cam, T=4)
+    assert g["skip"] == "too_large" and g["n_grown"] == 0
+
+
+def test_flow_grow_too_large_forces_prompt_retry(env):
+    aid = make_asset(env)
+    env.eng.s.inpaint_backend = "gemini"
+    env.eng.s.grow_from_image = True
+    env.eng.s.agent_max_backtracks = 1                                            # 실측 설정과 같게
+    env.eng.gemini = FakeGemini()                                                 # 회색 렌더 → 밝은 회색 = 화면 전체 차이
+    env.eng.agent_llm.judge_script = [PASS]
+    j = _lasso(env, aid)
+    texts = [e["text"] for e in j["events"]]
+    assert any("볼륨을 넓히지 않고 다시 그립니다" in t for t in texts)
+    assert j["agent"]["backtracks"] == 1 and len(env.eng.gemini.calls) == 2
+    assert env.eng.get(j["job_id"])["agent_grow"][0]["skip"] == "too_large"
