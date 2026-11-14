@@ -377,6 +377,7 @@ class AgentRun:
     def inpaint(self) -> bytes:
         j, eng = self.j, self.eng
         self._state("inpainting", "inpainting", 0.5)
+        self.grown_region = None                          # 2.6: 넓히면 이 시도 채점에 넓힌 마스크 겹침을 쓴다
         eng._run_render_inpaint(j, new_render=False, agent=True)
         d = eng._preview_dir(j, j["attempt"])
         edit = (d / "edit.png").read_bytes()
@@ -410,6 +411,7 @@ class AgentRun:
             (d / n).write_bytes((rd / n).read_bytes())
         if j.get("attempts"):
             j["attempts"][-1].update(render_id=j["render"]["render_id"], grown=g["n_grown"])
+        self.grown_region = self.region()                 # 채점이 넓히기 전 마스크로 "영역 밖"이라 판정하지 않게(G4 실측)
         S = g["s_mask"]
         big = np.repeat(np.repeat(S, er.shape[0] // S.shape[0], 0), er.shape[1] // S.shape[1], 1)
         over = am.tint_mask(er, big[:er.shape[0], :er.shape[1]], color=(40, 120, 255))
@@ -423,6 +425,7 @@ class AgentRun:
         self._state("judging", "judging", 0.6)
         self._mock("judge")
         d = eng._preview_dir(j, j["attempt"])
+        region = getattr(self, "grown_region", None) or region
         ov = (region or {}).get("images", [None])[0] or (d / "mask.png").read_bytes()
         return self._orch(self.llm.agent_judge, (d / "render.png").read_bytes(), ov, edit, j["instruction"],
                           j["prompts"].get("inpaint") or "", side_hint=self.side_hint)   # S20d: 확인과 같은 기대 위치

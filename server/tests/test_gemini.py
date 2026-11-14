@@ -228,3 +228,27 @@ def test_flow_grow_too_large_forces_prompt_retry(env):
     assert any("볼륨을 넓히지 않고 다시 그립니다" in t for t in texts)
     assert j["agent"]["backtracks"] == 1 and len(env.eng.gemini.calls) == 2
     assert env.eng.get(j["job_id"])["agent_grow"][0]["skip"] == "too_large"
+
+
+def test_flow_grow_refreshes_judge_overlay(env, monkeypatch):
+    """G4 실측: 넓힌 뒤에도 채점이 넓히기 전 마스크로 '영역 밖'이라 판정했다 → 넓힌 마스크 겹침을 채점에 넘긴다."""
+    aid = make_asset(env)
+    env.eng.s.inpaint_backend = "gemini"
+    env.eng.s.grow_from_image = True
+    env.eng.gemini = FakeGemini()
+    fake = env.eng.agent_llm
+    fake.judge_script = [PASS]
+    grown = [[0, 0, 0], [1, 0, 0]]
+    monkeypatch.setattr(am, "grow_from_image", lambda *a, **k: {
+        "skip": None, "n_grown": len(grown), "grown": grown, "diff_frac": 0.05, "s_frac": 0.03,
+        "s_mask": np.zeros((am.GROW_RES, am.GROW_RES), bool), "depth_range": [0, 1]})
+    seen = []
+    orig = fake.agent_judge
+    fake.agent_judge = lambda render, overlay, edit, *a, **k: (seen.append(overlay), orig(render, overlay, edit, *a, **k))[1]
+    j = _lasso(env, aid)
+    jj = env.eng.get(j["job_id"])
+    assert j["state"] == "committed" and jj["attempts"][-1]["grown"] == 2
+    assert {tuple(c) for c in grown} <= {tuple(c) for c in jj["cells"]}               # 3D 볼륨 = U ∪ 넓힌 셀
+    ov_now = (env.eng.s.data_dir / "jobs" / j["job_id"] / "region" / "overlay.png").read_bytes()
+    assert seen and seen[-1] == ov_now                                             # 채점 = 넓힌 뒤 다시 만든 겹침
+    assert any("볼륨을 넓혔습니다(+2셀)" in e["text"] for e in j["events"])
