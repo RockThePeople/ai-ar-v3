@@ -109,9 +109,9 @@ class FakeGemini:
                                                 "text": "", "finish": "STOP", "usage": None}
 
 
-def _lasso(env, aid, text="오른손에 칼을 들게 해줘"):
+def _lasso(env, aid, text="오른손에 칼을 들게 해줘", base=1):
     r = env.post(f"/app/v1/assets/{aid}/edits", headers=A,
-                 json={"base_version": 1, "instruction": text, "camera": CAM, "volume_cells": CELLS, "agent": True})
+                 json={"base_version": base, "instruction": text, "camera": CAM, "volume_cells": CELLS, "agent": True})
     assert r.status_code == 202, r.text
     env.eng.drain()
     return env.get(f"/app/v1/jobs/{r.json()['job_id']}", headers=A).json()
@@ -359,3 +359,50 @@ def test_no_commit_preview_only_keeps_app_version(env):
     j2 = _lasso(env, aid, "칼을 큰 방패로 바꿔줘")                                      # 같은 판본(v1) 위 두 번째 편집 가능
     assert j2["state"] == "committed" and env.eng.db.asset(aid)["version"] == 1
     assert fake.last_judge_old == "the old object"                                    # 채점에 원래 물건(남으면 ① 불합격)
+
+
+# ══════════════════════════════════════════════════════════ S20f-3 · 계약 10.2 1.1.1 보충(S20f)
+def test_gemini_max_backtracks_one_and_stages(env, monkeypatch):
+    aid = make_asset(env)
+    j0 = _lasso(env, aid)                                                          # 로컬(기본): 설정값 그대로
+    assert j0["agent"]["max_backtracks"] == env.eng.s.agent_max_backtracks == 3
+    env.eng.s.inpaint_backend = "gemini"
+    env.eng.s.grow_from_image = True
+    env.eng.gemini = FakeGemini()
+    env.eng.agent_llm.judge_script = [PASS]
+    monkeypatch.setattr(am, "grow_from_image", lambda *a, **k: {
+        "skip": None, "n_grown": 3, "grown": [[0, 0, 0], [1, 0, 0], [2, 0, 0]], "diff_frac": 0.05, "s_frac": 0.03,
+        "s_mask": np.zeros((am.GROW_RES, am.GROW_RES), bool), "depth_range": [0, 1], "merged": [], "n_merged": 0,
+        "merge": None})
+    j = _lasso(env, aid, base=j0["result"]["to_version"])
+    assert j["state"] == "committed" and j["agent"]["max_backtracks"] == 1          # Gemini 일 때 1
+    stages = [s["stage"] for s in env.eng.get(j["job_id"])["stage_log"]]
+    assert "view_select" in stages and "volume_grow" in stages
+    imgs = [k for e in j["events"] for k in (e.get("images") or {})]
+    assert "views" in imgs and "grow" in imgs and "overlay" in imgs                # 넓힌 윤곽 = grow
+    ev = next(e for e in j["events"] if "grow" in (e.get("images") or {}))
+    assert env.get(ev["images"]["grow"]).status_code == 200
+
+
+def test_mock_mode_fixed_texts_no_gemini(env):
+    aid = make_asset(env)
+    env.eng.s.inpaint_backend = "gemini"
+    env.eng.s.grow_from_image = True
+    env.be.name = "mock"                                                           # 8084 가짜 모드 경로
+    env.be.DUR = {"generate": 0, "refine": 0, "inpaint": 0, "edit3d": 0}               # MockBackend 단계 시간표 흉내
+    env.eng.s.mock_time_scale = 0
+    g = FakeGemini()
+    env.eng.gemini = g
+    env.eng.agent_llm.judge_script = [PASS]
+    try:
+        j = _lasso(env, aid)
+    finally:
+        env.be.name = "fake"
+    assert j["state"] == "committed" and j["agent"]["max_backtracks"] == 1 and g.calls == []   # 실제 Gemini 안 부름
+    texts = [e["text"] for e in j["events"]]
+    assert "물건이 가장 잘 보이는 방향(방위 90°)을 골랐습니다(가짜)" in texts
+    assert "새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+2,140셀)(가짜)" in texts
+    stages = [s["stage"] for s in env.eng.get(j["job_id"])["stage_log"]]
+    assert "view_select" in stages and "volume_grow" in stages
+    keys = [k for e in j["events"] for k in (e.get("images") or {})]
+    assert "views" in keys and "grow" in keys

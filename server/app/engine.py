@@ -325,7 +325,9 @@ class Engine:
                 kw = {"mode": "agent", "events": [], "agent_calls": 0, "mock_agent": mock_agent,
                       "agent_source": "lasso" if agent_lasso else "auto", "user_camera": camera, "user_cells": cells,
                       "agent": {"model": getattr(self.agent_llm, "model", None), "attempt": 1, "backtracks": 0,
-                                "max_backtracks": self.s.agent_max_backtracks, "mask_retries": 0,
+                                # 계약 10.2 1.1.1 보충(S20f): Gemini 일 때 되돌아가기 1(편집 1회당 Gemini 최대 2회)
+                                "max_backtracks": 1 if (agent_lasso and self.s.inpaint_backend == "gemini")
+                                else self.s.agent_max_backtracks, "mask_retries": 0,
                                 "max_mask_retries": self.s.agent_max_mask_retries, "verdict": None, "below_bar": False}}
             j = self._new_job("edit", asset_id, device, a["qr_id"], base_version=int(base_version), raw_prompt=raw,
                               instruction=instruction, camera=camera, cells=cells, mock_fail=mock_fail,
@@ -572,7 +574,11 @@ class Engine:
             loose = (f"{j['asset_id']}|{j['base_version']}|{j.get('render_view')}|{j['instruction']}|{j['attempt']}"
                      if self.s.gemini_cache_loose else None)      # 시험 전용: 끔/켬 비교에 같은 이미지
             try:
-                raw, ginfo = (gc.edit_cached(rpng, gp, loose=loose) if hasattr(gc, "edit_cached") else gc.edit(rpng, gp))
+                if self.be.name == "mock":                # 8084 가짜 모드: 실제 Gemini 를 부르지 않는다(고정 edit.png)
+                    raw, ginfo = self.be.inpaint(rpng, mpng, gp, seed), {"model": "mock-gemini", "latency_s": 0.0,
+                                                                         "prompt": gp, "finish": "STOP"}
+                else:
+                    raw, ginfo = (gc.edit_cached(rpng, gp, loose=loose) if hasattr(gc, "edit_cached") else gc.edit(rpng, gp))
             except GeminiError as e:
                 raise StageError("INPAINT_FAILED", str(e))
             edit = fit_to(raw, h, w)

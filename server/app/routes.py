@@ -235,7 +235,7 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     @r.get("/jobs/{job_id}/agent/{seq}/{name}.png")
     def agent_image(job_id: str, seq: int, name: str):
         """S20 10.3 진행 보고 이미지."""
-        if name not in ("views", "overlay", "render", "mask", "edit", "result") or visible_job(job_id) is None:
+        if name not in ("views", "overlay", "render", "mask", "edit", "result", "grow") or visible_job(job_id) is None:
             raise AppError(404, "JOB_NOT_FOUND", "이미지 없음")
         p = S.settings.data_dir / "jobs" / job_id / "agent" / str(int(seq)) / f"{name}.png"
         if not p.is_file():

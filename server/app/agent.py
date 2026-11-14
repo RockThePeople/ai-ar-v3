@@ -289,14 +289,22 @@ class AgentRun:
                 raise StageError("NO_TARGET", plan.get("note_ko") or "지시한 부위를 찾지 못했다")
             self.g_plan = plan
         plan = self.g_plan
+        self._state("masking", "view_select", 0.2)        # 계약 10.2 1.1.1 보충(S20f): 방향 고르기
         cams = am.view_cameras(self.occ)
-        fv = am.front_from_user(self.cam, self.occ, plan.get("user_view_side"))   # S20f-2: 뒷모습 피하기
-        pk = am.pick_view(self.U, self.occ, cams, self.cam, front_view=fv)
-        j["agent_pick"] = {k: pk[k] for k in ("view", "counts", "weights", "scores", "front_view", "back_view")}
         names = ["user"] + list(am.VIEW_AZ)
+        if eng.be.name == "mock":                         # 8084 가짜 모드: 고정 방향·고정 문구
+            pk = {"view": "az090", "camera": cams["az090"], "counts": {n: 0 for n in names},
+                  "weights": {n: 1.0 for n in names}, "scores": {n: 0.0 for n in names}, "front_view": None,
+                  "back_view": None}
+            fv = None
+        else:
+            fv = am.front_from_user(self.cam, self.occ, plan.get("user_view_side"))   # S20f-2: 뒷모습 피하기
+            pk = am.pick_view(self.U, self.occ, cams, self.cam, front_view=fv)
+        j["agent_pick"] = {k: pk[k] for k in ("view", "counts", "weights", "scores", "front_view", "back_view")}
         thumbs = self._pick_thumbs(cams, pk["view"])
         label = "사용자 카메라" if pk["view"] == "user" else f"방위 {am.VIEW_KO[pk['view']]}"
-        self.event("masking", "tool", f"물건이 가장 잘 보이는 방향({label})을 골랐습니다", {"views": thumbs},
+        self.event("masking", "tool", f"물건이 가장 잘 보이는 방향({label})을 골랐습니다"
+                   + ("(가짜)" if eng.be.name == "mock" else ""), {"views": thumbs},
                    detail="visible lasso cells × weight per view: " + ", ".join(
                        f"{n} {pk['counts'][n]}×{pk['weights'][n]:g}" for n in names)
                    + f"; front {fv} (user side {plan.get('user_view_side')}), back {pk['back_view']}")
@@ -413,7 +421,12 @@ class AgentRun:
         edit = (d / "edit.png").read_bytes()
         self.event("inpainting", "tool", f"편집 이미지를 그렸습니다(시도 {j['attempt']})", {"edit": edit})
         if j.get("agent_source") == "lasso" and self.s.inpaint_backend == "gemini" and self.s.grow_from_image:
-            self.grow(d, edit)
+            if eng.be.name == "mock":                     # 8084 가짜 모드: 고정 문구·고정 이미지(볼륨은 그대로)
+                self._state("inpainting", "volume_grow", 0.55)
+                self.event("inpainting", "tool", "새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+2,140셀)(가짜)",
+                           {"grow": edit})
+            else:
+                self.grow(d, edit)
         return edit
 
     def grow(self, d, edit: bytes) -> None:
@@ -423,6 +436,7 @@ class AgentRun:
         rgb = am.to_rgb(decode_png((d / "render.png").read_bytes()))
         um = mask_bool(decode_png((d / "mask.png").read_bytes()))
         er = am.to_rgb(decode_png(edit))
+        self._state("inpainting", "volume_grow", 0.55)    # 계약 10.2 1.1.1 보충(S20f): 볼륨 넓히기
         cs = getattr(self, "consts", None) or am.size_consts(self.occ)
         T, M = cs["T"], cs["M"]
         plan = j.get("agent_plan") or {}
@@ -456,7 +470,7 @@ class AgentRun:
         over = am.tint_mask(er, big[:er.shape[0], :er.shape[1]], color=(40, 120, 255))
         if g["n_grown"]:
             self.event("inpainting", "tool", f"새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+{g['n_grown']:,}셀)",
-                       {"overlay": encode_png(am.half(over))},
+                       {"grow": encode_png(am.half(over))},
                        detail=f"diff {g['diff_frac']} silhouette {g['s_frac']} depth {g.get('depth_range')} T {T}; "
                               f"cells {len(self.U)} -> {len(final)}")
 
