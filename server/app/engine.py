@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
-from .cropinpaint import crop_inpaint
+from .cropinpaint import crop_inpaint, decode_png
 from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, placement_ok,
                           make_agent_adapter, FakeAgentAdapter,
                           strip_banned, strip_lateral, strip_realworld, style_from_request,
@@ -91,6 +91,7 @@ class Engine:
         self.s, self.db, self.store, self.be, self.clock = s, db, store, backend, clock
         self.llm = llm or make_adapter(s.mock, on_call=db.log_llm)
         # S20 오케스트레이터(AGENT_MODEL). 시험이 llm 만 넘기면 규칙 기반 가짜
+        self.gemini = None                                # S20f: 시험이 가짜 클라이언트를 넣는다(None = 환경변수로 실제)
         self.agent_llm = agent_llm or (FakeAgentAdapter(db.log_llm) if llm is not None else
                                        make_agent_adapter(s.mock, on_call=db.log_llm))
         self.lock = threading.RLock()
@@ -559,7 +560,21 @@ class Engine:
         crop, crop_files = None, None
         info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
         t0 = time.perf_counter()
-        if self.s.inpaint_crop:                           # S7: 마스크 주변만 잘라 1024² 로 키워 보내고 원래 자리에 붙인다
+        if self.s.inpaint_backend == "gemini" and j.get("mode") == "agent":   # S20f: 마스크 없이 렌더 1장 + 프롬프트
+            from .gemini import GeminiClient, GeminiError, fit_to, full_prompt, outside_diff
+            target = (j.get("agent_plan") or {}).get("old_object") or (j.get("agent_plan") or {}).get("target_part") or ""
+            gp = full_prompt(ip, target)
+            ip_src, ip = "gemini", gp
+            j["prompts"] = dict(prompts_of(j), inpaint=ip)
+            h, w = decode_png(rpng).shape[:2]
+            try:
+                raw, ginfo = (self.gemini or GeminiClient()).edit(rpng, gp)
+            except GeminiError as e:
+                raise StageError("INPAINT_FAILED", str(e))
+            edit = fit_to(raw, h, w)
+            info.update({"backend": "gemini", **ginfo, "raw_size": list(decode_png(raw).shape[:2]),
+                         "outside": outside_diff(rpng, edit, mpng)})
+        elif self.s.inpaint_crop:                         # S7: 마스크 주변만 잘라 1024² 로 키워 보내고 원래 자리에 붙인다
             edit, crop, crop_files = crop_inpaint(rpng, mpng,
                                                   lambda r, m: self.be.inpaint(r, m, ip, seed, info=info))
         else:
@@ -820,7 +835,8 @@ class Engine:
 
     def enqueue_views(self, asset_id: str, version: int, job_id: Optional[str] = None) -> None:
         """반영 직후 같은 대기열 뒤에 미리 렌더. 시험용 가짜 백엔드(name 'fake')에서는 하지 않는다."""
-        if self.be.name not in ("real", "mock") or not self.s.agent or not self.s.automask:   # S20e: 자동 마스킹 때만
+        if self.be.name not in ("real", "mock") or not self.s.agent or not (self.s.automask or self.s.inpaint_backend == "gemini"):
+            # S20e: 자동 마스킹 때만, S20f: Gemini 시점 고르기 축소 이미지에도
             return
         self.q.put(("views", json.dumps([asset_id, int(version), job_id])))
 

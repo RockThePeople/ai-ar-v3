@@ -195,6 +195,7 @@ class AgentRun:
         j["agent_consts"] = self.consts
         self.render_with(self.cam, self.U, "user")
         rgb, m = self._render_arrays()
+        self.user_rgb = rgb
         self.grid_render = encode_png(am.grid_full(rgb))
         over = am.tint_mask(rgb, m)
         self.grid_lasso = encode_png(am.grid_full(over))
@@ -245,6 +246,56 @@ class AgentRun:
                    detail=f"{tm}; cut depth {r['cut_depth']} side {r['cut_side']} empty {r['cut_empty']}; "
                           f"op {plan['op']}; keep {plan.get('keep_box')} old {plan.get('old_object_box')} new {plan.get('new_space_box')}")
         return {"plan": plan, "cells": cells, "n": len(cells)}
+
+    # ── S20f Gemini: 물건이 가장 잘 보이는 시점 고르기(볼륨은 라쏘 U 그대로) ──
+    def gemini_prepare(self, feedback: Optional[str]) -> dict:
+        j, eng = self.j, self.eng
+        if not getattr(self, "g_plan", None):
+            self._state("masking", "mask_refine", 0.15)
+            plan = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
+                              eng._scene(j["asset_id"]), feedback)
+            j["agent_plan"] = plan
+            if not plan.get("found"):
+                self.event("masking", "error", f"지시한 부위를 찾지 못했습니다 — {plan.get('note_ko') or ''}".strip(" —"))
+                raise StageError("NO_TARGET", plan.get("note_ko") or "지시한 부위를 찾지 못했다")
+            self.g_plan = plan
+        plan = self.g_plan
+        cams = am.view_cameras(self.occ)
+        pk = am.pick_view(self.U, self.occ, cams, self.cam)
+        j["agent_pick"] = {"view": pk["view"], "counts": pk["counts"]}
+        names = ["user"] + list(am.VIEW_AZ)
+        thumbs = self._pick_thumbs(cams, pk["view"])
+        label = "사용자 카메라" if pk["view"] == "user" else f"방위 {am.VIEW_KO[pk['view']]}"
+        self.event("masking", "tool", f"물건이 가장 잘 보이는 방향({label})을 골랐습니다", {"views": thumbs},
+                   detail="visible lasso cells per view: " + ", ".join(f"{n} {pk['counts'][n]}" for n in names))
+        self.render_with(pk["camera"], self.U, pk["view"])
+        return {"plan": plan, "cells": self.U, "n": len(self.U)}
+
+    def _pick_thumbs(self, cams: dict, chosen: str) -> Optional[bytes]:
+        """5후보 축소 이미지(3×2, 고른 칸 빨간 테두리). 시점 렌더는 캐시(없으면 렌더)."""
+        import numpy as np
+        j, eng = self.j, self.eng
+        try:
+            v = eng.views_cached(j["asset_id"], j["base_version"]) or eng.render_views(j["asset_id"], j["base_version"])
+            imgs = {n: am.half(am.half(am.to_rgb(decode_png(b)))) for n, b in v["png"].items()}
+            rgb, _ = self._render_arrays_user()
+            imgs["user"] = am.half(am.half(rgb))
+        except Exception as e:                                 # noqa: BLE001 — 축소 이미지는 없어도 진행
+            j["agent_pick_thumb_error"] = f"{type(e).__name__}: {e}"
+            return None
+        tiles = []
+        for n in ["user"] + list(am.VIEW_AZ):
+            t = imgs[n].copy()
+            am.draw_text(t, n, 4, 4, scale=2)
+            if n == chosen:
+                t[:4], t[-4:], t[:, :4], t[:, -4:] = (255, 0, 0), (255, 0, 0), (255, 0, 0), (255, 0, 0)
+            tiles.append(t)
+        blank = np.full_like(tiles[0], 255)
+        tiles.append(blank)
+        return encode_png(np.concatenate([np.concatenate(tiles[:3], 1), np.concatenate(tiles[3:], 1)], 0))
+
+    def _render_arrays_user(self):
+        return self.user_rgb, None
 
     def check_lasso(self, m: dict, region: Optional[dict]) -> dict:
         j = self.j
@@ -349,6 +400,7 @@ class AgentRun:
         plan, region, m = None, None, None
         stop = None
         lasso = j.get("agent_source") == "lasso"          # S20e: 사용자 라쏘 볼륨 다듬기(자동 마스킹 아님)
+        gem = lasso and s.inpaint_backend == "gemini"     # S20f: 라쏘 U 그대로 + 잘 보이는 시점 + Gemini
         try:
             if lasso:
                 self.lasso_start()
@@ -356,10 +408,10 @@ class AgentRun:
                 self.views()
             while True:
                 if step == "mask":
-                    m = self.refine_mask(feedback) if lasso else self.mask(feedback)
+                    m = self.gemini_prepare(feedback) if gem else (self.refine_mask(feedback) if lasso else self.mask(feedback))
                     plan = m["plan"]
                     region = self.region() if m["cells"] else None
-                    c = self.check_lasso(m, region) if lasso else self.check(m, region)
+                    c = {"ok": True} if gem else (self.check_lasso(m, region) if lasso else self.check(m, region))
                     if not c["ok"] or not m["cells"]:
                         # S20d: 마스크 다시 칠하기는 되돌아가기(채점 뒤)와 따로 센다
                         mr, mmax = ag.get("mask_retries", 0), ag.get("max_mask_retries", s.agent_max_mask_retries)
@@ -379,6 +431,8 @@ class AgentRun:
                 v = self.judge(edit, region)
                 checks = {k: bool(v["checks"].get(k)) for k in CHECKS}
                 cause = cause_of(checks)
+                if gem and cause:                             # S20f: 마스크 없음 → 원인이 무엇이든 프롬프트 다시 쓰기
+                    cause = "prompt"
                 ag["verdict"] = {"pass": cause is None, "checks": checks, "cause": cause}
                 tries.append({"attempt": j["attempt"], "checks": checks, "cause": cause, "render": dict(j["render"]),
                               "camera": j["camera"], "cells": j["cells"], "refine": j["refine"],

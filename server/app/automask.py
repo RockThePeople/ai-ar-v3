@@ -459,3 +459,26 @@ def tint_mask(rgb: np.ndarray, mask: np.ndarray, color=(255, 40, 90), alpha: flo
     out = rgb.astype(np.float32).copy()
     out[mask] = out[mask] * (1 - alpha) + np.asarray(color, np.float32) * alpha
     return out.astype(np.uint8)
+
+
+# ── S20f 물건이 가장 잘 보이는 시점 고르기 ──────────────────────────
+def visible_count(cells, occupied, cam: dict, tol: float = 1.0) -> int:
+    """cells 중 점유 셀(cells∩occupied)이 그 카메라에서 실제로 보이는(첫 표면에서 tol 셀 안) 수. z-버퍼."""
+    O = np.asarray(occupied, int).reshape(-1, 3)
+    occ = np.zeros((GRID,) * 3, bool)
+    occ[O[:, 0], O[:, 1], O[:, 2]] = True
+    C = np.asarray(cells, int).reshape(-1, 3)
+    C = C[occ[C[:, 0], C[:, 1], C[:, 2]]] if len(C) else C
+    if not len(C):
+        return 0
+    _, d0_of = depth_buffer(O, cam)
+    _, _, z = _grid_xy(centers(C), cam)
+    return int(((z * GRID) <= d0_of(C) + tol).sum())
+
+
+def pick_view(cells, occupied, cams: dict, user_cam: dict) -> dict:
+    """후보 = 사용자 카메라 + 4시점. 보이는 라쏘 점유 셀 수 최대, 같으면 사용자 → az000 → … 순."""
+    order = [("user", user_cam)] + [(v, cams[v]) for v in VIEW_AZ]
+    counts = {name: visible_count(cells, occupied, cam) for name, cam in order}
+    best = max(order, key=lambda it: (counts[it[0]], -[n for n, _ in order].index(it[0])))
+    return {"view": best[0], "camera": best[1], "counts": counts}
