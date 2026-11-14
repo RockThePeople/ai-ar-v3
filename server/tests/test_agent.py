@@ -262,7 +262,7 @@ def test_agent_toggle_off(env):
     env.eng.s.agent = False
     r = env.post(f"/app/v1/assets/{aid}/edits", headers=A, json={"base_version": 1, "instruction": "오른손에 칼"})
     assert r.status_code == 400 and r.json()["error_code"] == "INVALID_REQUEST"
-    assert env.get("/app/v1/health").json()["features"] == []
+    assert env.get("/app/v1/health").json()["features"] == ["chain_rating"]
 
 
 def test_mask_plan_check():

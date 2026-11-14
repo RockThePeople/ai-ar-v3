@@ -323,6 +323,8 @@ class Engine:
             kw = {}
             if agent:                                      # S20b: 그대로 모드 마커는 보정 없이 지시문 그대로 인페인팅
                 kw = {"mode": "agent", "events": [], "agent_calls": 0, "mock_agent": mock_agent,
+                      # S21 2.5: 어느 조정 판으로 돌았는지
+                      "tuning_version": (self.ratings.tuning_version() if getattr(self, "ratings", None) else 0),
                       "agent_source": "lasso" if agent_lasso else "auto", "user_camera": camera, "user_cells": cells,
                       "agent": {"model": getattr(self.agent_llm, "model", None), "attempt": 1, "backtracks": 0,
                                 # 계약 10.2 1.1.1 보충(S20f): Gemini 일 때 되돌아가기 1(편집 1회당 Gemini 최대 2회)
