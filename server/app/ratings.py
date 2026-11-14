@@ -256,7 +256,14 @@ class Ratings:
             pk = signer_pubkey or o.get("signer_pubkey")
             if signer_pubkey:
                 o["signer_pubkey"] = signer_pubkey
+            prev = o.get("chain") or {}
+            hist = list(prev.get("history") or [])
+            if st == "failed":                                  # 5절: error 는 지우고 이전 실패는 기록에
+                hist.append({k: prev.get(k) for k in ("status", "error", "user_op_hash", "tx_hash", "account")}
+                            | {"t": round(self.eng.clock(), 1)})
             o["chain"] = self._prepare_chain(o, pk)
+            if hist:
+                o["chain"]["history"] = hist
             o.setdefault("prepares", 0)
             o["prepares"] += 1
             self._save(o)

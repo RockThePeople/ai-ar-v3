@@ -189,6 +189,9 @@ def test_prepare_from_failed_and_off_409(env):
     assert env.get(f"/app/v1/ratings/{rid}").json()["chain"]["status"] == "failed"
     p = env.post(f"/app/v1/ratings/{rid}/prepare", json={})
     assert p.status_code == 200 and p.json()["rating_id"] == rid and p.json()["chain"]["status"] == "awaiting_signature"
+    pc = p.json()["chain"]
+    assert "error" not in pc and pc["history"][0]["status"] == "failed" and "AA23" in pc["history"][0]["error"]
+    assert pc["history"][0]["user_op_hash"] == h and pc["user_op_hash"] != h                 # 새 nonce·hash
     off = env.post(f"/app/v1/assets/{aid}/ratings", headers=A, json={"stars": 3})
     assert off.status_code == 409                                                 # 범위 소진(3.6) — 다른 기기로
     o2 = env.post(f"/app/v1/assets/{aid}/ratings", headers={"X-Device-Key": "dev-2"}, json={"stars": 3}).json()
