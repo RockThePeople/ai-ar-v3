@@ -562,13 +562,17 @@ class Engine:
         t0 = time.perf_counter()
         if self.s.inpaint_backend == "gemini" and j.get("mode") == "agent":   # S20f: 마스크 없이 렌더 1장 + 프롬프트
             from .gemini import GeminiClient, GeminiError, fit_to, full_prompt, outside_diff
-            target = (j.get("agent_plan") or {}).get("old_object") or (j.get("agent_plan") or {}).get("target_part") or ""
-            gp = full_prompt(ip, target)
+            plan = j.get("agent_plan") or {}
+            target = plan.get("old_object") or plan.get("target_part") or ""
+            gp = full_prompt(ip, target, plan.get("op"), plan.get("old_object"), plan.get("new_object"))
             ip_src, ip = "gemini", gp
             j["prompts"] = dict(prompts_of(j), inpaint=ip)
             h, w = decode_png(rpng).shape[:2]
+            gc = self.gemini or GeminiClient(cache_dir=self.s.data_dir / "gemini_cache")
+            loose = (f"{j['asset_id']}|{j['base_version']}|{j.get('render_view')}|{j['instruction']}|{j['attempt']}"
+                     if self.s.gemini_cache_loose else None)      # 시험 전용: 끔/켬 비교에 같은 이미지
             try:
-                raw, ginfo = (self.gemini or GeminiClient()).edit(rpng, gp)
+                raw, ginfo = (gc.edit_cached(rpng, gp, loose=loose) if hasattr(gc, "edit_cached") else gc.edit(rpng, gp))
             except GeminiError as e:
                 raise StageError("INPAINT_FAILED", str(e))
             edit = fit_to(raw, h, w)

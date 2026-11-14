@@ -252,3 +252,110 @@ def test_flow_grow_refreshes_judge_overlay(env, monkeypatch):
     ov_now = (env.eng.s.data_dir / "jobs" / j["job_id"] / "region" / "overlay.png").read_bytes()
     assert seen and seen[-1] == ov_now                                             # 채점 = 넓힌 뒤 다시 만든 겹침
     assert any("볼륨을 넓혔습니다(+2셀)" in e["text"] for e in j["events"])
+
+
+# ══════════════════════════════════════════════════════════ S20f-2
+def test_full_prompt_replace_remove():
+    p = full_prompt("A big round shield", "sword", "replace", "sword", "big round shield")
+    assert "Completely remove the sword; no part of it may remain. Put the big round shield in its place." in p
+    assert p.index("Completely remove") < p.index("Edit only the sword")
+    assert "fill with what would be behind it" in full_prompt("x", "hat", "remove", "hat")
+    assert "Completely remove" not in full_prompt("A sword", "right hand", "add")
+
+
+def test_request_config_fallback_cache_and_log(tmp_path):
+    cap = []
+
+    def handler(req):
+        cap.append(json.loads(req.content))
+        if "imageConfig" in cap[-1]["generationConfig"]:
+            return httpx.Response(400, text="imageConfig not supported")
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+            "mimeType": "image/png", "data": base64.b64encode(_png(1024, 1024)).decode()}}]}}],
+            "usageMetadata": {"promptTokenCount": 300, "candidatesTokenCount": 1290}})
+    g = GeminiClient(model="gemini-3.1-flash-lite-image", key="k", http=httpx.Client(transport=httpx.MockTransport(handler)),
+                     cache_dir=tmp_path / "gc")
+    img = _png(1024, 1024)
+    out, info = g.edit_cached(img, "P")
+    c0 = cap[0]["generationConfig"]
+    assert c0["responseModalities"] == ["IMAGE"] and c0["candidateCount"] == 1
+    assert c0["imageConfig"] == {"imageSize": "1K", "aspectRatio": "1:1"}
+    assert "imageConfig" not in cap[1]["generationConfig"] and len(cap) == 2          # 400 → 옵션 빼고 다시
+    assert info["cached"] is False and info["calls_total"] == 1 and info["usage"]["candidatesTokenCount"] == 1290
+    out2, info2 = g.edit_cached(img, "P")
+    assert len(cap) == 2 and info2["cached"] is True and out2 == out and info2["calls_total"] == 1   # 캐시: 호출 없음
+    g.edit_cached(img, "P2", loose="a|1|az000|칼을 방패로")
+    g.edit_cached(_png(1024, 1024, (1, 2, 3)), "P3", loose="a|1|az000|칼을 방패로")      # 느슨한 키: 같은 이미지 재사용
+    assert len(cap) == 4
+    logs = (tmp_path / "gc" / "calls.jsonl").read_text().splitlines()
+    assert sum('"cached": false' in ln for ln in logs) == 2 and sum('"cached": true' in ln for ln in logs) == 2
+    big = GeminiClient(key="k", http=_transport(cap2 := []))
+    big.edit(encode_png(np.full((2048, 1536, 3), 9, np.uint8)), "x")
+    sent = decode_png(base64.b64decode(json.loads(cap2[0].content)["contents"][0]["parts"][1]["inline_data"]["data"]))
+    assert max(sent.shape[:2]) == 1024                                               # 입력 1024² 이하로
+
+
+def test_back_view_weight_and_front_from_user():
+    body = [[x, y, z] for x in range(24, 40) for y in range(28, 36) for z in range(10, 50)]
+    occ = body
+    cams = am.view_cameras(occ)
+    back_face = [[x, 28, z] for x in range(24, 40) for z in range(10, 50)]            # −y 면(az180 쪽)
+    pk = am.pick_view(back_face, occ, cams, cams["az090"], front_view="az000")        # 정면 az000 → 뒤 = az180
+    assert pk["back_view"] == "az180" and pk["weights"]["az180"] == 0.5
+    assert pk["view"] == "az180"                                                      # 뒤가 2배 넘게 잘 보이면 고른다
+    side_face = [[24, y, z] for y in range(28, 36) for z in range(10, 50)]           # −x 면(az270 쪽)
+    n_side = am.visible_count(side_face, occ, cams["az270"])
+    sel = side_face + [c for c in back_face if c[0] > 24][:int(1.5 * n_side)]        # 뒤가 옆의 약 1.5배(2배 안)
+    pk2 = am.pick_view(sel, occ, cams, cams["az090"], front_view="az000")
+    c = pk2["counts"]
+    assert c["az180"] > c["az270"] and c["az180"] * 0.5 < c["az270"] and pk2["view"] == "az270"
+    assert am.front_from_user(cams["az090"], occ, "front") == "az090"
+    assert am.front_from_user(cams["az090"], occ, "back") == "az270"
+    assert am.front_from_user(cams["az270"], occ, "left") == "az000"                  # 왼쪽 옆이 보이면 정면 = +90°
+    assert am.front_from_user(cams["az090"], occ, "right") == "az000"
+    assert am.front_from_user(cams["az090"], occ, "unknown") is None
+
+
+def test_merge_residue_attaches_old_object_outside_lasso():
+    body = [[x, 40, z] for x in range(20, 44) for z in range(10, 54)]
+    sword = [[x, 38, 30] for x in range(28, 50)]                                      # 몸 앞 칼, +x 끝은 라쏘 밖
+    occ = body + sword
+    cam = _cam0(occ)
+    U = [c for c in sword if c[0] < 36]                                               # 손잡이 쪽만 라쏘
+    um = _proj_mask(U, cam)
+    sm = _proj_mask(sword, cam)                                                       # 칼 전체 자리가 바뀜(사라짐 + 새 물건)
+    render = np.full((1024, 1024, 3), 255, np.uint8)
+    edit = render.copy()
+    edit[sm] = (90, 60, 30)
+    g = am.grow_from_image(render, edit, um, U, occ, cam, T=4, op="replace", M=16)
+    merged = {tuple(c) for c in g["merged"]}
+    assert {tuple(c) for c in sword if c[0] >= 36} <= merged                          # 라쏘 밖 칼 끝 합침
+    assert not (merged & {tuple(c) for c in body})                                   # 깊이 제한: 뒤 몸판은 안 합침
+    g2 = am.grow_from_image(render, edit, um, U, occ, cam, T=4, op="add", M=16)
+    assert g2["n_merged"] == 0                                                         # add 는 합치지 않음
+    huge = [[x, 38, z] for x in range(20, 44) for z in range(10, 54)]                  # 칼이 큰 판에 붙어 있으면 번짐
+    occ3 = body + huge
+    hm = _proj_mask(huge, cam)
+    e3 = render.copy()
+    e3[hm] = (90, 60, 30)
+    U3 = [[30, 38, 30], [31, 38, 30]]
+    g3 = am.grow_from_image(render, e3, _proj_mask(U3, cam), U3, occ3, cam, T=4, op="replace", M=16, max_frac=0.9)
+    assert g3["n_merged"] == 0 and g3["merge"]["skipped"] == "too_large"
+
+
+def test_no_commit_preview_only_keeps_app_version(env):
+    aid = make_asset(env)
+    env.eng.s.inpaint_backend = "gemini"
+    env.eng.s.agent_no_commit = True
+    env.eng.gemini = FakeGemini()
+    fake = env.eng.agent_llm
+    fake.op = "replace"
+    fake.judge_script = [PASS]
+    j = _lasso(env, aid, "칼을 큰 방패로 바꿔줘")
+    assert j["state"] == "committed" and j["result"]["preview_only"] is True and j["result"]["manifest_uri"] is None
+    assert env.eng.db.asset(aid)["version"] == 1                                      # 앱 판본 그대로
+    assert ("commit",) in env.be.calls                                                # A5000 에는 반영(미리보기 렌더용)
+    assert any("미리보기만 남겼습니다" in e["text"] and "result" in (e.get("images") or {}) for e in j["events"])
+    j2 = _lasso(env, aid, "칼을 큰 방패로 바꿔줘")                                      # 같은 판본(v1) 위 두 번째 편집 가능
+    assert j2["state"] == "committed" and env.eng.db.asset(aid)["version"] == 1
+    assert fake.last_judge_old == "the old object"                                    # 채점에 원래 물건(남으면 ① 불합격)

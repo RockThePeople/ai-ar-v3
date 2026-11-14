@@ -476,12 +476,41 @@ def visible_count(cells, occupied, cam: dict, tol: float = 1.0) -> int:
     return int(((z * GRID) <= d0_of(C) + tol).sum())
 
 
-def pick_view(cells, occupied, cams: dict, user_cam: dict) -> dict:
-    """후보 = 사용자 카메라 + 4시점. 보이는 라쏘 점유 셀 수 최대, 같으면 사용자 → az000 → … 순."""
+def az_of(cam: dict, occupied) -> float:
+    """카메라 위치의 방위(°, 0 = 복셀 +y 쪽, 90 = +x), 점유 셀 경계 상자 중심 기준."""
+    c = centers(occupied)
+    mid = (c.min(0) + c.max(0)) / 2
+    p = np.asarray(cam["position"], np.float64) - mid
+    return float(np.degrees(np.arctan2(p[0], p[1])) % 360)
+
+
+def nearest_view(az: float) -> str:
+    return min(VIEW_AZ, key=lambda v: min(abs(VIEW_AZ[v] - az) % 360, 360 - abs(VIEW_AZ[v] - az) % 360))
+
+
+def front_from_user(user_cam: dict, occupied, side: Optional[str]) -> Optional[str]:
+    """사용자 카메라 방위 + 그 이미지가 보이는 쪽(front/back/left/right) → 정면 시점 이름. unknown 이면 None.
+    left = 캐릭터 왼쪽 옆이 카메라를 봄 → 정면 = 방위 + 90° (오른쪽 = −90°)."""
+    off = {"front": 0, "back": 180, "left": 90, "right": -90}.get(side or "")
+    if off is None:
+        return None
+    return nearest_view((az_of(user_cam, occupied) + off) % 360)
+
+
+def pick_view(cells, occupied, cams: dict, user_cam: dict, front_view: Optional[str] = None,
+              back_weight: float = 0.5) -> dict:
+    """후보 = 사용자 카메라 + 4시점. 점수 = 보이는 라쏘 점유 셀 수 × 가중치(S20f-2: front_view 반대 방위 0.5, 그 밖 1.0).
+    최대, 같으면 사용자 → az000 → … 순."""
     order = [("user", user_cam)] + [(v, cams[v]) for v in VIEW_AZ]
     counts = {name: visible_count(cells, occupied, cam) for name, cam in order}
-    best = max(order, key=lambda it: (counts[it[0]], -[n for n, _ in order].index(it[0])))
-    return {"view": best[0], "camera": best[1], "counts": counts}
+    back = nearest_view((VIEW_AZ[front_view] + 180) % 360) if front_view in VIEW_AZ else None
+    uview = nearest_view(az_of(user_cam, occupied))
+    weights = {name: (back_weight if back and (name == back or (name == "user" and uview == back)) else 1.0)
+               for name, _ in order}
+    scores = {n: counts[n] * weights[n] for n in counts}
+    best = max(order, key=lambda it: (scores[it[0]], -[n for n, _ in order].index(it[0])))
+    return {"view": best[0], "camera": best[1], "counts": counts, "weights": weights, "scores": scores,
+            "front_view": front_view, "back_view": back}
 
 
 # ── S20f 2.6 이미지 차이로 볼륨 넓히기(사용자 지적 2026-11-15 00:52, APP_GROW_FROM_IMAGE) ──
@@ -526,7 +555,7 @@ def _components(m: np.ndarray) -> tuple:
 
 def grow_from_image(render_rgb: np.ndarray, edit_rgb: np.ndarray, u_mask: np.ndarray, user_cells, occupied,
                     cam: dict, T: int, thr: float = GROW_THR, min_area: float = GROW_MIN_AREA,
-                    max_frac: float = GROW_MAX_FRAC) -> dict:
+                    max_frac: float = GROW_MAX_FRAC, op: Optional[str] = None, M: Optional[int] = None) -> dict:
     """2.6: 원본 렌더와 편집 이미지의 차이 → 작은 조각 제거 → U 투영과 닿는 성분 = 새 물건 실루엣 S →
     S 를 카메라 방향으로 밀고 깊이 [d_min − T, d_max + T](원래 물건 U∩O 의 깊이) 안의 **빈 셀만** 넓힌다.
     → {grown, n_grown, diff_frac, s_frac, skip, s_mask(GROW_RES² bool)}."""
@@ -580,4 +609,45 @@ def grow_from_image(render_rgb: np.ndarray, edit_rgb: np.ndarray, u_mask: np.nda
         out["dropped_far"] = int(pick.sum() - len(g))
     out["grown"], out["n_grown"] = g.tolist(), int(len(g))
     out["depth_range"] = [round(dmin, 1), round(dmax, 1)]
+    out["merged"], out["n_merged"], out["merge"] = [], 0, None
+    if op in ("replace", "remove") and len(uo):
+        out.update(merge_residue(uo, U, O, occ, S, cam, T, M if M is not None else size_consts(O)["M"],
+                                 room=MAX_CELLS - len(U) - len(g)))
     return out
+
+
+def merge_residue(seeds: np.ndarray, U: np.ndarray, O: np.ndarray, occ: np.ndarray, S: np.ndarray, cam: dict,
+                  T: int, M: int, room: int) -> dict:
+    """2.6 6번 원래 물건 잔여물 합치기: 씨앗 U∩O 에서 26-이웃 점유 셀로 넓힘. 제한(모두): 고른 시점 투영이 S(새 물건 윤곽 +
+    원래 물건이 사라진 자리, 1칸 여유) 안, 깊이 [d_min − 2T, d_max + 2T], U 경계 상자 ± M. 합친 셀이 씨앗의 2배를 넘으면
+    깊이·상자 제한을 절반으로 다시, 그래도 넘으면 합치지 않는다."""
+    R = S | np.roll(S, 1, 0) | np.roll(S, -1, 0) | np.roll(S, 1, 1) | np.roll(S, -1, 1)
+    _, _, sz = _grid_xy(centers(seeds), cam)
+    d0, d1 = float((sz * GRID).min()), float((sz * GRID).max())
+    ox, oy, oz = _grid_xy(centers(O), cam)
+    ix = np.clip((ox / 1000 * GROW_RES).astype(int), 0, GROW_RES - 1)
+    iy = np.clip((oy / 1000 * GROW_RES).astype(int), 0, GROW_RES - 1)
+    inR = R[iy, ix] & (ox >= 0) & (ox < 1000) & (oy >= 0) & (oy < 1000)
+    have = np.zeros((GRID,) * 3, bool)
+    have[U[:, 0], U[:, 1], U[:, 2]] = True
+    for k, (tk, mk) in enumerate(((2 * T, M), (T, max(1, M // 2)))):
+        lo, hi = U.min(0) - mk, U.max(0) + mk
+        ok = inR & (oz * GRID >= d0 - tk) & (oz * GRID <= d1 + tk) & np.all((O >= lo) & (O <= hi), axis=1)
+        allowed = np.zeros((GRID,) * 3, bool)
+        allowed[O[ok, 0], O[ok, 1], O[ok, 2]] = True
+        allowed[seeds[:, 0], seeds[:, 1], seeds[:, 2]] = True
+        reach = np.zeros((GRID,) * 3, bool)
+        reach[seeds[:, 0], seeds[:, 1], seeds[:, 2]] = True
+        frontier = reach.copy()
+        while frontier.any():
+            grown = _shift_or(frontier) & allowed & ~reach
+            reach |= grown
+            frontier = grown
+        merged = np.argwhere(reach & ~have & occ)
+        if len(merged) <= 2 * len(seeds):
+            if len(merged) > room:
+                merged = merged[:max(0, room)]
+            return {"merged": merged.tolist(), "n_merged": int(len(merged)),
+                    "merge": {"halved": k == 1, "limit_depth": tk, "limit_box": mk, "seeds": int(len(seeds))}}
+    return {"merged": [], "n_merged": 0, "merge": {"skipped": "too_large", "seeds": int(len(seeds)),
+                                                    "tried": int(len(merged))}}

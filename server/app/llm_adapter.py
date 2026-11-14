@@ -1004,7 +1004,8 @@ AGENT_JUDGE_SCHEMA = {
 AGENT_JUDGE_SYSTEM = """You grade one 2D edit before it is lifted to 3D. Images in order: (1) the original render,
 (2) the same render with the editable area tinted and outlined, (3) the edited image from the image model.
 Grade four checks, each true (pass) or false (fail):
-- element: the requested thing is clearly drawn (e.g. a torch really looks like a torch).
+- element: the requested thing is clearly drawn (e.g. a torch really looks like a torch). When an "old object" line is
+  given (replace/remove), element is false if ANY part of the old object remains visible; then say "old object remains".
 - position: it is on the requested part (both feet when shoes are asked). Left/right rule: a plain position word
   (오른쪽·왼쪽, on the left/right) means the viewer's side of the image; a body part (오른손·왼손, right/left hand/foot/arm ...)
   means the character's own side, which in a front view is the OPPOSITE image side (the character's right hand is on the
@@ -1070,10 +1071,11 @@ class AgentMixin:
                           AGENT_CHECK_SCHEMA, lambda o: None, job_id, {"instruction": instruction, "n_images": 1})
 
     def agent_judge(self, render: bytes, overlay: bytes, edit: bytes, instruction: str, prompt: str,
-                    job_id: str = "", side_hint: Optional[str] = None) -> dict:
+                    job_id: str = "", side_hint: Optional[str] = None, old_object: Optional[str] = None) -> dict:
         txt = (f"instruction: {json.dumps(instruction, ensure_ascii=False)}\n"
                f"image model prompt: {json.dumps(prompt, ensure_ascii=False)}"
-               + (f"\nexpected position: {side_hint}" if side_hint else ""))
+               + (f"\nexpected position: {side_hint}" if side_hint else "")
+               + (f"\nold object (must be completely gone): {old_object}" if old_object else ""))
         return self._call("agent_judge", AGENT_JUDGE_SYSTEM,
                           _labeled([("(1) original", render), ("(2) editable area", overlay), ("(3) edited", edit)], txt),
                           AGENT_JUDGE_SCHEMA, lambda o: None, job_id,
@@ -1151,8 +1153,8 @@ class FakeAgentAdapter:
                                                       "칠한 자리가 너무 좁습니다", "fix": "" if ok else "extend upward"})
 
     def agent_judge(self, render: bytes, overlay: bytes, edit: bytes, instruction: str, prompt: str,
-                    job_id: str = "", side_hint: Optional[str] = None) -> dict:
-        self.last_judge_hint = side_hint
+                    job_id: str = "", side_hint: Optional[str] = None, old_object: Optional[str] = None) -> dict:
+        self.last_judge_hint, self.last_judge_old = side_hint, old_object
         i = self._next("agent_judge", job_id)
         script = self.per_job.get(job_id, {}).get("judge_script", self.judge_script)
         c = dict(script[min(i, len(script) - 1)])
@@ -1178,9 +1180,10 @@ _OBOX = {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "nu
 AGENT_REFINE_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["op", "target_part", "target_part_ko", "new_object", "old_object", "keep_box", "old_object_box",
-                 "new_space_box", "found", "note_ko"],
+                 "new_space_box", "found", "note_ko", "user_view_side"],
     "properties": {
         "op": {"type": "string", "enum": ["add", "replace", "remove", "recolor"]},
+        "user_view_side": {"type": "string", "enum": ["front", "back", "left", "right", "unknown"]},
         "target_part": {"type": "string"}, "target_part_ko": {"type": "string"},
         "new_object": {"type": "string"}, "old_object": {"anyOf": [{"type": "string"}, {"type": "null"}]},
         "keep_box": _OBOX, "old_object_box": _OBOX, "new_space_box": _OBOX,
@@ -1206,6 +1209,8 @@ Return JSON:
   or near the tinted area. null otherwise.
 - found: false only when the target part is not in the image at all.
 - note_ko: one short Korean sentence for the user (e.g. "오른손과 칼이 들어갈 자리만 남겼습니다").
+- user_view_side: which side of the character (or object) this image shows: "front" (face toward the camera), "back",
+  "left" (the character's own left side faces the camera), "right", or "unknown".
 Rules:
 - Left/right: a plain position word (오른쪽·왼쪽) is the viewer's side of the image; a body part (오른손·왼손 ...) is the
   character's own side, which is the opposite image side when the character faces the camera.
@@ -1257,7 +1262,8 @@ def _fake_refine_plan(self, render: bytes, overlay: bytes, instruction: str, sce
            "keep_box": list(self.refine_boxes["keep"]),
            "old_object_box": list(self.refine_boxes["old"]) if op in ("replace", "remove") else None,
            "new_space_box": list(self.refine_boxes["new"]) if op in ("add", "replace") else None,
-           "found": self.mask_found, "note_ko": "지시 부위와 새 물건 자리만 남겼습니다(가짜)"}
+           "found": self.mask_found, "note_ko": "지시 부위와 새 물건 자리만 남겼습니다(가짜)",
+           "user_view_side": getattr(self, "user_view_side", "front")}
     return self._rec("agent_refine", job_id, out)
 
 

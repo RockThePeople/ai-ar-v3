@@ -186,6 +186,33 @@ class AgentRun:
         j.setdefault("agent_side", []).append(rec)
         return cells
 
+    def preview_only(self) -> None:
+        """APP_AGENT_NO_COMMIT: A5000 에 반영해 그 판본을 4시점 렌더(A5000 은 staging 을 렌더하지 못한다) → 앱 저장소·DB·자산 판본은
+        그대로(다음 편집도 같은 앱 판본 위). 개발 자산의 A5000 쪽에 시험 판본이 남는다."""
+        j, eng = self.j, self.eng
+        to = int(j["result"]["to_version"])
+        try:
+            eng.be.commit(j["asset_id"], to, j["idem"])
+            occ2 = eng.be.slat_coords(j["asset_id"], to) or self.occ
+            cams = am.view_cameras(occ2)
+            mid = sorted(occ2)[len(occ2) // 2]
+            d = self.s.data_dir / "jobs" / j["job_id"] / "preview_views"
+            d.mkdir(parents=True, exist_ok=True)
+            imgs = {}
+            for v in am.VIEW_AZ:
+                png = eng.be.render(j["asset_id"], to, cams[v], [list(mid)])["render_png"]
+                (d / f"{v}.png").write_bytes(png)
+                imgs[v] = am.to_rgb(decode_png(png))
+            mos = encode_png(am.mosaic(imgs))
+        except StageError:
+            raise
+        except Exception as e:                              # noqa: BLE001
+            raise StageError("EDIT_FAILED", f"미리보기 렌더 실패: {type(e).__name__}: {e}")
+        eng.store.drop_staging(j["asset_id"], j["job_id"])
+        j["result"].update(preview_only=True, a5000_version=to, manifest_uri=None)
+        self.event("done", "done", f"미리보기만 남겼습니다(반영 안 함, 시험 모드 — A5000 판본 v{to})", {"result": mos})
+        eng._finish(j, "committed")
+
     # ── S20e 사용자 라쏘 볼륨 다듬기 ─────────────────────────────
     def lasso_start(self) -> None:
         """사용자 카메라로 라쏘 볼륨 U 를 렌더하고, 판단에 줄 격자 이미지 2장(렌더, 라쏘 겹침)을 만든다."""
@@ -263,13 +290,16 @@ class AgentRun:
             self.g_plan = plan
         plan = self.g_plan
         cams = am.view_cameras(self.occ)
-        pk = am.pick_view(self.U, self.occ, cams, self.cam)
-        j["agent_pick"] = {"view": pk["view"], "counts": pk["counts"]}
+        fv = am.front_from_user(self.cam, self.occ, plan.get("user_view_side"))   # S20f-2: 뒷모습 피하기
+        pk = am.pick_view(self.U, self.occ, cams, self.cam, front_view=fv)
+        j["agent_pick"] = {k: pk[k] for k in ("view", "counts", "weights", "scores", "front_view", "back_view")}
         names = ["user"] + list(am.VIEW_AZ)
         thumbs = self._pick_thumbs(cams, pk["view"])
         label = "사용자 카메라" if pk["view"] == "user" else f"방위 {am.VIEW_KO[pk['view']]}"
         self.event("masking", "tool", f"물건이 가장 잘 보이는 방향({label})을 골랐습니다", {"views": thumbs},
-                   detail="visible lasso cells per view: " + ", ".join(f"{n} {pk['counts'][n]}" for n in names))
+                   detail="visible lasso cells × weight per view: " + ", ".join(
+                       f"{n} {pk['counts'][n]}×{pk['weights'][n]:g}" for n in names)
+                   + f"; front {fv} (user side {plan.get('user_view_side')}), back {pk['back_view']}")
         self.render_with(pk["camera"], self.U, pk["view"])
         return {"plan": plan, "cells": self.U, "n": len(self.U)}
 
@@ -393,32 +423,42 @@ class AgentRun:
         rgb = am.to_rgb(decode_png((d / "render.png").read_bytes()))
         um = mask_bool(decode_png((d / "mask.png").read_bytes()))
         er = am.to_rgb(decode_png(edit))
-        T = (getattr(self, "consts", None) or am.size_consts(self.occ))["T"]
-        g = am.grow_from_image(rgb, er, um, self.U, self.occ, j["camera"], T)
-        rec = {k: v for k, v in g.items() if k not in ("grown", "s_mask")} | {"attempt": j["attempt"], "T": T}
+        cs = getattr(self, "consts", None) or am.size_consts(self.occ)
+        T, M = cs["T"], cs["M"]
+        plan = j.get("agent_plan") or {}
+        g = am.grow_from_image(rgb, er, um, self.U, self.occ, j["camera"], T, op=plan.get("op"), M=M)
+        rec = {k: v for k, v in g.items() if k not in ("grown", "s_mask", "merged")} | {"attempt": j["attempt"], "T": T, "M": M}
         j.setdefault("agent_grow", []).append(rec)
         if g["skip"] == "too_large":
             self.force_prompt = True
             self.event("inpainting", "check", f"그림 전체가 많이 바뀌어(화면 {g['diff_frac']:.0%}) 볼륨을 넓히지 않고 다시 그립니다",
                        detail=f"diff fraction {g['diff_frac']} > {am.GROW_MAX_FRAC}")
             return
-        if not g["n_grown"]:
+        if (g.get("merge") or {}).get("skipped"):
+            self.event("inpainting", "check", f"{plan.get('old_object') or '원래 물건'}의 라쏘 밖 부분이 몸통으로 번져 합치지 않았습니다",
+                       detail=f"merge skipped: {g['merge']}")
+        if not g["n_grown"] and not g.get("n_merged"):
             return
-        final = [list(c) for c in {tuple(c) for c in self.U} | {tuple(c) for c in g["grown"]}]
+        if g.get("n_merged"):
+            self.event("inpainting", "tool", f"{plan.get('old_object') or '원래 물건'}의 라쏘 밖 부분 {g['n_merged']:,}셀을 합쳤습니다",
+                       detail=f"residue merge {g['merge']}")
+        final = [list(c) for c in {tuple(c) for c in self.U} | {tuple(c) for c in g["grown"]}
+                 | {tuple(c) for c in g.get("merged", [])}]
         self.render_with(j["camera"], final, j.get("render_view") or "picked")
         rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
         for n in ("render.png", "mask.png"):
             (d / n).write_bytes((rd / n).read_bytes())
         if j.get("attempts"):
-            j["attempts"][-1].update(render_id=j["render"]["render_id"], grown=g["n_grown"])
+            j["attempts"][-1].update(render_id=j["render"]["render_id"], grown=g["n_grown"], merged=g.get("n_merged", 0))
         self.grown_region = self.region()                 # 채점이 넓히기 전 마스크로 "영역 밖"이라 판정하지 않게(G4 실측)
         S = g["s_mask"]
         big = np.repeat(np.repeat(S, er.shape[0] // S.shape[0], 0), er.shape[1] // S.shape[1], 1)
         over = am.tint_mask(er, big[:er.shape[0], :er.shape[1]], color=(40, 120, 255))
-        self.event("inpainting", "tool", f"새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+{g['n_grown']:,}셀)",
-                   {"overlay": encode_png(am.half(over))},
-                   detail=f"diff {g['diff_frac']} silhouette {g['s_frac']} depth {g.get('depth_range')} T {T}; "
-                          f"cells {len(self.U)} -> {len(final)}")
+        if g["n_grown"]:
+            self.event("inpainting", "tool", f"새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+{g['n_grown']:,}셀)",
+                       {"overlay": encode_png(am.half(over))},
+                       detail=f"diff {g['diff_frac']} silhouette {g['s_frac']} depth {g.get('depth_range')} T {T}; "
+                              f"cells {len(self.U)} -> {len(final)}")
 
     def judge(self, edit: bytes, region: Optional[dict]) -> dict:
         j, eng = self.j, self.eng
@@ -428,7 +468,9 @@ class AgentRun:
         region = getattr(self, "grown_region", None) or region
         ov = (region or {}).get("images", [None])[0] or (d / "mask.png").read_bytes()
         return self._orch(self.llm.agent_judge, (d / "render.png").read_bytes(), ov, edit, j["instruction"],
-                          j["prompts"].get("inpaint") or "", side_hint=self.side_hint)   # S20d: 확인과 같은 기대 위치
+                          j["prompts"].get("inpaint") or "", side_hint=self.side_hint,   # S20d: 확인과 같은 기대 위치
+                          old_object=((j.get("agent_plan") or {}).get("old_object")
+                                      if (j.get("agent_plan") or {}).get("op") in ("replace", "remove") else None))
 
     # ── 루프 ─────────────────────────────────────────────────────
     def run(self) -> None:
@@ -525,6 +567,8 @@ class AgentRun:
         if j["state"] != "editing_3d":
             return
         self.event("editing_3d", "tool", f"3D 편집을 했습니다({len(t['cells']):,}셀)")
+        if self.s.agent_no_commit:                         # S20f-2 시험 전용: 앱에는 반영하지 않고 4시점 미리보기만
+            return self.preview_only()
         try:
             eng._commit(j)
         except Exception as e:                              # noqa: BLE001 — AppError(반영 실패)

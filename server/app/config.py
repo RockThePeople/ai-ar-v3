@@ -64,6 +64,8 @@ class Settings:
     named_nodetail: bool = True  # S22 APP_NAMED_NODETAIL: 이름만으로 정해지는 대상(헬로키티 등)은 상세화 없이 이름으로 T2I
     agent: bool = True  # S20 APP_AGENT: camera·volume_cells 없는 편집 = 에이전트 편집(끔 = 400 INVALID_REQUEST)
     agent_max_backtracks: int = 3  # S20 AGENT_MAX_BACKTRACKS(채점 뒤 되돌아가기)
+    agent_no_commit: bool = False  # S20f-2 APP_AGENT_NO_COMMIT(시험 전용): 앱에 반영하지 않고 A5000 판본 4시점 미리보기만
+    gemini_cache_loose: bool = False  # S20f-2 GEMINI_CACHE_LOOSE(시험 전용): 캐시 키 = 자산·판본·시점·지시문·모델
     grow_from_image: bool = False  # S20f 2.6 APP_GROW_FROM_IMAGE: Gemini 결과가 라쏘보다 크면 빈 셀로 볼륨 넓히기
     inpaint_backend: str = "local"  # S20f APP_INPAINT_BACKEND: local(FLUX 워커) | gemini(에이전트 편집만, 마스크 없음)
     automask: bool = False  # S20e APP_AUTOMASK: 1 이면 camera·volume_cells 없는 자동 마스킹(S20d). 기본 0 = 400
@@ -104,6 +106,8 @@ class Settings:
             automask=_flag("APP_AUTOMASK", "0"),
             inpaint_backend=(os.environ.get("APP_INPAINT_BACKEND") or "local").strip(),
             grow_from_image=_flag("APP_GROW_FROM_IMAGE", "0"),
+            agent_no_commit=_flag("APP_AGENT_NO_COMMIT", "0"),
+            gemini_cache_loose=_flag("GEMINI_CACHE_LOOSE", "0"),
             agent_depth_ratio=float(os.environ.get("AGENT_DEPTH_RATIO") or 0.10),
             agent_merge_ratio=float(os.environ.get("AGENT_MERGE_RATIO") or 0.13),
         )

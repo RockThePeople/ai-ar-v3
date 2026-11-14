@@ -15,7 +15,7 @@ import numpy as np
 from .cropinpaint import decode_png, encode_png, render_rgb, resize_lanczos
 
 API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-DEFAULT_MODEL = "gemini-3-pro-image"
+DEFAULT_MODEL = "gemini-3.1-flash-lite-image"   # S20f-2: 비용 최소(Nano Banana 2 Lite)
 TAIL = ("Edit only the {target}. Keep everything else identical: same character, pose, camera angle, framing, "
         "lighting, colors and plain white background. Output one image.")
 
@@ -43,8 +43,24 @@ def to_png(data: bytes) -> bytes:
     return r.stdout
 
 
-def full_prompt(sentence: str, target: str) -> str:
-    return f"{sentence.strip().rstrip('.')}. " + TAIL.format(target=target or "selected part")
+def full_prompt(sentence: str, target: str, op: Optional[str] = None, old: Optional[str] = None,
+                new: Optional[str] = None) -> str:
+    """보정 문장 + (S20f-2: replace·remove 면 원래 물건 완전 제거 문장) + 고정 꼬리."""
+    mid = ""
+    if op == "replace" and old:
+        mid = f"Completely remove the {old}; no part of it may remain. Put the {new or 'new object'} in its place. "
+    elif op == "remove" and old:
+        mid = f"Completely remove the {old} and fill with what would be behind it. "
+    return f"{sentence.strip().rstrip('.')}. " + mid + TAIL.format(target=target or "selected part")
+
+
+def _shrink_1024(png: bytes) -> bytes:
+    a = render_rgb(decode_png(png))
+    h, w = a.shape[:2]
+    if max(h, w) <= 1024:
+        return png
+    k = 1024 / max(h, w)
+    return encode_png(resize_lanczos(a, (round(h * k), round(w * k))))
 
 
 def fit_to(png: bytes, h: int, w: int) -> bytes:
@@ -79,11 +95,63 @@ def outside_diff(render_png: bytes, edit_png: bytes, mask_png: bytes) -> dict:
 
 
 class GeminiClient:
-    def __init__(self, model: Optional[str] = None, key: Optional[str] = None, timeout: float = 180.0, http=None) -> None:
+    def __init__(self, model: Optional[str] = None, key: Optional[str] = None, timeout: float = 180.0, http=None,
+                 cache_dir=None) -> None:
         self.model = model or os.environ.get("GEMINI_IMAGE_MODEL") or DEFAULT_MODEL
         self.key = key if key is not None else (os.environ.get("GEMINI_API_KEY") or "")
         self.timeout = timeout
         self.http = http                                    # 시험용 httpx.Client 대체
+        self.cache_dir = cache_dir                          # S20f-2: 같은 호출 반복 금지(data_dir/gemini_cache)
+
+    # ── S20f-2 캐시·호출 기록 ────────────────────────────────────
+    def _key(self, image_png: bytes, prompt: str, model: str, loose: Optional[str]) -> str:
+        import hashlib
+        if loose:                                           # 시험 전용(GEMINI_CACHE_LOOSE): 자산·판본·시점·지시문·모델
+            return hashlib.sha256(f"loose|{loose}|{model}".encode()).hexdigest()[:32]
+        h = hashlib.sha256(image_png).hexdigest()
+        return hashlib.sha256(f"{h}|{prompt}|{model}".encode()).hexdigest()[:32]
+
+    def _log(self, rec: dict) -> int:
+        import json as _j
+        if self.cache_dir is None:
+            return 0
+        from pathlib import Path
+        d = Path(self.cache_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "calls.jsonl"
+        n = sum(1 for ln in p.read_text().splitlines() if '"cached": false' in ln) if p.is_file() else 0
+        if not rec.get("cached"):
+            n += 1
+        rec["calls_total"] = n
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(_j.dumps(rec, ensure_ascii=False) + "\n")
+        return n
+
+    def edit_cached(self, image_png: bytes, prompt: str, model: Optional[str] = None, loose: Optional[str] = None) -> tuple:
+        """캐시 → 없으면 edit. info 에 cached·calls_total(실제 API 호출 누적)·usage."""
+        import json as _j
+        import time as _t
+        from pathlib import Path
+        model = model or self.model
+        key = self._key(image_png, prompt, model, loose)
+        if self.cache_dir is not None:
+            d = Path(self.cache_dir)
+            png, meta = d / f"{key}.png", d / f"{key}.json"
+            if png.is_file() and meta.is_file():
+                info = dict(_j.loads(meta.read_text()), cached=True, cache_key=key, latency_s=0.0)
+                info["calls_total"] = self._log({"t": _t.time(), "model": model, "cached": True, "key": key})
+                return png.read_bytes(), info
+        out, info = self.edit(image_png, prompt, model=model)
+        info.update(cached=False, cache_key=key)
+        info["calls_total"] = self._log({"t": _t.time(), "model": model, "cached": False, "key": key,
+                                         "latency_s": info.get("latency_s"), "usage": info.get("usage"),
+                                         "image_config": info.get("image_config")})
+        if self.cache_dir is not None:
+            d = Path(self.cache_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{key}.png").write_bytes(out)
+            (d / f"{key}.json").write_text(_j.dumps({k: v for k, v in info.items() if k != "calls_total"}, ensure_ascii=False))
+        return out, info
 
     def edit(self, image_png: bytes, prompt: str, model: Optional[str] = None) -> tuple:
         """→ (결과 PNG bytes, info{model, latency_s, prompt, finish, text})."""
@@ -91,16 +159,28 @@ class GeminiClient:
         if not self.key:
             raise GeminiError("GEMINI_API_KEY 가 없다(app.env)")
         model = model or self.model
-        body = {"contents": [{"role": "user", "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_png).decode()}}]}],
-                "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}}
+        image_png = _shrink_1024(image_png)                # S20f-2: 입력 1장, 1024² 이하
+        # S20f-2: 출력 1장·1K·1:1, 이미지만. 모델이 옵션을 거부하면(400) 옵션을 하나씩 빼고 다시(기록)
+        configs = [{"responseModalities": ["IMAGE"], "candidateCount": 1,
+                    "imageConfig": {"imageSize": "1K", "aspectRatio": "1:1"}},
+                   {"responseModalities": ["IMAGE"], "candidateCount": 1},
+                   {"responseModalities": ["TEXT", "IMAGE"]}]
         t0 = time.time()
         client = self.http or httpx.Client(timeout=self.timeout)
+        tried = []
         try:
-            r = client.post(API.format(model=model), json=body, headers={"x-goog-api-key": self.key})
-        except httpx.HTTPError as e:
-            raise GeminiError(f"Gemini 연결 실패: {type(e).__name__}: {e}") from e
+            for cfg in configs:
+                body = {"contents": [{"role": "user", "parts": [
+                            {"text": prompt},
+                            {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_png).decode()}}]}],
+                        "generationConfig": cfg}
+                try:
+                    r = client.post(API.format(model=model), json=body, headers={"x-goog-api-key": self.key})
+                except httpx.HTTPError as e:
+                    raise GeminiError(f"Gemini 연결 실패: {type(e).__name__}: {e}") from e
+                tried.append({"config": list(cfg), "status": r.status_code})
+                if r.status_code != 400:
+                    break
         finally:
             if self.http is None:
                 client.close()
@@ -114,7 +194,7 @@ class GeminiClient:
         text = " ".join(p.get("text", "") for p in parts if p.get("text"))[:500]
         info = {"model": model, "latency_s": dt, "prompt": prompt, "text": text,
                 "finish": cands[0].get("finishReason") if cands else None,
-                "usage": j.get("usageMetadata")}
+                "usage": j.get("usageMetadata"), "image_config": cfg, "tried": tried}
         if img is None:
             raise GeminiError(f"Gemini 응답에 이미지가 없다(finish {info['finish']}, text {text[:120]!r})")
         d = img.get("inlineData") or img.get("inline_data")
