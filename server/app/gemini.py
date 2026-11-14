@@ -24,6 +24,25 @@ class GeminiError(Exception):
     pass
 
 
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+_CONVERT = ("import sys, io\nfrom PIL import Image\nim = Image.open(io.BytesIO(sys.stdin.buffer.read())).convert('RGB')\n"
+            "o = io.BytesIO(); im.save(o, 'PNG'); sys.stdout.buffer.write(o.getvalue())")
+
+
+def to_png(data: bytes) -> bytes:
+    """Gemini 결과가 PNG 가 아니면(JPEG 등) PNG 로. 앱 venv 에 Pillow 가 없어 시스템 파이썬(Pillow)을 하위 프로세스로 부른다
+    (빠른 시험용 우회, env GEMINI_CONVERT_PYTHON, 기본 /usr/bin/python3)."""
+    if data[:8] == _PNG_SIG:
+        return data
+    import subprocess
+    py = os.environ.get("GEMINI_CONVERT_PYTHON") or "/usr/bin/python3"
+    try:
+        r = subprocess.run([py, "-c", _CONVERT], input=data, capture_output=True, timeout=60, check=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise GeminiError(f"Gemini 결과 이미지 변환 실패({py}): {type(e).__name__}: {e}") from e
+    return r.stdout
+
+
 def full_prompt(sentence: str, target: str) -> str:
     return f"{sentence.strip().rstrip('.')}. " + TAIL.format(target=target or "selected part")
 
@@ -99,4 +118,5 @@ class GeminiClient:
         if img is None:
             raise GeminiError(f"Gemini 응답에 이미지가 없다(finish {info['finish']}, text {text[:120]!r})")
         d = img.get("inlineData") or img.get("inline_data")
-        return base64.b64decode(d["data"]), info
+        info["mime"] = d.get("mimeType") or d.get("mime_type")
+        return to_png(base64.b64decode(d["data"])), info

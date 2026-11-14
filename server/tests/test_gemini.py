@@ -150,3 +150,21 @@ def test_default_local_unchanged(env):
     j = _lasso(env, aid)
     assert j["state"] == "committed" and env.eng.gemini.calls == []
     assert [c[0] for c in env.be.calls].count("inpaint") == 1
+
+
+def test_to_png_converts_jpeg():
+    import io
+    import shutil
+    from server.app.gemini import to_png
+    png = _png(16, 16)
+    assert to_png(png) == png
+    if not shutil.which("/usr/bin/python3"):
+        pytest.skip("시스템 파이썬 없음")
+    import subprocess
+    jpg = subprocess.run(["/usr/bin/python3", "-c", "import sys,io\nfrom PIL import Image\no=io.BytesIO();"
+                          "Image.new('RGB',(16,16),(10,200,30)).save(o,'JPEG');sys.stdout.buffer.write(o.getvalue())"],
+                         capture_output=True, check=True).stdout
+    assert jpg[:2] == b"\xff\xd8"
+    out = to_png(jpg)
+    assert out[:8] == b"\x89PNG\r\n\x1a\n" and decode_png(out).shape[:2] == (16, 16)
+    assert io is not None
