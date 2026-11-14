@@ -396,6 +396,21 @@ DETAIL_STYLE_SCHEMA = {
     "additionalProperties": False,
 }
 
+#: S22 APP_NAMED_NODETAIL: 이름만으로 모양이 정해지는 대상 판정(켬일 때만 스키마·규칙에 더한다 — 끔이면 요청이 S21 이전과 같다)
+DETAIL_STYLE_SCHEMA_NAMED = {
+    "type": "object",
+    "properties": dict(DETAIL_STYLE_SCHEMA["properties"], named_subject={"type": "boolean"},
+                       subject_name={"anyOf": [{"type": "string"}, {"type": "null"}]}),
+    "required": DETAIL_STYLE_SCHEMA["required"] + ["named_subject", "subject_name"],
+    "additionalProperties": False,
+}
+
+NAMED_RULE = """
+- named_subject: true only when the request names one specific well-known character, mascot or person from a brand,
+  show, game, film or book whose look is fixed by the name alone (e.g. "Hello Kitty", "SpongeBob", "Pikachu",
+  "헬로키티"). false for generic things and generic roles ("an adventurer", "a firefighter", "a red car", "a cat").
+- subject_name: when named_subject is true, that name as usually written in English (e.g. "Hello Kitty"); otherwise null."""
+
 #: S14 APP_FACEHINT: 사람·캐릭터·동물이면 얼굴이 보이게
 FACE_HINT = """
 - If the object is a person, character or animal, describe its head and a clearly visible face (eyes, nose, mouth)
@@ -504,6 +519,11 @@ def style_from_request(text: str):
     return None, None
 
 
+#: S22 가짜 모드·시험용 이름 판정(원문 소문자 부분 문자열 → 영어 이름)
+_FAKE_NAMED = (("hello kitty", "Hello Kitty"), ("헬로키티", "Hello Kitty"), ("헬로 키티", "Hello Kitty"),
+               ("spongebob", "SpongeBob SquarePants"), ("스폰지밥", "SpongeBob SquarePants"))
+
+
 def fake_detail_style(prompt: str) -> dict:
     low = prompt.lower()
     for w, st in _FAKE_STYLE:
@@ -547,8 +567,12 @@ class FakeAdapter:
     def detail_prompt(self, prompt: str, job_id: str = "") -> str:
         return prompt.strip()
 
-    def detail_style(self, prompt: str, job_id: str = "", facehint: bool = False) -> dict:
-        return fake_detail_style(prompt)
+    def detail_style(self, prompt: str, job_id: str = "", facehint: bool = False, named: bool = False) -> dict:
+        out = fake_detail_style(prompt)
+        if named:                                     # S22 가짜: 정해 둔 이름만
+            nm = next((en for k, en in _FAKE_NAMED if k in prompt.lower()), None)
+            out.update(named_subject=nm is not None, subject_name=nm)
+        return out
 
     def classify(self, reason: str, refine: Optional[dict], history: List[str], job_id: str = "",
                  images: Optional[List[bytes]] = None, region_rule: bool = False) -> dict:
@@ -773,9 +797,13 @@ class ClaudeAdapter:
 
     # ── S11 상세화 + 양식 판정 ─────────────────────────────────────
     @staticmethod
-    def check_detail_style(o: dict, request: str = "") -> Optional[str]:
-        if set(o) != set(DETAIL_STYLE_SCHEMA["properties"]):
+    def check_detail_style(o: dict, request: str = "", named: bool = False) -> Optional[str]:
+        if set(o) != set((DETAIL_STYLE_SCHEMA_NAMED if named else DETAIL_STYLE_SCHEMA)["properties"]):
             return f"필드가 다르다: {sorted(o)}"
+        if named and o.get("named_subject"):
+            nm = str(o.get("subject_name") or "").strip()
+            if not nm or len(nm) > 60 or not is_english(nm) or _NEG.search(nm):
+                return f"named_subject 가 true 인데 subject_name 이 짧은 영어 이름이 아니다: {nm!r}"
         p = ClaudeAdapter.check_detail({"subject_detailed": o.get("subject_detailed")})
         if p:
             return p
@@ -790,19 +818,26 @@ class ClaudeAdapter:
                 return f"style_words {sw!r} 가 요청 원문에 없다(원문에서 그대로 옮겨야 한다)"
         return None
 
-    def detail_style(self, prompt: str, job_id: str = "", facehint: bool = False) -> dict:
-        """facehint: S14 — 사람·캐릭터·동물이면 머리와 얼굴이 보이게 묘사하라는 규칙을 더한다.
+    def detail_style(self, prompt: str, job_id: str = "", facehint: bool = False, named: bool = False) -> dict:
+        """named: S22 — named_subject·subject_name 도 받는다(스키마·규칙 추가). 결과에 그대로 싣는다.
+        facehint: S14 — 사람·캐릭터·동물이면 머리와 얼굴이 보이게 묘사하라는 규칙을 더한다.
         S11: {subject_detailed, style, style_words, check}. style null 인데 금지어가 있으면 1회 재요청, 그래도 있으면 지운다."""
         user = f"request: {json.dumps(prompt, ensure_ascii=False)}"
-        chk = lambda o: self.check_detail_style(o, prompt)            # noqa: E731
-        system = DETAIL_STYLE_SYSTEM + (FACE_HINT if facehint else "")
-        out = self._call("detail_style", system, user, DETAIL_STYLE_SCHEMA, chk, job_id, {"prompt": prompt, "facehint": facehint})
-        return _style_guard(out, prompt, lambda found: self._call(
+        schema = DETAIL_STYLE_SCHEMA_NAMED if named else DETAIL_STYLE_SCHEMA
+        chk = lambda o: self.check_detail_style(o, prompt, named)     # noqa: E731
+        system = DETAIL_STYLE_SYSTEM + (FACE_HINT if facehint else "") + (NAMED_RULE if named else "")
+        log = dict({"prompt": prompt, "facehint": facehint}, **({"named": True} if named else {}))
+        out = self._call("detail_style", system, user, schema, chk, job_id, log)
+        res = _style_guard(out, prompt, lambda found: self._call(
             "detail_style_retry", system,
             user + f"\n\nYour previous subject_detailed {json.dumps(out['subject_detailed'], ensure_ascii=False)} used "
                    f"{json.dumps(found)}, which the request does not ask for. Describe the real object at real-world "
                    "proportions and leave those words out.",
-            DETAIL_STYLE_SCHEMA, chk, job_id, {"prompt": prompt, "banned_found": found}))
+            schema, chk, job_id, {"prompt": prompt, "banned_found": found}))
+        if named:                                     # 판정은 첫 응답 것을 쓴다(재요청은 금지어만 고친다)
+            res["named_subject"] = bool(out.get("named_subject"))
+            res["subject_name"] = (str(out.get("subject_name") or "").strip() or None) if res["named_subject"] else None
+        return res
 
     # ── A4 분류 ────────────────────────────────────────────────────
     @staticmethod

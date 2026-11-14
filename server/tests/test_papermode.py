@@ -121,11 +121,11 @@ def test_facehint_passed_and_rule_text(env):
     env.eng.llm.detail_style = lambda p, job_id="", **kw: (seen.append(kw), orig(p, job_id=job_id))[1]
     env.post("/app/v1/qr/st-05/asset", json={"prompt": "a cartoon style adventurer"}, headers=A)
     env.eng.drain()
-    assert seen == [{"facehint": True}]
+    assert seen == [{"facehint": True, "named": True}]      # S22 APP_NAMED_NODETAIL 기본 켬
     env.eng.s.facehint = False
     env.post("/app/v1/qr/st-06/asset", json={"prompt": "a dog"}, headers=A)
     env.eng.drain()
-    assert seen[-1] == {}
+    assert seen[-1] == {"named": True}
 
 
 def test_t2i_raw_image_saved_and_served(env):

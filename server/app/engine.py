@@ -32,6 +32,9 @@ from ..t2i import DEFAULT_TEMPLATE, app_template
 INPAINT_SUFFIX = ", simple clean 3D game asset style"
 #: S14 논문 X3 생성 설정의 TRELLIS seed(`x3/track_a/*/gen/gen.json`, 단계는 A5000 기본 25/25)
 PAPER_TRELLIS_SEED = 42
+#: S22 이름만으로 정해지는 대상의 T2I 문장 = 영어 이름 + 꼬리. B = 이름만, C = 이름 + 한 얼굴 문구(부정어 없음)
+NAMED_SUFFIX = {"B": "", "C": ", one face on the front, plain smooth back of the head"}
+NAMED_METHOD = "C"   # 시험 결과로 정한다(S22 보고)
 
 
 def inpaint_prompt(new_scene_prompt: str, realstyle: bool, style: Optional[str]) -> str:
@@ -214,8 +217,12 @@ class Engine:
         try:
             if styled:                                   # S11: {subject_detailed, style} + 금지어 검사
                 fkw = {"facehint": True} if self.s.facehint else {}
+                if self.s.named_nodetail:
+                    fkw["named"] = True                  # S22: named_subject·subject_name 도 받는다
                 d = self.llm.detail_style(raw, job_id=j["job_id"], **fkw)
                 prompt_en, style = strip_realworld(d["subject_detailed"]), d.get("style")   # S13 7
+                if self.s.named_nodetail:
+                    prompt_en = self._named(j, d, prompt_en)
                 j["style"] = {"mode": "user" if style else "real", "style": style, "words": d.get("style_words"),
                               **(d.get("check") or {})}
                 j["translate"] = {"ok": True, "mode": "detail_style"}
@@ -234,6 +241,17 @@ class Engine:
                             style=style or "realistic")
         self._set(j, "generating", "t2i", 0.0)
         return self._generate_with(j, prompt_en, template, style, int(j["seed"]), gen_kw)
+
+    def _named(self, j: dict, d: dict, detailed: str) -> str:
+        """S22: 이름만으로 모양이 정해지는 대상이면 상세화 문장(지어낸 부품·얼굴 규칙) 대신 영어 이름 + 방식 꼬리.
+        양식(style)은 그대로 둔다 — 템플릿이 양식 꼬리를 붙인다. 기록: j['named']."""
+        name = d.get("subject_name") if d.get("named_subject") else None
+        rec = {"named_subject": bool(name), "subject_name": name, "method": None}
+        if name:
+            rec.update(method=NAMED_METHOD, detailed_unused=detailed)
+            detailed = name + NAMED_SUFFIX[NAMED_METHOD]
+        j["named"] = rec
+        return detailed
 
     def _generate_with(self, j: dict, prompt_en: str, template: Optional[str], style: Optional[str], seed: int,
                        gen_kw: dict) -> None:

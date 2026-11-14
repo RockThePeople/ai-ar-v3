@@ -61,6 +61,7 @@ class Settings:
     worker_delete: bool = False  # APP_WORKER_DELETE: 자산 삭제 때 A5000 워커 저장소도 지움(기본 0 = 보관, 사용자 결정 11-12)
     relphrase: bool = True  # S12 APP_RELPHRASE: 보정 문장에서 바뀐 부위를 대상 뒤 관계어로(끔 = S4–S11 보정 템플릿)
     realstyle: bool = True  # S11 APP_REALSTYLE: 기본 실물형 + 사용자 양식만(끔 = S6 'game asset' 꼬리)
+    named_nodetail: bool = True  # S22 APP_NAMED_NODETAIL: 이름만으로 정해지는 대상(헬로키티 등)은 상세화 없이 이름으로 T2I
     inpaint_crop: bool = False  # S7 APP_INPAINT_CROP: 마스크 주변만 잘라 인페인팅(기본 0, 사용자 결정 — 켬이 장면 재생성·R→B)
 
     @classmethod
@@ -86,4 +87,5 @@ class Settings:
             facehint=_flag("APP_FACEHINT", "1"),
             rejectraw=_flag("APP_REJECTRAW", "1"),
             inpaintprompt=_flag("APP_INPAINTPROMPT", "1"),
+            named_nodetail=_flag("APP_NAMED_NODETAIL", "1"),
         )
