@@ -80,7 +80,7 @@ class Ratings:
     def health(self) -> dict:
         return {"chain_id": CHAIN_ID, "entry_point": ENTRY_POINT, "factory": self.client.factory or None,
                 "identity_registry": IDENTITY, "reputation_registry": REPUTATION, "agent_id": self.agent_id(),
-                "bundler_url": (self.client.bundler_url if not self.mock else "/mock-bundler") or None,
+                "bundler_url": ("/mock-bundler" if self.mock else "/bundler" if self.client.bundler_url else None),
                 "status": self.client.status, **({"error": self.client.error} if self.client.error else {})}
 
     # ── 공개 주소 ─────────────────────────────────────────────────
@@ -204,7 +204,7 @@ class Ratings:
         except ChainError as e:
             return {"status": "failed", "error": f"user_op 준비 실패: {e}", "account": account}
         return {"status": "awaiting_signature", "chain_id": CHAIN_ID, "entry_point": ENTRY_POINT,
-                "account": b["account"], "agent_id": self.agent_id(), "bundler_url": self.client.bundler_url,
+                "account": b["account"], "agent_id": self.agent_id(), "bundler_url": f"{o['public_base']}/bundler",
                 "user_op": b["user_op"], "user_op_hash": b["user_op_hash"],
                 "expires_at": round(self.eng.clock() + USEROP_TTL_S, 1), "feedback_uri_onchain": uri}
 
@@ -227,6 +227,8 @@ class Ratings:
         for k in ("feedback_uri_onchain", "mock", "submitted_at", "gas_used", "confirm_s", "onchain_read", "last_error",
                   "bundler_hash", "submitted_by"):
             ch.pop(k, None)
+        if "apikey=" in (ch.get("bundler_url") or ""):            # 1.2.0 초기 행(키 든 URL) — 중계 주소로
+            ch["bundler_url"] = f"{o.get('public_base') or ''}/bundler"
         return {k: o.get(k) for k in ("rating_id", "asset_id", "stars", "value", "decimals", "tag1", "version_range",
                                       "review", "feedback_uri", "feedback_hash", "feedback_keccak")} | {"chain": ch}
 
@@ -302,6 +304,16 @@ class Ratings:
             return False
         h = bytes.fromhex(o["chain"]["user_op_hash"].removeprefix("0x"))
         return cc.verify_sha256(h, signature, x, y)
+
+    BUNDLER_METHODS = ("eth_sendUserOperation", "eth_getUserOperationReceipt", "eth_getUserOperationByHash",
+                       "eth_supportedEntryPoints", "eth_chainId", "eth_estimateUserOperationGas")
+
+    def bundler_proxy(self, req: dict) -> dict:
+        """실제 모드 번들러 중계(키를 기기에 주지 않는다). 사용자 작업 메서드만."""
+        if req.get("method") not in self.BUNDLER_METHODS:
+            return {"jsonrpc": "2.0", "id": req.get("id"),
+                    "error": {"code": -32601, "message": f"method not supported: {req.get('method')}"}}
+        return self.client.bundler_raw(req)
 
     # ── 가짜 번들러(JSON-RPC) ──────────────────────────────────────
     def mock_bundler(self, req: dict) -> dict:

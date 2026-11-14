@@ -320,3 +320,21 @@ def test_tune_does_not_clobber_submitted(env):
     stale = dict(b["chain"], status="failed")
     assert R._set_chain(rid, stale, "awaiting_signature") is False
     assert R._body(rid)["chain"]["status"] == "submitted"
+
+
+def test_bundler_proxy_hides_key(env):
+    """실제 모드: health·평가의 bundler_url 은 이 서버 /bundler(키 없음), 중계는 사용자 작업 메서드만 그대로 전달."""
+    aid = _edited_asset(env)
+    R = _ratings(env)
+    assert R.health()["bundler_url"] == "/bundler"
+    o = env.post(f"/app/v1/assets/{aid}/ratings", headers=A, json={"stars": 4, "signer_pubkey": PUB}).json()
+    assert o["chain"]["bundler_url"].endswith("/bundler") and "apikey" not in json.dumps(o)
+    fwd = []
+    R.client.bundler_raw = lambda b: fwd.append(b) or {"jsonrpc": "2.0", "id": b.get("id"), "error": {"code": -32507, "message": "AA24"}}
+    r = env.post("/bundler", json={"jsonrpc": "2.0", "id": 9, "method": "eth_sendUserOperation", "params": [{}, "0x"]}).json()
+    assert r["error"]["code"] == -32507 and fwd[0]["method"] == "eth_sendUserOperation"      # 오류 객체 그대로
+    bad = env.post("/bundler", json={"jsonrpc": "2.0", "id": 1, "method": "pm_sponsorUserOperation", "params": []}).json()
+    assert bad["error"]["code"] == -32601 and len(fwd) == 1                                 # 후원 요청은 막음
+    # 키 든 URL 로 저장된 옛 행도 응답에서는 중계 주소
+    b = R._body(o["rating_id"]); b["chain"]["bundler_url"] = "https://x/rpc?apikey=SECRET"; R._save(b)
+    assert "SECRET" not in json.dumps(env.get(f"/app/v1/ratings/{o['rating_id']}").json())

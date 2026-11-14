@@ -81,6 +81,22 @@ class ChainClient:
     def bundler(self, method: str, params: list):
         return self._post(self.bundler_url, method, params, timeout=30.0)
 
+    def bundler_raw(self, body: dict) -> dict:
+        """기기용 번들러 중계(/bundler): 요청을 그대로 보내고 응답(오류 객체 포함)을 그대로 돌려준다. 키는 서버에만."""
+        import httpx
+        rid = body.get("id")
+        try:
+            client = self.http or httpx.Client(timeout=30.0)
+            try:
+                r = client.post(self.bundler_url, json={"jsonrpc": "2.0", "id": rid, "method": body.get("method"),
+                                                        "params": body.get("params") or []})
+            finally:
+                if self.http is None:
+                    client.close()
+            return r.json()
+        except (httpx.HTTPError, ValueError) as e:
+            return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": f"번들러 연결 실패 {type(e).__name__}"}}
+
     def check(self) -> None:
         """chainId 11155111 이고 번들러·팩토리가 있으면 on. 아니면 off + 이유(health chain.error)."""
         if not self.rpc_url:

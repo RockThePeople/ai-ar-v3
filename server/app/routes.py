@@ -304,6 +304,13 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             raise AppError(404, "INVALID_REQUEST", "가짜 모드에서만")
         return JSONResponse(S.engine.ratings.mock_bundler(json.loads(await req.body() or b"{}")))
 
+    @v2.post("/bundler")
+    async def bundler_proxy(req: Request):
+        """실제 모드 번들러 중계(S21): Pimlico 키를 기기·health 에 내보내지 않는다. 가짜 모드는 /mock-bundler."""
+        if S.settings.mock or S.engine.ratings.client.status != "on":
+            raise AppError(404, "INVALID_REQUEST", "체인 실제 모드에서만")
+        return JSONResponse(S.engine.ratings.bundler_proxy(json.loads(await req.body() or b"{}")))
+
     # ── /v2 (계약 3.28.0 경로, 앱 저장소) ───────────────────────────
     @v2.get("/v2/assets/{asset_id}/manifest.v{version}.json")
     def manifest(asset_id: str, version: int):
