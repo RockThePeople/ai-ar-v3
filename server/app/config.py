@@ -85,6 +85,7 @@ class Settings:
     inpaint_backend: str = "local"  # S20f APP_INPAINT_BACKEND: local(FLUX 워커) | gemini(에이전트 편집만, 마스크 없음)
     chain: bool = True  # S21 APP_CHAIN: 체인 평가(값이 있고 chainId 11155111 일 때만 실제로 켜짐)
     revert: bool = False  # S25 APP_REVERT: 판본 되돌리기(실서버는 A5000 판본 복사가 있어야 켠다, 가짜 모드는 늘 켬)
+    front_fix: bool = False  # S20g APP_FRONT_FIX: 생성 직후 정면·뒷면 얼굴 판단(다시 생성), 방향 고르기 정면 기준, 옆·뒤 꼬리
     agent_tune: bool = True  # S21 APP_AGENT_TUNE: 평가 리뷰로 마스킹·보정 프롬프트 미세 조정
     automask: bool = False  # S20e APP_AUTOMASK: 1 이면 camera·volume_cells 없는 자동 마스킹(S20d). 기본 0 = 400
     agent_depth_ratio: float = 0.10  # S20e AGENT_DEPTH_RATIO: 깊이 여유 T = clamp(round(ratio·L), 3, 16)
@@ -125,6 +126,7 @@ class Settings:
             chain=_flag("APP_CHAIN", "1"),
             agent_tune=_flag("APP_AGENT_TUNE", "1"),
             revert=_flag("APP_REVERT", "0"),
+            front_fix=_flag("APP_FRONT_FIX", "0"),
             inpaint_backend=(os.environ.get("APP_INPAINT_BACKEND") or "local").strip(),
             grow_from_image=_flag("APP_GROW_FROM_IMAGE", "0"),
             agent_no_commit=_flag("APP_AGENT_NO_COMMIT", "0"),

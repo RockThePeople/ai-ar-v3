@@ -532,7 +532,7 @@ def front_from_user(user_cam: dict, occupied, side: Optional[str]) -> Optional[s
 
 
 def pick_view(cells, occupied, cams: dict, user_cam: dict, front_view: Optional[str] = None,
-              back_weight: float = 0.5) -> dict:
+              back_weight: float = 0.5, front_order: bool = False) -> dict:
     """후보 = 사용자 카메라 + 4시점. 점수 = 보이는 라쏘 점유 셀 수 × 가중치(S20f-2: front_view 반대 방위 0.5, 그 밖 1.0).
     최대, 같으면 사용자 → az000 → … 순."""
     order = [("user", user_cam)] + [(v, cams[v]) for v in VIEW_AZ]
@@ -542,9 +542,22 @@ def pick_view(cells, occupied, cams: dict, user_cam: dict, front_view: Optional[
     weights = {name: (back_weight if back and (name == back or (name == "user" and uview == back)) else 1.0)
                for name, _ in order}
     scores = {n: counts[n] * weights[n] for n in counts}
-    best = max(order, key=lambda it: (scores[it[0]], -[n for n, _ in order].index(it[0])))
+    def side_of(name: str) -> Optional[str]:
+        if front_view not in VIEW_AZ:
+            return None
+        v = uview if name == "user" else name
+        return "front" if v == front_view else "back" if v == back else "side"
+    if front_order:                                   # S20g 1-2: 같은 점수면 정면 → 사용자 → 옆 → 뒷면(az000 우선 없음)
+        def rank(name: str) -> int:
+            sd = side_of(name)
+            if name == "user":
+                return 4 if sd == "back" else 0 if sd == "front" else 1
+            return {"front": 0, "side": 2, "back": 3}.get(sd, 2)
+        best = max(order, key=lambda it: (scores[it[0]], -rank(it[0]), -[n for n, _ in order].index(it[0])))
+    else:
+        best = max(order, key=lambda it: (scores[it[0]], -[n for n, _ in order].index(it[0])))
     return {"view": best[0], "camera": best[1], "counts": counts, "weights": weights, "scores": scores,
-            "front_view": front_view, "back_view": back}
+            "front_view": front_view, "back_view": back, "view_side": side_of(best[0])}
 
 
 # ── S20f 2.6 이미지 차이로 볼륨 넓히기(사용자 지적 2026-11-15 00:52, APP_GROW_FROM_IMAGE) ──

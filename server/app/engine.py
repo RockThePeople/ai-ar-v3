@@ -40,6 +40,8 @@ NAMED_SUFFIX = {"B": "", "C": ", one face on the front, plain smooth back of the
 NAMED_METHOD = "D"   # 사용자 확정 2026-11-14(헬로키티 양면 위험은 받아들임)
 #: S20 시점 이름(automask.VIEW_AZ 와 같은 순서)
 VIEW_NAMES = ("az000", "az090", "az180", "az270")
+FRONT_TRIES = 3          # S20g 1-4: 뒷면 얼굴이면 seed + 1 로 다시(총 3개)
+FACE_TAIL = " This is a {side} view of the character; do not add a face or facial features on this side."
 
 
 def inpaint_prompt(new_scene_prompt: str, realstyle: bool, style: Optional[str]) -> str:
@@ -286,6 +288,10 @@ class Engine:
             j["raw_generate"] = out["raw"]               # S9: T2I 명령·설정, A5000 /generate 요청·결과 전문
         if j["state"] != "generating":
             return                                        # TIMEOUT 등으로 이미 끝났다
+        if self._front_capable(j):                        # S20g 1-1·1-4: 정면 판단 + 뒷면 얼굴이면 다시 생성
+            out = self._front_check(j, out, prompt_en, seed, kw)
+            if j["state"] != "generating":
+                return
         self._set(j, stage="chunking", progress=0.95)
         self.store.put_version(j["asset_id"], 1, out["blobs"])
         if out.get("slat_coords"):
@@ -296,6 +302,116 @@ class Engine:
         j["progress"] = 1.0
         self._finish(j, "committed")
         self.enqueue_views(j["asset_id"], 1)               # S20 2.1: 다음 편집이 기다리지 않게
+
+    # ── S20g 생성 직후 정면·뒷면 얼굴 판단 ─────────────────────────────
+    def _front_capable(self, j: dict) -> bool:
+        return (self.s.front_fix and not j.get("raw_prompt") and self.be.name != "mock"
+                and hasattr(self.agent_llm, "agent_front"))
+
+    def asset_front(self, asset_id: str) -> Optional[str]:
+        """저장된 정면(az000…), "none"(캐릭터 아님), None(묻지 않음)."""
+        r = self.db.q("SELECT front_view FROM assets WHERE asset_id=?", (asset_id,))
+        return r[0]["front_view"] if r else None
+
+    def _gen_note(self, j: dict, text: str) -> None:
+        """생성 진행 문구(계약 4.2 stage 는 그대로 — 앱 노출은 계약 결정 대기, 지금은 작업 기록·/clients·로그)."""
+        j.setdefault("gen_events", []).append({"t": round(self.clock(), 3), "text": text})
+        print(f"[generate] {j['asset_id']}: {text}", flush=True)
+        self._save(j)
+
+    def _put_candidate(self, asset_id: str, out: dict) -> None:
+        import shutil
+        self.store.put_version(asset_id, 1, out["blobs"])
+        self.store.drop_slat_coords(asset_id, 1)
+        if out.get("slat_coords"):
+            self.store.put_slat_coords(asset_id, 1, out["slat_coords"])
+        shutil.rmtree(self._views_dir(asset_id, 1), ignore_errors=True)
+
+    def _regen(self, j: dict, rec: dict, prompt_en: str, seed: int, png: bytes, kw: dict, tag: str) -> Optional[dict]:
+        """A5000 의 그 자산을 보관(DELETE) → 같은 T2I 이미지·새 seed 로 TRELLIS 만 다시. 실패면 None(지금 후보로 끝)."""
+        aid = j["asset_id"]
+        err = self.be.delete(aid)
+        if err:
+            rec.setdefault("errors", []).append(f"{tag}: {err}")
+            return None
+        trace: dict = {}
+        j.setdefault("a5000_trace", {})[tag] = trace
+        gkw = {k: v for k, v in kw.items() if k != "t2i_seed"}
+        t0 = time.perf_counter()
+        try:
+            out = self.be.generate(aid, prompt_en, seed, lambda st, f: None, trace=trace, image_png=png, **gkw)
+        except StageError as e:
+            rec.setdefault("errors", []).append(f"{tag}: {e.code} {e}")
+            raise
+        rec.setdefault("gen_s", {})[tag] = round(time.perf_counter() - t0, 1)
+        return out
+
+    def _front_check(self, j: dict, out: dict, prompt_en: str, seed: int, kw: dict) -> dict:
+        aid, png = j["asset_id"], out.get("png")
+        rec: dict = {"tries": [], "max_tries": FRONT_TRIES, "face_left": False}
+        j["front_check"] = rec
+        chosen = None
+        for n in range(FRONT_TRIES):
+            s = seed + n
+            if n:
+                if not png:
+                    rec.setdefault("errors", []).append("T2I 이미지 없음 — 다시 생성 못 함")
+                    chosen = n - 1
+                    break
+                self._gen_note(j, f"뒷면에 얼굴이 생겨 다시 만듭니다({n + 1}/{FRONT_TRIES})")
+                self._set(j, stage="generating", progress=0.9)
+                o2 = self._regen(j, rec, prompt_en, s, png, kw, f"generate_r{n}")
+                if j["state"] != "generating":
+                    return out
+                if o2 is None:
+                    chosen = n - 1
+                    break
+                out = o2
+            self._put_candidate(aid, out)
+            t0 = time.perf_counter()
+            try:
+                v = self.render_views(aid, 1)
+                r = self.agent_llm.agent_front({k: v["png"][k] for k in VIEW_NAMES}, job_id=j["job_id"])
+            except (StageError, LLMInvalid, LLMUnavailable) as e:      # 판단 못 하면 이 후보로(생성은 막지 않는다)
+                rec["tries"].append({"seed": s, "error": f"{type(e).__name__}: {e}"})
+                chosen = n
+                break
+            rec["tries"].append({"seed": s, "front_view": r.get("front_view"), "is_character": r.get("is_character"),
+                                 "faces_on_multiple_sides": bool(r.get("faces_on_multiple_sides")),
+                                 "face_views": r.get("face_views"), "note": r.get("note"),
+                                 "check_s": round(time.perf_counter() - t0, 1)})
+            if not r.get("faces_on_multiple_sides"):
+                chosen = n
+                break
+        if chosen is None:                                # 셋 다 뒷면 얼굴 → 첫 번째(정해진 순서)
+            if len(rec["tries"]) > 1:
+                self._gen_note(j, "세 번 모두 뒷면에 얼굴이 있어 첫 번째로 되돌립니다(뒷면 얼굴 남음)")
+                o2 = self._regen(j, rec, prompt_en, seed, png, kw, "generate_back")
+                if j["state"] != "generating":
+                    return out
+                if o2 is not None:
+                    out = o2
+                    self._put_candidate(aid, out)
+                    try:
+                        self.render_views(aid, 1)
+                    except StageError:
+                        pass
+                else:
+                    chosen = len(rec["tries"]) - 1        # 되돌리기 실패 — 마지막 후보 그대로
+            chosen = 0 if chosen is None else chosen
+            rec["face_left"] = True
+            self._gen_note(j, "뒷면 얼굴 남음")
+        elif chosen < len(rec["tries"]) and rec["tries"][chosen].get("faces_on_multiple_sides"):
+            rec["face_left"] = True
+        rec["chosen"] = chosen
+        rec["chosen_seed"] = seed + chosen
+        t = rec["tries"][chosen] if chosen < len(rec["tries"]) else {}
+        fv = t.get("front_view")
+        fv = fv if fv in VIEW_NAMES else ("none" if fv == "none" else None)
+        rec["front_view"] = fv
+        self.db.x("UPDATE assets SET front_view=? WHERE asset_id=?", (fv, aid))
+        self._save(j)
+        return out
 
     # ── 편집 ───────────────────────────────────────────────────────
     def create_edit(self, asset_id: str, device: str, base_version: int, instruction: str, camera: Optional[dict],
@@ -574,6 +690,9 @@ class Engine:
                                      (j.get("agent_hand_side") or {}).get("side"))
                          + side_clause(j.get("agent_hand_side")))
             gp = full_prompt(ip, target, plan.get("op"), plan.get("old_object"), plan.get("new_object"), extra=extra)
+            vs = (j.get("agent_pick") or {}).get("view_side") if self.s.front_fix else None
+            if vs in ("side", "back"):                    # S20g 1-3: 옆·뒤 시점일 때만(APP_FRONT_FIX)
+                gp += FACE_TAIL.format(side=vs)
             ip_src, ip = "gemini", gp
             j["prompts"] = dict(prompts_of(j), inpaint=ip)
             h, w = decode_png(rpng).shape[:2]
@@ -867,7 +986,8 @@ class Engine:
         j = self.get(job_id) if job_id else None
         if j is not None and j.get("mode") == "agent":    # 10.3: 반영 뒤 result 이미지(새 판본 앞 시점 1장)
             from .agent import AgentRun
-            front = ((j.get("agent_plan") or {}).get("front_view")) or "az000"
+            af = self.asset_front(asset_id)
+            front = af if af in VIEW_NAMES else (((j.get("agent_plan") or {}).get("front_view")) or "az000")
             with self.lock:
                 AgentRun(self, j).event("done", "tool", "새 판본을 앞에서 본 모습입니다", {"result": v["png"][front]})
 
