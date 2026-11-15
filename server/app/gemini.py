@@ -76,8 +76,9 @@ def side_clause(hand_side: Optional[dict]) -> str:
     if not hand_side or not hand_side.get("image_side") or not hand_side.get("side"):
         return ""
     s, img = hand_side["side"], hand_side["image_side"]
-    return (f"Put it in the character's own {s} hand, which in this image is the hand on the {img.upper()} side of "
-            f"the image (do not mirror the picture). ")
+    other = {"left": "right", "right": "left"}[img]
+    return (f"Draw it ONLY in the hand on the {img.upper()} side of the image (that is the character's {s} hand); "
+            f"the hand on the {other} side of the image stays empty. ")
 
 
 def full_prompt(sentence: str, target: str, op: Optional[str] = None, old: Optional[str] = None,

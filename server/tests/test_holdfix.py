@@ -17,7 +17,7 @@ def test_hold_clause_kinds():
 
 def test_side_clause_both_frames():
     s = side_clause({"side": "right", "image_side": "left"})
-    assert "character's own right hand" in s and "LEFT side of the image" in s
+    assert "ONLY in the hand on the LEFT side of the image" in s and "character's right hand" in s and "right side of the image stays empty" in s
     assert side_clause({"side": "right", "image_side": None}) == "" and side_clause(None) == ""
 
 
@@ -72,5 +72,5 @@ def test_flow_prompt_has_hold_side_and_shape(env):
     hs = jj["agent_hand_side"]
     assert hs["side"] == "right"
     if hs["image_side"]:
-        assert f"{hs['image_side'].upper()} side of the image" in p and hs["image_side"].upper() in seen["side_hint"]
+        assert f"hand on the {hs['image_side'].upper()} side of the image" in p and hs["image_side"].upper() in seen["side_hint"]
     assert "Describe the new object concretely by its shape" in jj["agent_refine_input"]
