@@ -276,14 +276,14 @@ def test_tuning_rules(env):
                   json={"stars": 2, "review": "칼이 손에서 떠 있어요"}).json()
     rec2 = R.tune(o2["rating_id"])
     assert rec2["applied"] and rec2["target"] == "masking" and R.tuning_version() == 1
-    assert len(R.tuning_lines()["masking"]) == 1                                  # 평가 1건당 1줄
-    assert "Keep a held object" in env.eng.agent_llm.notes["masking"][0]          # 프롬프트에 붙는 목록
+    assert len(R.tuning_lines()["masking"]["general"]) == 1                       # 평가 1건당 1줄(가짜 키 = general)
+    assert "Keep a held object" in env.eng.agent_llm.notes["masking"]["general"][0]   # 프롬프트에 붙는 목록
     lines = R.tuning_lines()
-    lines["masking"] = [f"rule {i}" for i in range(8)]
+    lines["masking"] = {"general": [f"rule {i}" for i in range(8)]}
     R.set_kv("tuning_lines", lines)
     o3 = env.post(f"/app/v1/assets/{aid}/ratings", headers={"X-Device-Key": "d3"},
                   json={"stars": 1, "review": "칼이 또 떠 있어요"}).json()
-    assert R.tune(o3["rating_id"])["applied"] is False and len(R.tuning_lines()["masking"]) == 8   # 8줄 상한
+    assert R.tune(o3["rating_id"])["applied"] is False and len(R.tuning_lines()["masking"]["general"]) == 8   # 8줄 상한
     assert R.tuning_rows()[0]["version"] == 1
     from server.app.llm_adapter import with_notes
     assert "Notes from past user feedback:" in with_notes(env.eng.agent_llm, "SYS", "masking")

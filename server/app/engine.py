@@ -565,10 +565,15 @@ class Engine:
         info: dict = {}                                   # S9: 워커에 실제로 보낸 것(자르면 자른 입력)·워커 응답
         t0 = time.perf_counter()
         if self.s.inpaint_backend == "gemini" and j.get("mode") == "agent":   # S20f: 마스크 없이 렌더 1장 + 프롬프트
-            from .gemini import GeminiClient, GeminiError, fit_to, full_prompt, outside_diff
+            from .gemini import GeminiClient, GeminiError, fit_to, full_prompt, hold_clause, outside_diff, side_clause
             plan = j.get("agent_plan") or {}
             target = plan.get("old_object") or plan.get("target_part") or ""
-            gp = full_prompt(ip, target, plan.get("op"), plan.get("old_object"), plan.get("new_object"))
+            extra = ""
+            if plan.get("op") in ("add", "replace"):       # S24: 손잡이 쥐기 + 그림 기준 좌우
+                extra = (hold_clause(plan.get("new_object"), j["instruction"], plan.get("target_part") or "",
+                                     (j.get("agent_hand_side") or {}).get("side"))
+                         + side_clause(j.get("agent_hand_side")))
+            gp = full_prompt(ip, target, plan.get("op"), plan.get("old_object"), plan.get("new_object"), extra=extra)
             ip_src, ip = "gemini", gp
             j["prompts"] = dict(prompts_of(j), inpaint=ip)
             h, w = decode_png(rpng).shape[:2]

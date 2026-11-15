@@ -91,6 +91,26 @@ class AgentRun:
             self.event("masking", "error", "지시한 부위를 찾지 못했습니다 — 가짜 모드(X-Mock-Fail: NO_TARGET)")
             raise StageError("NO_TARGET", "X-Mock-Fail 로 강제 실패: NO_TARGET")
 
+    def _keyed_masking(self, plan: dict, feedback: Optional[str]) -> dict:
+        """S24b: 판단 출력 object_keys 에 맞는 masking 조정 줄이 있으면 그 줄(+ general)을 붙여 판단을 한 번 더.
+        붙인 줄은 작업 기록 tuning_applied.masking 에."""
+        from .llm_adapter import notes_for, norm_key
+        j = self.j
+        keys = [norm_key(k) for k in (plan.get("object_keys") or [])]
+        plan["object_keys"] = keys
+        first = (getattr(self.llm, "last_notes", None) or {}).get("masking") or {"keys": [], "lines": []}
+        keyed = [x for x in notes_for(self.llm, "masking", keys) if x[0] != "general"]
+        rec = {"keys": keys, "lines": [list(x) for x in first["lines"]], "rerun": False}
+        if keyed and plan.get("found"):
+            p2 = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
+                            self.eng._scene(j["asset_id"]), feedback, note_keys=keys)
+            if p2.get("found"):
+                p2["object_keys"] = keys
+                plan = p2
+            rec.update(rerun=True, lines=[list(x) for x in (self.llm.last_notes.get("masking") or {}).get("lines", [])])
+        j.setdefault("tuning_applied", {})["masking"] = rec
+        return plan
+
     def _mock_mask_retry(self) -> bool:
         return self.eng.be.name == "mock" and "mask_check_ok" in (MOCK_AGENT.get(self.j.get("mock_agent") or "") or {})
 
@@ -263,6 +283,7 @@ class AgentRun:
         self._mock("mask")
         plan = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
                           self.eng._scene(j["asset_id"]), feedback)
+        plan = self._keyed_masking(plan, feedback)
         j["agent_plan"] = plan
         if not plan.get("found"):
             self.event("masking", "error", f"지시한 부위를 찾지 못했습니다 — {plan.get('note_ko') or ''}".strip(" —"))
@@ -297,6 +318,7 @@ class AgentRun:
             self._mock_no_target()
             plan = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
                               eng._scene(j["asset_id"]), feedback)
+            plan = self._keyed_masking(plan, feedback)
             j["agent_plan"] = plan
             if not plan.get("found"):
                 self.event("masking", "error", f"지시한 부위를 찾지 못했습니다 — {plan.get('note_ko') or ''}".strip(" —"))
@@ -322,6 +344,13 @@ class AgentRun:
                    detail="visible lasso cells × weight per view: " + ", ".join(
                        f"{n} {pk['counts'][n]}×{pk['weights'][n]:g}" for n in names)
                    + f"; front {fv} (user side {plan.get('user_view_side')}), back {pk['back_view']}")
+        if eng.be.name != "mock":                         # S24 2: 그림 기준 좌우(고른 시점)
+            vaz = am.az_of(self.cam, self.occ) if pk["view"] == "user" else am.VIEW_AZ[pk["view"]]
+            hs = am.hand_image_side(j["instruction"], self.U, self.occ, pk["camera"], vaz, fv)
+            j["agent_hand_side"] = hs
+            if hs.get("image_side"):
+                self.side_hint = (f"the instruction's {hs['side']} hand ({hs.get('word')}) is the character's own side; in this "
+                                  f"image that hand is on the IMAGE {hs['image_side'].upper()} of the character")
         self.render_with(pk["camera"], self.U, pk["view"])
         return {"plan": plan, "cells": self.U, "n": len(self.U)}
 
@@ -399,6 +428,10 @@ class AgentRun:
         verb = {"add": "Add", "replace": "Replace with", "remove": "Remove", "recolor": "Recolor to"}[plan["op"]]
         ins = (f"Selected part: {plan['target_part']}. {verb}: {plan['new_object']}."
                + (f" Previous attempt problem: {feedback}." if feedback else "") + f" User instruction: {j['instruction']}")
+        if plan["op"] in ("add", "replace") and self.s.inpaint_backend == "gemini":   # S24 3: 새 물건을 모양으로
+            ins += (" Describe the new object concretely by its shape and parts, not just its name (e.g. sword → a "
+                    "straight double-edged sword with a crossguard and a short hilt; shield → a round wooden shield "
+                    "with a metal rim).")
         if j.get("raw_prompt"):                             # S20b: 그대로 모드 마커 — 보정 없이 지시문 그대로(S14 _run_raw 와 같다)
             raw = j["instruction"].strip()
             scene = eng._scene(j["asset_id"])
@@ -409,13 +442,19 @@ class AgentRun:
             return
         if getattr(eng.llm, "name", "") == "fake":         # 가짜 보정은 지시문을 그대로 옮기므로 사용자 원문을(앱 화면용)
             ins = j["instruction"]
+        eng.llm.note_keys = (plan.get("object_keys") or [])        # S24b: 키가 같은 refine 조정 줄 + general
         try:
             j["refine"], smeta = eng._refine_styled(j, eng._scene(j["asset_id"]), [], region=region, instruction=ins,
                                                     ko=True)
+            ln = (getattr(eng.llm, "last_notes", None) or {}).get("refine")
+            j.setdefault("tuning_applied", {})["refine"] = (
+                {"keys": ln["keys"], "lines": [list(x) for x in ln["lines"]]} if ln else None)
         except LLMInvalid as e:
             raise StageError("REFINE_INVALID", str(e))
         except LLMUnavailable as e:
             raise StageError("LLM_UNAVAILABLE", str(e))
+        finally:
+            eng.llm.note_keys = None
         j["refine_meta"], j["style_meta"], j["agent_refine_input"] = {}, smeta, ins
         j["prompts"] = dict(j["prompts"], region_fit=(smeta or {}).get("region_fit"),
                             refine_retried=bool((smeta or {}).get("retried")))
