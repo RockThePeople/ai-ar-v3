@@ -93,8 +93,8 @@ class FakeBackend:
     def delete(self, asset_id):
         self._f("delete")
 
-    def copy_version(self, asset_id, from_version):
-        self.calls.append(("copy_version", asset_id, from_version))
+    def copy_version(self, asset_id, from_version, base_version):
+        self.calls.append(("copy_version", asset_id, from_version, base_version))
         self._f("copy_version")
         return None
 

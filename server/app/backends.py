@@ -290,20 +290,33 @@ class RealBackend:
         except httpx.HTTPError as e:
             return f"delete {type(e).__name__}"
 
-    def copy_version(self, asset_id: str, from_version: int) -> int:
-        """S25: A5000 에서 판본 m 을 새 판본(커밋 최신 + 1)으로 복사 — 다음 편집이 m 의 SLat 에서 이어진다.
-        엔드포인트는 내부 규약 제안(chief 요청): POST /v2/trellis/assets/{id}/versions/copy {"from_version"} → {"to_version"}.
-        없으면 StageError(REVERT_UNSUPPORTED)."""
-        with self._a(timeout=120) as c:
-            r = self._call(lambda: c.post(f"/v2/trellis/assets/{asset_id}/versions/copy",
-                                          json={"from_version": int(from_version)}), "WORKER_UNREACHABLE", "A5000 copy")
-        if r.status_code in (404, 405):
-            raise StageError("REVERT_UNSUPPORTED", "A5000 에 판본 복사가 없다(내부 규약 요청 중)")
-        if r.status_code == 409:
-            raise StageError("ASSET_LOCKED", f"A5000 copy 409: {r.text[:120]}")
-        if r.status_code != 200:
+    def copy_version(self, asset_id: str, from_version: int, base_version: int) -> int:
+        """S25: A5000 판본 복사(내부 규약 3.4b, A11) — m 을 새 판본 n+1 로 복사·커밋. 다음 /edit 이 m 의 SLat 에서 이어진다.
+        본문 {from_version, base_version(워커 최신 커밋)}. 워커가 409 VERSION_CONFLICT 로 다른 최신 판본을 알려 주면 1회 다시.
+        404: 오류 본문이 있으면 m 없음(VERSION_NOT_FOUND), 없으면 엔드포인트 없음(REVERT_UNSUPPORTED)."""
+        base = int(base_version)
+        for _ in range(2):
+            with self._a(timeout=120) as c:
+                r = self._call(lambda: c.post(f"/v2/trellis/assets/{asset_id}/versions/copy",
+                                              json={"from_version": int(from_version), "base_version": base}),
+                               "WORKER_UNREACHABLE", "A5000 copy")
+            body = _json_or_text(r)
+            code = body.get("error_code") if isinstance(body, dict) else None
+            if r.status_code == 200:
+                return int(body["to_version"])
+            if r.status_code == 409 and code == "VERSION_CONFLICT":
+                lv = (body.get("detail") or {}).get("latest_version")
+                if lv is not None and int(lv) != base:
+                    base = int(lv)
+                    continue
+            if r.status_code == 409:
+                raise StageError("ASSET_LOCKED" if code == "ASSET_LOCKED" else "VERSION_CONFLICT", f"A5000 copy 409: {body}")
+            if r.status_code in (404, 405):
+                if code:
+                    raise StageError("VERSION_NOT_FOUND", f"A5000 에 판본 v{from_version} 이 없다: {body}")
+                raise StageError("REVERT_UNSUPPORTED", "A5000 에 판본 복사가 없다(내부 규약 3.4b)")
             raise self._err(r, "INTERNAL", "A5000 copy")
-        return int(r.json()["to_version"])
+        raise StageError("VERSION_CONFLICT", "A5000 copy: 워커 최신 판본이 계속 바뀐다")
 
     def slat_coords(self, asset_id: str, version: int) -> Optional[list]:
         """A5000 판본의 slat 좌표. **A5000 에 아직 이 경로가 없다**(S1 보고 요청). 없으면 None."""
@@ -479,7 +492,7 @@ class MockBackend:
     def delete(self, asset_id: str) -> Optional[str]:
         return None
 
-    def copy_version(self, asset_id: str, from_version: int) -> Optional[int]:
+    def copy_version(self, asset_id: str, from_version: int, base_version: int) -> Optional[int]:
         """가짜 모드: A5000 없음 — 앱 저장소만으로 되돌린다(새 판본 = 앱 최신 + 1)."""
         return None
 
