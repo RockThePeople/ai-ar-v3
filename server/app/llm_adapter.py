@@ -1392,3 +1392,70 @@ def _fake_tune_key(self, line: str, target: str, job_id: str = "") -> dict:
 
 
 FakeAgentAdapter.agent_tune_key = _fake_tune_key
+
+
+def make_front_adapter(base):
+    """S20g 2차 APP_FRONT_MODEL(기본 claude-sonnet-5-5): 생성 직후 판단만 이 모델. 오케스트레이터와 같으면 그대로. 기록은 같은 on_call."""
+    m = (os.environ.get("APP_FRONT_MODEL") or "claude-sonnet-5-5").strip()   # S20g 2차: 22/22 유지 가장 빠름(실측)
+    if not m or not isinstance(base, ClaudeAgentAdapter) or m == base.model:
+        return base
+    ad = ClaudeAgentAdapter(model=m, on_call=base.on_call, effort=base.effort)
+    ad.mask_effort = getattr(base, "mask_effort", None)
+    return ad
+
+
+# ── S20g 1-1·1-4: 생성 직후 4방향 판단 1회(정면 방향 + 여러 면 얼굴) ──
+AGENT_FRONT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["is_character", "front_view", "faces_on_multiple_sides", "face_views", "note"],
+    "properties": {"is_character": {"type": "boolean"},
+                   "front_view": {"type": "string", "enum": list(AGENT_VIEWS) + ["none"]},
+                   "faces_on_multiple_sides": {"type": "boolean"},
+                   "face_views": {"type": "array", "items": {"type": "string", "enum": list(AGENT_VIEWS)}},
+                   "note": {"type": "string"}}}
+AGENT_FRONT_SYSTEM = """You inspect a freshly generated 3D asset. You get four renders of the SAME object from four
+directions around it (az000, az090, az180, az270; az090 and az270 are the two side views, az180 is opposite az000).
+Decide:
+- is_character: true if the object is a character or creature with a face (person, animal, mascot, toy figure).
+- front_view: the view in which the character's face is seen most directly (looking at the camera). "none" if it is
+  not a character or no face is visible in any view.
+- face_views: every view in which you see eyes or a face drawn ON THE SURFACE FACING THE CAMERA in that view.
+  A side view that only shows the edge/profile of the same front face (one eye seen from the side, a cheek, a snout
+  in profile, whiskers sticking out) does NOT count as a face on that side.
+- faces_on_multiple_sides: true if eyes or a face appear on more than one side of the object — typically a second
+  pair of eyes on the BACK of the head (the view opposite the front). Defects look like eyes painted on the back of
+  the head, often WITHOUT a nose or mouth. A plain back of the head (hair, ears, bow, smooth surface) is false.
+  Also true when the asset is a flat panel, plaque or cut-out with a character's face visible from both the front
+  and the back (a failed, double-sided "printed" character) — judge it by what is drawn, even if it is not a real 3D
+  character. An object with no face at all → false.
+- note: one short English sentence explaining what you saw on the back.
+Return JSON only."""
+
+
+def _agent_front(self, views: dict, job_id: str = "") -> dict:
+    imgs = [(v, views[v]) for v in AGENT_VIEWS]
+    base = getattr(self, "effort", None)
+    if base is not None:                                  # 마스킹과 같은 effort(기본 medium) — 생성 1회당 1호출
+        self.effort = getattr(self, "mask_effort", None) or base
+    try:
+        return self._call("agent_front", AGENT_FRONT_SYSTEM, _labeled(imgs, "Four views of one generated 3D asset."),
+                          AGENT_FRONT_SCHEMA, lambda o: None, job_id,
+                          {"n_images": 4, "effort": getattr(self, "effort", None)})
+    finally:
+        if base is not None:
+            self.effort = base
+
+
+AgentMixin.agent_front = _agent_front
+
+
+def _fake_front(self, views: dict, job_id: str = "") -> dict:
+    """시험: front_script = [응답 dict …](작업마다 순서대로, 끝나면 마지막 반복). 기본 정면 az000·얼굴 한 면."""
+    i = self._next("agent_front", job_id)
+    script = getattr(self, "front_script", None) or [
+        {"is_character": True, "front_view": "az000", "faces_on_multiple_sides": False, "face_views": ["az000"],
+         "note": "plain back"}]
+    return self._rec("agent_front", job_id, dict(script[min(i, len(script) - 1)]))
+
+
+FakeAgentAdapter.agent_front = _fake_front

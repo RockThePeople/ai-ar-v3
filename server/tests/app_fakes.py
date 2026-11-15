@@ -60,8 +60,9 @@ class FakeBackend:
     def health(self):
         return {"a5000": "up", "inpaint": "up"}
 
-    def generate(self, asset_id, prompt, seed, progress, trace=None, template=None, t2i_seed=None):
+    def generate(self, asset_id, prompt, seed, progress, trace=None, template=None, t2i_seed=None, image_png=None):
         self.calls.append(("generate_args", prompt, template))
+        self.calls.append(("generate_seed", seed, image_png is not None))
         if t2i_seed is not None:
             self.calls.append(("generate_seeds", t2i_seed, seed))
         self._f("generate")

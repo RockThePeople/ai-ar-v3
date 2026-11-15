@@ -166,6 +166,13 @@ class ChunkStore(AssetStore):
         rv = self.revert_of(asset_id, version)              # S25: 되돌린 판본은 원래 판본의 좌표
         return self.slat_coords(asset_id, rv) if rv is not None else None
 
+    def drop_slat_coords(self, asset_id: str, version: int) -> None:
+        """S20g 다시 생성: 같은 판본 번호에 새 결과를 쓸 때 옛 좌표 캐시를 지운다."""
+        try:
+            (self._vdir(asset_id, version) / "slat_coords.json").unlink(missing_ok=True)
+        except (AssetNotFound, VersionNotFound):
+            pass
+
     def put_slat_coords(self, asset_id: str, version: int, coords: list) -> None:
         p = self._vdir(asset_id, version) / "slat_coords.json"
         p.write_text(json.dumps({"coords": coords}, separators=(",", ":")))
@@ -230,7 +237,8 @@ class Db:
             self.c.executescript(SCHEMA)
             for col in ("deleted_at REAL", "qr_origin TEXT",            # 1.0.2 보관(S3) — 옛 DB 에 열 추가
                         "style TEXT",                                   # S11 자산 양식(NULL = 기본 실물형, S11 이전 포함)
-                        "worker_kept INTEGER"):                         # 삭제 때 A5000 저장소 보관 여부(NULL = 11-12 이전 삭제 = 지워짐)
+                        "worker_kept INTEGER",
+                        "front_view TEXT"):                             # S20g: 생성 직후 판단(az000…/none, NULL = 묻지 않음)                         # 삭제 때 A5000 저장소 보관 여부(NULL = 11-12 이전 삭제 = 지워짐)
                 try:
                     self.c.execute(f"ALTER TABLE assets ADD COLUMN {col}")
                 except sqlite3.OperationalError:

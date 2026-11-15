@@ -143,6 +143,7 @@ class JobObj(BaseModel):
     expires_at: Optional[float]
     error_code: Optional[str]
     error_message: Optional[str]
+    notice: Optional[str] = None             # 1.2.0 보충(S20g): 진행 알림(예: 다시 생성), 끝나면 null
     mode: Optional[str] = None               # S20 10.3: "agent" 일 때만
     agent: Optional[dict] = None
     events: Optional[List[dict]] = None

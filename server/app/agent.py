@@ -334,9 +334,22 @@ class AgentRun:
                   "back_view": None}
             fv = None
         else:
-            fv = am.front_from_user(self.cam, self.occ, plan.get("user_view_side"))   # S20f-2: 뒷모습 피하기
-            pk = am.pick_view(self.U, self.occ, cams, self.cam, front_view=fv)
-        j["agent_pick"] = {k: pk[k] for k in ("view", "counts", "weights", "scores", "front_view", "back_view")}
+            src = "user_side"
+            if self.s.front_fix:                          # S20g 1-1: 생성 직후 저장한 정면(없을 때만 지금처럼)
+                af = eng.asset_front(j["asset_id"])
+                if af in am.VIEW_AZ:
+                    fv, src = af, "asset"
+                elif af == "none":
+                    fv, src = None, "asset_none"
+                else:
+                    fv = am.front_from_user(self.cam, self.occ, plan.get("user_view_side"))
+                pk = am.pick_view(self.U, self.occ, cams, self.cam, front_view=fv, back_weight=0.3, front_order=True)
+            else:
+                fv = am.front_from_user(self.cam, self.occ, plan.get("user_view_side"))   # S20f-2: 뒷모습 피하기
+                pk = am.pick_view(self.U, self.occ, cams, self.cam, front_view=fv)
+            pk["front_source"] = src
+        j["agent_pick"] = {k: pk.get(k) for k in ("view", "counts", "weights", "scores", "front_view", "back_view",
+                                                  "view_side", "front_source")}
         thumbs = self._pick_thumbs(cams, pk["view"])
         label = "사용자 카메라" if pk["view"] == "user" else f"방위 {am.VIEW_KO[pk['view']]}"
         self.event("masking", "tool", f"물건이 가장 잘 보이는 방향({label})을 골랐습니다"

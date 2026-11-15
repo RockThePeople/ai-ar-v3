@@ -67,7 +67,8 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             attempt=j.get("attempt"), max_attempts=j.get("max_attempts"),
             refine=j.get("refine"), preview=j.get("preview"), review=j.get("review"), prompts=prompts_of(j),
             result=j.get("result"),
-            expires_at=j.get("expires_at"), error_code=j.get("error_code"), error_message=j.get("error_message"))
+            expires_at=j.get("expires_at"), error_code=j.get("error_code"), error_message=j.get("error_message"),
+            notice=j.get("notice"))
         out = o.model_dump(mode="json")
         if j.get("mode") == "agent":                      # S20 10.3: 에이전트 작업만 세 필드
             out.update(mode="agent", agent=j.get("agent"), events=j.get("events") or [])
@@ -137,7 +138,8 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         dev = device(req)
         check_qr(qr_id)
         b = await body(req, M.CreateAssetReq)
-        j = S.engine.create_asset(qr_id, dev, b.prompt, b.seed, mock_fail(req))
+        j = S.engine.create_asset(qr_id, dev, b.prompt, b.seed, mock_fail(req),
+                                       mock_regen=(req.headers.get("X-Mock-Regen") == "1") if S.settings.mock else False)
         return M.CreateResp(job_id=j["job_id"], asset_id=j["asset_id"]).model_dump(mode="json")
 
     @r.delete("/qr/{qr_id}", status_code=204)

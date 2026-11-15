@@ -126,12 +126,20 @@ class RealBackend:
 
     # 생성
     def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None,
-                 template: Optional[str] = None, t2i_seed: Optional[int] = None) -> dict:
-        """seed = TRELLIS(A5000) seed. t2i_seed 가 있으면 T2I 만 그 seed(S14 논문 설정: T2I 0, TRELLIS 42)."""
+                 template: Optional[str] = None, t2i_seed: Optional[int] = None,
+                 image_png: Optional[bytes] = None) -> dict:
+        """seed = TRELLIS(A5000) seed. t2i_seed 가 있으면 T2I 만 그 seed(S14 논문 설정: T2I 0, TRELLIS 42).
+        S20g: image_png(RGBA) 가 있으면 T2I 를 건너뛰고 그 이미지로 TRELLIS 만(다시 생성)."""
         from .. import t2i
         ts = seed if t2i_seed is None else int(t2i_seed)
         trace = trace if trace is not None else {}
+        if image_png is not None:
+            png, timing, rgb_png = image_png, {"reused": True}, None
+        else:
+            png, timing, rgb_png = self._t2i(t2i, prompt, ts, template, progress)
+        return self._trellis_generate(asset_id, seed, png, timing, rgb_png, ts, progress, trace)
 
+    def _t2i(self, t2i, prompt: str, ts: int, template: Optional[str], progress: Progress):
         progress("t2i", 0.05)
         try:
             with self._w(timeout=600) as w:
@@ -148,6 +156,10 @@ class RealBackend:
                     w.post("/reload")
             except httpx.HTTPError:
                 pass   # 워커 재기동이 필요하다 — health 가 down 으로 보인다
+        return png, timing, rgb_png
+
+    def _trellis_generate(self, asset_id: str, seed: int, png: bytes, timing: dict, rgb_png: Optional[bytes], ts: int,
+                          progress: Progress, trace: dict) -> dict:
         progress("generating", 0.3)
         meta = {"asset_id": asset_id, "seed": seed}
         with self._a(timeout=60) as c:
@@ -454,7 +466,8 @@ class MockBackend:
         return {"a5000": "up", "inpaint": "up"}
 
     def generate(self, asset_id: str, prompt: str, seed: int, progress: Progress, trace: Optional[dict] = None,
-                 template: Optional[str] = None, t2i_seed: Optional[int] = None) -> dict:
+                 template: Optional[str] = None, t2i_seed: Optional[int] = None,
+                 image_png: Optional[bytes] = None) -> dict:
         progress("generating", 0.5)
         self._sleep("generate")
         src = self.s.mock_source
