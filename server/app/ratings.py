@@ -222,13 +222,19 @@ class Ratings:
                 "user_op_hash": h, "expires_at": round(self.eng.clock() + USEROP_TTL_S, 1), "mock": True}
 
     # ── 응답 모양 ─────────────────────────────────────────────────
+    def public_chain(self, o: dict) -> dict:
+        """밖으로 나가는 chain 사본: 키 든 bundler_url(1.2.0 초기 행)은 중계 주소로(view·/admin 공통)."""
+        ch = dict(o.get("chain") or {"status": "off"})
+        if "apikey=" in (ch.get("bundler_url") or ""):
+            ch["bundler_url"] = f"{o.get('public_base') or ''}/bundler"
+        return ch
+
     def view(self, o: dict) -> dict:
         ch = dict(o.get("chain") or {"status": "off"})
         for k in ("feedback_uri_onchain", "mock", "submitted_at", "gas_used", "confirm_s", "onchain_read", "last_error",
                   "bundler_hash", "submitted_by"):
             ch.pop(k, None)
-        if "apikey=" in (ch.get("bundler_url") or ""):            # 1.2.0 초기 행(키 든 URL) — 중계 주소로
-            ch["bundler_url"] = f"{o.get('public_base') or ''}/bundler"
+        ch["bundler_url"] = self.public_chain(o).get("bundler_url")
         return {k: o.get(k) for k in ("rating_id", "asset_id", "stars", "value", "decimals", "tag1", "version_range",
                                       "review", "feedback_uri", "feedback_hash", "feedback_keccak")} | {"chain": ch}
 

@@ -312,11 +312,20 @@ def test_tune_does_not_clobber_submitted(env):
     rid, h = o["rating_id"], o["chain"]["user_op_hash"]
     real = env.eng.agent_llm.agent_tune
 
-    def slow_tune(*a, **k):                                   # LLM 대기 중에 기기가 제출
-        assert env.post(f"/app/v1/ratings/{rid}/submitted", json={"user_op_hash": h}).status_code == 200
+    import threading
+    sent, gate = [], threading.Lock()
+
+    def slow_tune(*a, **k):                                   # LLM 대기 중에 기기가 제출(한 번만)
+        with gate:
+            if not sent:
+                sent.append(env.post(f"/app/v1/ratings/{rid}/submitted", json={"user_op_hash": h}).status_code)
         return real(*a, **k)
     env.eng.agent_llm.agent_tune = slow_tune
     R.tune(rid)
+    for t in threading.enumerate():                           # 생성 때 뜬 조정 스레드도 끝까지
+        if t.name == "tune":
+            t.join(10)
+    assert sent == [200]
     b = R._body(rid)
     assert b["chain"]["status"] == "submitted" and b["tuning"]["reason"] == "none(규칙)"
     # 감시 스레드의 오래된 사본도 상태가 바뀐 뒤에는 덮지 않는다
@@ -341,3 +350,4 @@ def test_bundler_proxy_hides_key(env):
     # 키 든 URL 로 저장된 옛 행도 응답에서는 중계 주소
     b = R._body(o["rating_id"]); b["chain"]["bundler_url"] = "https://x/rpc?apikey=SECRET"; R._save(b)
     assert "SECRET" not in json.dumps(env.get(f"/app/v1/ratings/{o['rating_id']}").json())
+    assert "SECRET" not in env.get("/admin/api").text                                       # 운영자 화면도
