@@ -290,6 +290,21 @@ class RealBackend:
         except httpx.HTTPError as e:
             return f"delete {type(e).__name__}"
 
+    def copy_version(self, asset_id: str, from_version: int) -> int:
+        """S25: A5000 에서 판본 m 을 새 판본(커밋 최신 + 1)으로 복사 — 다음 편집이 m 의 SLat 에서 이어진다.
+        엔드포인트는 내부 규약 제안(chief 요청): POST /v2/trellis/assets/{id}/versions/copy {"from_version"} → {"to_version"}.
+        없으면 StageError(REVERT_UNSUPPORTED)."""
+        with self._a(timeout=120) as c:
+            r = self._call(lambda: c.post(f"/v2/trellis/assets/{asset_id}/versions/copy",
+                                          json={"from_version": int(from_version)}), "WORKER_UNREACHABLE", "A5000 copy")
+        if r.status_code in (404, 405):
+            raise StageError("REVERT_UNSUPPORTED", "A5000 에 판본 복사가 없다(내부 규약 요청 중)")
+        if r.status_code == 409:
+            raise StageError("ASSET_LOCKED", f"A5000 copy 409: {r.text[:120]}")
+        if r.status_code != 200:
+            raise self._err(r, "INTERNAL", "A5000 copy")
+        return int(r.json()["to_version"])
+
     def slat_coords(self, asset_id: str, version: int) -> Optional[list]:
         """A5000 판본의 slat 좌표. **A5000 에 아직 이 경로가 없다**(S1 보고 요청). 없으면 None."""
         try:
@@ -462,6 +477,10 @@ class MockBackend:
         return None
 
     def delete(self, asset_id: str) -> Optional[str]:
+        return None
+
+    def copy_version(self, asset_id: str, from_version: int) -> Optional[int]:
+        """가짜 모드: A5000 없음 — 앱 저장소만으로 되돌린다(새 판본 = 앱 최신 + 1)."""
         return None
 
     def slat_coords(self, asset_id: str, version: int) -> Optional[list]:

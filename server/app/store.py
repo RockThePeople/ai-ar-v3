@@ -47,10 +47,46 @@ class ChunkStore(AssetStore):
         p = self._vdir(asset_id, version) / "removed.json"
         return set(json.loads(p.read_text())) if p.is_file() else set()
 
+    # ── S25 되돌리기: 판본 계보 ─────────────────────────────────────
+    def revert_of(self, asset_id: str, version: int) -> Optional[int]:
+        """되돌린 판본이면 원래 판본 m(revert.json), 아니면 None."""
+        try:
+            p = self._vdir(asset_id, version) / "revert.json"
+        except (AssetNotFound, VersionNotFound):
+            return None
+        return int(json.loads(p.read_text())["of"]) if p.is_file() else None
+
+    def lineage(self, asset_id: str, version: int) -> List[int]:
+        """판본 v 의 내용에 들어가는 판본(오래된 순). 되돌린 판본은 자기 변경 없이 m 의 계보로 이어진다."""
+        vs = sorted(self.versions(asset_id))
+        out, cur, seen = [], int(version), set()
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            rv = self.revert_of(asset_id, cur)
+            if rv is not None:
+                cur = rv
+                continue
+            out.append(cur)
+            prev = [x for x in vs if x < cur]
+            cur = prev[-1] if prev else None
+        return list(reversed(out))
+
+    def put_revert(self, asset_id: str, version: int, of: int) -> Path:
+        """새 판본 = 판본 of 와 같은 내용(청크는 of 의 것을 그대로 가리킨다). slat 좌표는 복사."""
+        self._vdir(asset_id, of)
+        d = self._dir(asset_id) / f"v{version}"
+        d.mkdir(parents=True, exist_ok=False)
+        (d / "revert.json").write_text(json.dumps({"of": int(of)}))
+        c = self.slat_coords(asset_id, of)
+        if c:
+            self.put_slat_coords(asset_id, version, c)
+        self._man_cache = {k: m for k, m in self._man_cache.items() if k[0] != asset_id}
+        return d
+
     def blobs(self, asset_id: str, version: int) -> Dict[str, bytes]:
         self._vdir(asset_id, version)
         out: Dict[str, bytes] = {}
-        for v in sorted(v for v in self.versions(asset_id) if v <= version):
+        for v in self.lineage(asset_id, version):
             for k in self._removed(asset_id, v):
                 out.pop(k, None)
             for p in sorted(self._vdir(asset_id, v).glob("*.cbin")):
@@ -72,7 +108,7 @@ class ChunkStore(AssetStore):
         self._vdir(asset_id, v)
         last: Dict[str, int] = {}          # 키 → 마지막으로 바뀐 판본
         blobs: Dict[str, bytes] = {}
-        for n in sorted(x for x in self.versions(asset_id) if x <= v):
+        for n in self.lineage(asset_id, v):
             for k in self._removed(asset_id, n):
                 last.pop(k, None)
                 blobs.pop(k, None)
@@ -125,7 +161,10 @@ class ChunkStore(AssetStore):
             p = self._vdir(asset_id, version) / "slat_coords.json"
         except (AssetNotFound, VersionNotFound):
             return None
-        return json.loads(p.read_text())["coords"] if p.is_file() else None
+        if p.is_file():
+            return json.loads(p.read_text())["coords"]
+        rv = self.revert_of(asset_id, version)              # S25: 되돌린 판본은 원래 판본의 좌표
+        return self.slat_coords(asset_id, rv) if rv is not None else None
 
     def put_slat_coords(self, asset_id: str, version: int, coords: list) -> None:
         p = self._vdir(asset_id, version) / "slat_coords.json"
