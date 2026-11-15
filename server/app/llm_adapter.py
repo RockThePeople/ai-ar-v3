@@ -1415,7 +1415,9 @@ Decide:
 - faces_on_multiple_sides: true if eyes or a face appear on more than one side of the object — typically a second
   pair of eyes on the BACK of the head (the view opposite the front). Defects look like eyes painted on the back of
   the head, often WITHOUT a nose or mouth. A plain back of the head (hair, ears, bow, smooth surface) is false.
-  Not a character → false.
+  Also true when the asset is a flat panel, plaque or cut-out with a character's face visible from both the front
+  and the back (a failed, double-sided "printed" character) — judge it by what is drawn, even if it is not a real 3D
+  character. An object with no face at all → false.
 - note: one short English sentence explaining what you saw on the back.
 Return JSON only."""
 
