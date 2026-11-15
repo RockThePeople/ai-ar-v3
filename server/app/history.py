@@ -91,9 +91,19 @@ def asset_history(engine, db, asset_id: str) -> dict:
         j = engine.get(jid)
         if j is None:
             continue
+        to_v = (j.get("result") or {}).get("to_version") if j["state"] == "committed" else None
+        if j["kind"] == "revert":                       # S25 계약 12절·3.8 1.2.1 보충
+            jobs.append({"job_id": j["job_id"], "kind": "revert", "created_at": j["created_at"], "state": "committed",
+                         "prompts": {k: None for k in ("input", "detailed", "style", "mask_ratio", "region_fit")},
+                         "attempts": [], "outcome": "keep", "error_code": None, "to_version": to_v,
+                         "reverted_from": j.get("reverted_from"), "below_bar": None})
+            continue
+        agent = j.get("mode") == "agent"
         jobs.append({"job_id": j["job_id"], "kind": j["kind"], "created_at": j["created_at"], "state": j["state"],
                      "prompts": _job_prompts(j), "attempts": _attempts(j), "outcome": OUTCOME.get(j["state"]),
                      "error_code": j.get("error_code") if j["state"] == "failed" else None,
-                     **({"mode": "agent", "events": list(j.get("events") or [])} if j.get("mode") == "agent" else {})})
+                     "to_version": to_v,                    # 1.2.1 보충(앱 C14): 커밋 판본, 없으면 null
+                     "below_bar": bool((j.get("agent") or {}).get("below_bar")) if agent else None,
+                     **({"mode": "agent", "events": list(j.get("events") or [])} if agent else {})})
     jobs.sort(key=lambda x: x["created_at"])
     return {"asset_id": asset_id, "jobs": jobs}

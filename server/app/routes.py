@@ -91,7 +91,8 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
                             workers=M.Workers(a5000=w.get("a5000", "down"), inpaint=w.get("inpaint", "down"),
                                               llm=llm),
                             features=(["agent_edit", "agent_lasso"] if S.settings.agent else [])
-                            + (["chain_rating"] if S.settings.chain else []),
+                            + (["chain_rating"] if S.settings.chain else [])
+                            + (["revert"] if S.engine.revert_on() else []),
                             chain=S.engine.ratings.health() if S.settings.chain else None).model_dump(mode="json")
 
     @r.get("/samples")
@@ -201,6 +202,20 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         if j is None:
             raise AppError(404, "JOB_NOT_FOUND", f"작업 없음: {job_id}")
         return job_obj(j, dev)
+
+    @r.post("/assets/{asset_id}/revert")
+    async def asset_revert(asset_id: str, req: Request):
+        """S25 계약 12절: 판본 되돌리기(동기 200). 실서버는 APP_REVERT(A5000 판본 복사 필요), 가짜 모드는 늘."""
+        if not S.engine.revert_on():
+            raise AppError(404, "INVALID_REQUEST", "되돌리기가 꺼져 있다(APP_REVERT)")
+        dev = device(req)
+        try:
+            b = json.loads(await req.body() or b"{}")
+        except ValueError:
+            raise AppError(400, "INVALID_REQUEST", "JSON 본문")
+        if not isinstance(b, dict) or "base_version" not in b or "to_version" not in b:
+            raise AppError(400, "INVALID_REQUEST", "base_version·to_version 이 필요하다")
+        return S.engine.revert(asset_id, dev, b["base_version"], b["to_version"])
 
     @r.get("/assets/{asset_id}/history")
     def asset_history_get(asset_id: str, req: Request):

@@ -995,12 +995,58 @@ class Engine:
                                        ensure_ascii=False) + "\n")
 
     def rate_range(self, asset_id: str, device: str) -> Optional[List[int]]:
-        """이 기기의 직전 평가 이후(없으면 생성 이후) 커밋된 편집 판본 범위. 없으면 None."""
+        """이 기기의 직전 평가 이후(없으면 생성 이후) 커밋된 편집 판본 범위. 없으면 None.
+        S25: 되돌리기 판본은 평가 대상이 아니다(되돌리기만으로 can_rate 가 true 가 되지 않는다). 범위 끝은 편집 판본."""
         last = self.db.q("SELECT MAX(v_to) m FROM ratings WHERE asset_id=? AND device=?", (asset_id, device))[0]["m"]
         lo = int(last) + 1 if last is not None else 2
         vs = [r["version"] for r in self.db.q(
-            "SELECT version FROM commits WHERE asset_id=? AND version>=? AND version>=2 ORDER BY version", (asset_id, lo))]
+            "SELECT c.version FROM commits c LEFT JOIN jobs j ON j.job_id=c.job_id WHERE c.asset_id=? AND c.version>=? "
+            "AND c.version>=2 AND COALESCE(j.kind, '')<>'revert' ORDER BY c.version", (asset_id, lo))]
         return [vs[0], vs[-1]] if vs else None
+
+    def revert_on(self) -> bool:
+        return bool(self.s.revert or self.s.mock)
+
+    def revert(self, asset_id: str, device: str, base_version, to_version) -> dict:
+        """S25 계약 12절: 이전 판본 m 과 같은 내용의 새 판본 n+1(동기). 검사 순서 400 → 404 → 403 → 409 잠금 → 409 판본."""
+        try:
+            base, to = int(base_version), int(to_version)
+        except (TypeError, ValueError):
+            raise AppError(400, "INVALID_REQUEST", "base_version·to_version 은 정수")
+        if not (1 <= to < base):
+            raise AppError(400, "INVALID_REQUEST", f"to_version 은 1 ≤ m < base_version: {to}")
+        with self.lock:
+            a = self.db.live_asset(asset_id)
+            if a is None or a["version"] == 0 and not a["is_sample"]:
+                raise AppError(404, "ASSET_NOT_FOUND", f"자산 없음: {asset_id}")
+            if a["is_sample"]:
+                raise AppError(403, "READ_ONLY", "샘플 자산은 읽기 전용이다")
+            act = self.active_job(asset_id)
+            if act is not None:
+                raise AppError(409, "ASSET_LOCKED", "진행 중 작업이 있다", {"job_id": act["job_id"]})
+            n = int(a["version"])
+            if base != n:
+                raise AppError(409, "VERSION_CONFLICT", f"최신 판본은 v{n}", {"latest_version": n})
+            try:
+                wv = self.be.copy_version(asset_id, to)
+            except StageError as e:
+                raise AppError(409 if e.code == "ASSET_LOCKED" else 503, e.code, str(e))
+            newv = int(wv) if wv else n + 1
+            self.store.put_revert(asset_id, newv, to)
+            j = self._new_job("revert", asset_id, device, a["qr_id"], base_version=n, reverted_from=to)
+            j["prompts"] = {k: None for k in PROMPT_KEYS}
+            j["result"] = {"to_version": newv, "manifest_uri": f"/v2/assets/{asset_id}/manifest.v{newv}.json"}
+            j["progress"], j["stage"] = 1.0, "committed"
+            self.db.x("UPDATE assets SET version=? WHERE asset_id=?", (newv, asset_id))
+            self.db.x("INSERT OR REPLACE INTO commits VALUES(?,?,?,?)", (asset_id, newv, j["job_id"], self.clock()))
+            self._finish(j, "committed")
+        import shutil
+        src, dst = self._views_dir(asset_id, to), self._views_dir(asset_id, newv)
+        if (src / "views.json").is_file() and not dst.exists():
+            shutil.copytree(src, dst)                     # 같은 내용 → 미리 렌더도 그대로
+        return {"asset_id": asset_id, "version": newv, "reverted_from": to,
+                "manifest_uri": f"/v2/assets/{asset_id}/manifest.v{newv}.json",
+                "slat_coords_uri": f"/v2/assets/{asset_id}/slat_coords.v{newv}.json"}
 
     def rate(self, asset_id: str, device: str, stars: int) -> dict:
         with self.lock:

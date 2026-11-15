@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from server.tests.test_app_server import A, CAM, CELLS, edit, env, make_asset, to_2d  # noqa: F401 — fixture
 
-JOB_KEYS = {"job_id", "kind", "created_at", "state", "prompts", "attempts", "outcome", "error_code"}
+JOB_KEYS = {"job_id", "kind", "created_at", "state", "prompts", "attempts", "outcome", "error_code", "to_version", "below_bar"}   # 1.2.1 보충(앱 C14)
 P_KEYS = {"input", "detailed", "style", "mask_ratio", "region_fit"}
 A_KEYS = {"attempt", "refine", "inpaint", "refine_retried", "review", "accepted"}
 

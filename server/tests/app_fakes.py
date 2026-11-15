@@ -93,6 +93,11 @@ class FakeBackend:
     def delete(self, asset_id):
         self._f("delete")
 
+    def copy_version(self, asset_id, from_version):
+        self.calls.append(("copy_version", asset_id, from_version))
+        self._f("copy_version")
+        return None
+
     def slat_coords(self, asset_id, version):
         return [[1, 2, 3]]
 
