@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-APP_API = "1.2.0"
+APP_API = "1.2.1"   # S25: 계약 12절(되돌리기 — 사용 여부는 features "revert")
 
 
 def default_env_file() -> Path:
