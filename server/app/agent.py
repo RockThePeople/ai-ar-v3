@@ -83,6 +83,17 @@ class AgentRun:
         self.eng._save(j)
         return ev
 
+    def _mock_no_target(self) -> None:
+        """8084 가짜 모드 X-Mock-Fail: NO_TARGET — queued 가 아니라 마스크 다듬기 단계에서(앱 C13). 문구는 실제와 같은 형식."""
+        j = self.j
+        if j.get("mock_fail") == "NO_TARGET":
+            j["mock_fail"] = None
+            self.event("masking", "error", "지시한 부위를 찾지 못했습니다 — 가짜 모드(X-Mock-Fail: NO_TARGET)")
+            raise StageError("NO_TARGET", "X-Mock-Fail 로 강제 실패: NO_TARGET")
+
+    def _mock_mask_retry(self) -> bool:
+        return self.eng.be.name == "mock" and "mask_check_ok" in (MOCK_AGENT.get(self.j.get("mock_agent") or "") or {})
+
     def _mock(self, k: str) -> None:
         if self.eng.be.name == "mock":
             time.sleep(MOCK_DUR[k] * self.s.mock_time_scale)
@@ -126,6 +137,7 @@ class AgentRun:
     def mask(self, feedback: Optional[str]) -> dict:
         j = self.j
         self._state("masking", "masking", 0.15)
+        self._mock_no_target()
         self._mock("mask")
         plan = self._orch(self.llm.agent_mask, self.grid, j["instruction"], self.eng._scene(j["asset_id"]), feedback)
         j["agent_plan"] = plan
@@ -247,6 +259,7 @@ class AgentRun:
         """S20e 2.1 판단(오케스트레이터 1회, 이미지 2장) → 2.2 잘라내기·2.3 합치기(코드) → 다듬은 셀로 다시 렌더."""
         j = self.j
         self._state("masking", "mask_refine", 0.15)
+        self._mock_no_target()
         self._mock("mask")
         plan = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
                           self.eng._scene(j["asset_id"]), feedback)
@@ -281,6 +294,7 @@ class AgentRun:
         j, eng = self.j, self.eng
         if not getattr(self, "g_plan", None):
             self._state("masking", "mask_refine", 0.15)
+            self._mock_no_target()
             plan = self._orch(self.llm.agent_refine_plan, self.grid_render, self.grid_lasso, j["instruction"],
                               eng._scene(j["asset_id"]), feedback)
             j["agent_plan"] = plan
@@ -507,7 +521,10 @@ class AgentRun:
                     m = self.gemini_prepare(feedback) if gem else (self.refine_mask(feedback) if lasso else self.mask(feedback))
                     plan = m["plan"]
                     region = self.region() if m["cells"] else None
-                    c = {"ok": True} if gem else (self.check_lasso(m, region) if lasso else self.check(m, region))
+                    if gem:                                   # 가짜 모드 mask_retry 시나리오만 마스크 확인(앱 C13)
+                        c = self.check_lasso(m, region) if self._mock_mask_retry() else {"ok": True}
+                    else:
+                        c = self.check_lasso(m, region) if lasso else self.check(m, region)
                     if not c["ok"] or not m["cells"]:
                         # S20d: 마스크 다시 칠하기는 되돌아가기(채점 뒤)와 따로 센다
                         mr, mmax = ag.get("mask_retries", 0), ag.get("max_mask_retries", s.agent_max_mask_retries)

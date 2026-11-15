@@ -929,7 +929,8 @@ class Engine:
                 self._run_edit3d(j)
             elif task == "agent":
                 from .agent import AgentRun
-                self._mock_gate(j)
+                if j.get("mock_fail") != "NO_TARGET":     # 앱 C13: NO_TARGET 은 마스크 다듬기 단계에서(agent._mock_no_target)
+                    self._mock_gate(j)
                 AgentRun(self, j).run()
         except StageError as e:
             if j["state"] not in TERMINAL:
