@@ -1028,9 +1028,10 @@ class Engine:
             if base != n:
                 raise AppError(409, "VERSION_CONFLICT", f"최신 판본은 v{n}", {"latest_version": n})
             try:
-                wv = self.be.copy_version(asset_id, to)
+                wv = self.be.copy_version(asset_id, to, n)
             except StageError as e:
-                raise AppError(409 if e.code == "ASSET_LOCKED" else 503, e.code, str(e))
+                raise AppError(409 if e.code in ("ASSET_LOCKED", "VERSION_CONFLICT", "VERSION_NOT_FOUND") else 503,
+                               e.code, str(e))
             newv = int(wv) if wv else n + 1
             self.store.put_revert(asset_id, newv, to)
             j = self._new_job("revert", asset_id, device, a["qr_id"], base_version=n, reverted_from=to)

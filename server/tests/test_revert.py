@@ -47,7 +47,7 @@ def test_revert_api_manifest_history_can_rate(env):
     assert env.get(o["slat_coords_uri"]).status_code == 200
     q = env.get("/app/v1/qr/booth-07", headers=A).json()
     assert q["version"] == 3
-    assert ("copy_version", aid, 1) in env.be.calls
+    assert ("copy_version", aid, 1, 2) in env.be.calls
     hist = env.get(f"/app/v1/assets/{aid}/history", headers=A).json()["jobs"]
     assert all("to_version" in x and "below_bar" in x for x in hist)
     g, e, rv = hist
@@ -139,3 +139,34 @@ def test_agent_object_has_max_mask_retries(env):
     env.eng.agent_llm.judge_script = [PASS]
     j = _lasso(env, aid)
     assert j["agent"]["max_mask_retries"] == env.eng.s.agent_max_mask_retries == 2
+
+
+def test_real_backend_copy_contract_3_4b(tmp_path):
+    """내부 규약 3.4b: 본문 {from_version, base_version}, 409 VERSION_CONFLICT 면 워커 최신으로 1회 다시, 404 구분."""
+    import httpx
+    from server.app.backends import RealBackend, StageError
+    from server.tests.test_app_server import _settings
+    seen, script = [], []
+
+    def handler(req):
+        import json as _j
+        seen.append(_j.loads(req.content))
+        return script.pop(0)
+    be = RealBackend(_settings(tmp_path), None)
+    be._a = lambda timeout=60: httpx.Client(transport=httpx.MockTransport(handler), base_url="http://a5000")
+    script[:] = [httpx.Response(409, json={"error_code": "VERSION_CONFLICT", "detail": {"latest_version": "3"}}),
+                 httpx.Response(200, json={"asset_id": "x", "to_version": 4, "from_version": 1})]
+    assert be.copy_version("x", 1, 2) == 4
+    assert seen == [{"from_version": 1, "base_version": 2}, {"from_version": 1, "base_version": 3}]
+    script[:] = [httpx.Response(404, json={"error_code": "VERSION_NOT_FOUND", "message": "no v9"})]
+    try:
+        be.copy_version("x", 9, 3)
+        raise AssertionError
+    except StageError as e:
+        assert e.code == "VERSION_NOT_FOUND"
+    script[:] = [httpx.Response(404, json={"detail": "Not Found"})]
+    try:
+        be.copy_version("x", 1, 3)
+        raise AssertionError
+    except StageError as e:
+        assert e.code == "REVERT_UNSUPPORTED"
