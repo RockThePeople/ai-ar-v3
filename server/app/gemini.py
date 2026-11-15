@@ -43,15 +43,52 @@ def to_png(data: bytes) -> bytes:
     return r.stdout
 
 
+import re as _re
+
+#: S24 손에 드는 도구·무기(손잡이를 쥔다) / 방패(팔뚝·안쪽 손잡이)
+HELD_TOOL = _re.compile(r"\b(sword|swords|blade|katana|sabre|saber|rapier|dagger|knife|axe|hatchet|staff|wand|rod|cane|"
+                        r"scepter|sceptre|hammer|mallet|mace|club|torch|spear|lance|trident|pickaxe|pick|bat|whip|"
+                        r"scythe|sickle|halberd|flail|umbrella|broom|shovel|fishing rod)\b", _re.I)
+SHIELD = _re.compile(r"\b(shield|buckler)\b", _re.I)
+HAND_KO = _re.compile(r"(손|hand)", _re.I)
+
+
+def hold_clause(new_object: Optional[str], instruction: str = "", target: str = "") -> str:
+    """S24 1: 손에 드는 물건이면 손잡이 쥐기 문장, 방패면 팔뚝·바깥 면 문장. 해당 없으면 빈 문자열."""
+    obj = new_object or ""
+    if not HAND_KO.search(f"{instruction} {target}"):
+        return ""
+    if SHIELD.search(obj):
+        return ("The shield is strapped to the forearm / held by its inner grip, its face pointing outward, covering the arm; "
+                "the fingers are behind the shield. ")
+    m = HELD_TOOL.search(obj)
+    if m:
+        w = m.group(1).lower()
+        head = "blade" if w in ("sword", "swords", "blade", "katana", "sabre", "saber", "rapier", "dagger", "knife",
+                                "scythe", "sickle") else "head"
+        return (f"The hand grips the {w} by its handle (hilt/grip); the {head} points away from the hand and is not "
+                f"touched by the fingers. ")
+    return ""
+
+
+def side_clause(hand_side: Optional[dict]) -> str:
+    """S24 2: 캐릭터 기준 손 + 고른 시점 그림 기준 쪽(둘 다)."""
+    if not hand_side or not hand_side.get("image_side") or not hand_side.get("side"):
+        return ""
+    s, img = hand_side["side"], hand_side["image_side"]
+    return (f"Put it in the character's own {s} hand, which in this image is the hand on the {img.upper()} side of "
+            f"the image (do not mirror the picture). ")
+
+
 def full_prompt(sentence: str, target: str, op: Optional[str] = None, old: Optional[str] = None,
-                new: Optional[str] = None) -> str:
+                new: Optional[str] = None, extra: str = "") -> str:
     """보정 문장 + (S20f-2: replace·remove 면 원래 물건 완전 제거 문장) + 고정 꼬리."""
     mid = ""
     if op == "replace" and old:
         mid = f"Completely remove the {old}; no part of it may remain. Put the {new or 'new object'} in its place. "
     elif op == "remove" and old:
         mid = f"Completely remove the {old} and fill with what would be behind it. "
-    return f"{sentence.strip().rstrip('.')}. " + mid + TAIL.format(target=target or "selected part")
+    return f"{sentence.strip().rstrip('.')}. " + mid + extra + TAIL.format(target=target or "selected part")
 
 
 def _shrink_1024(png: bytes) -> bytes:

@@ -322,6 +322,13 @@ class AgentRun:
                    detail="visible lasso cells × weight per view: " + ", ".join(
                        f"{n} {pk['counts'][n]}×{pk['weights'][n]:g}" for n in names)
                    + f"; front {fv} (user side {plan.get('user_view_side')}), back {pk['back_view']}")
+        if eng.be.name != "mock":                         # S24 2: 그림 기준 좌우(고른 시점)
+            vaz = am.az_of(self.cam, self.occ) if pk["view"] == "user" else am.VIEW_AZ[pk["view"]]
+            hs = am.hand_image_side(j["instruction"], self.U, self.occ, pk["camera"], vaz, fv)
+            j["agent_hand_side"] = hs
+            if hs.get("image_side"):
+                self.side_hint = (f"the instruction's {hs['side']} hand ({hs.get('word')}) is the character's own side; in this "
+                                  f"image that hand is on the IMAGE {hs['image_side'].upper()} of the character")
         self.render_with(pk["camera"], self.U, pk["view"])
         return {"plan": plan, "cells": self.U, "n": len(self.U)}
 
@@ -399,6 +406,10 @@ class AgentRun:
         verb = {"add": "Add", "replace": "Replace with", "remove": "Remove", "recolor": "Recolor to"}[plan["op"]]
         ins = (f"Selected part: {plan['target_part']}. {verb}: {plan['new_object']}."
                + (f" Previous attempt problem: {feedback}." if feedback else "") + f" User instruction: {j['instruction']}")
+        if plan["op"] in ("add", "replace") and self.s.inpaint_backend == "gemini":   # S24 3: 새 물건을 모양으로
+            ins += (" Describe the new object concretely by its shape and parts, not just its name (e.g. sword → a "
+                    "straight double-edged sword with a crossguard and a short hilt; shield → a round wooden shield "
+                    "with a metal rim).")
         if j.get("raw_prompt"):                             # S20b: 그대로 모드 마커 — 보정 없이 지시문 그대로(S14 _run_raw 와 같다)
             raw = j["instruction"].strip()
             scene = eng._scene(j["asset_id"])

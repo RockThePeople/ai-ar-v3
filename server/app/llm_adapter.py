@@ -1010,6 +1010,9 @@ Grade four checks, each true (pass) or false (fail):
   (오른쪽·왼쪽, on the left/right) means the viewer's side of the image; a body part (오른손·왼손, right/left hand/foot/arm ...)
   means the character's own side, which in a front view is the OPPOSITE image side (the character's right hand is on the
   image left). When an "expected position" line is given, it already applies this rule for this image: trust it.
+  Held things: a tool or weapon held in a hand must be gripped by its handle/hilt; if the hand holds the blade or the
+  head, position is false ("blade held"). A shield must be on the forearm or held by its inner grip with its face
+  outward; a shield merely touching the side of the hand or body is false.
 - mask_fit: the new thing lies inside the editable area and is not cut off at the area's edge.
 - shape_3d: it reads as one clear solid piece, not too small for the area, not smeared, not flat decoration.
 Return JSON {"checks": {...}, "reason_ko": one short Korean sentence describing the main problem (or "합격" style
@@ -1258,7 +1261,8 @@ def _fake_refine_plan(self, render: bytes, overlay: bytes, instruction: str, sce
                       job_id: str = "") -> dict:
     self._next("agent_refine", job_id)
     op = self.op
-    out = {"op": op, "target_part": "right hand", "target_part_ko": "오른손", "new_object": "the new object",
+    out = {"op": op, "target_part": "right hand", "target_part_ko": "오른손",
+           "new_object": getattr(self, "new_object", None) or "the new object",
            "old_object": "the old object" if op in ("replace", "remove") else None,
            "keep_box": list(self.refine_boxes["keep"]),
            "old_object_box": list(self.refine_boxes["old"]) if op in ("replace", "remove") else None,

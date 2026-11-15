@@ -277,6 +277,39 @@ def image_side_of(cells, occupied, cam: dict, margin_px: float = 8.0) -> dict:
     return {"side": side, "dx": round(dx, 1), "body_x": round(float(bx), 1), "mask_x": round(float(mx), 1)}
 
 
+def hand_image_side(instruction: str, cells, occupied, cam: dict, view_az: float, front_view: Optional[str]) -> dict:
+    """S24 2: 지시한 손(캐릭터 기준)이 고른 시점 그림의 어느 쪽인지.
+    계산 = 정면 방향 + 시점 방위(정면 0° → 뒤집힘, 뒤 180° → 그대로, 옆 → 정하지 않음),
+    확인 = 라쏘 안 점유 셀(손 근처)의 투영 중심 x 와 몸 중심 x. 둘이 다르면 라쏘(사용자가 그린 곳)를 따른다."""
+    side = parse_side(instruction)
+    rec: dict = {"side": None, "frame": None, "expected": None, "lasso": None, "image_side": None, "source": None}
+    if not side or side["frame"] != "character":
+        return rec
+    rec.update(side=side["side"], frame="character", word=side["word"])
+    if front_view in VIEW_AZ:
+        off = (view_az - VIEW_AZ[front_view]) % 360
+        k = min((0, 90, 180, 270), key=lambda a: min(abs(off - a), 360 - abs(off - a)))
+        if k == 0:
+            rec["expected"] = expected_image_side(side["side"], "character")
+        elif k == 180:
+            rec["expected"] = side["side"]
+        rec["view_offset"] = k
+    occ = np.zeros((GRID, GRID, GRID), bool)
+    O = np.asarray(occupied, int).reshape(-1, 3)
+    occ[O[:, 0], O[:, 1], O[:, 2]] = True
+    C = np.asarray(cells, int).reshape(-1, 3)
+    C = C[occ[C[:, 0], C[:, 1], C[:, 2]]] if len(C) else C
+    if len(C):
+        got = image_side_of(C.tolist(), occupied, cam)
+        rec["lasso"] = got
+        if got["side"] != "center":
+            rec["image_side"], rec["source"] = got["side"], "lasso"
+    if rec["image_side"] is None and rec["expected"]:
+        rec["image_side"], rec["source"] = rec["expected"], "front_view"
+    rec["agree"] = (rec["expected"] == rec["image_side"]) if rec["expected"] and rec["image_side"] else None
+    return rec
+
+
 def mirror_cells(cells, occupied, cam: dict) -> list:
     """몸 중심을 지나고 앞 시점 카메라 오른쪽 방향에 수직인 면으로 셀을 뒤집는다(정수 셀로 반올림, 중복 제거)."""
     c = centers(occupied).mean(0)
