@@ -1013,8 +1013,8 @@ Grade four checks, each true (pass) or false (fail):
   means the character's own side, which in a front view is the OPPOSITE image side (the character's right hand is on the
   image left). When an "expected position" line is given, it already applies this rule for this image: trust it.
   Held things: a tool or weapon held in a hand must be gripped by its handle/hilt; if the hand holds the blade or the
-  head, position is false ("blade held"). A shield must be on the forearm or held by its inner grip with its face
-  outward; a shield merely touching the side of the hand or body is false.
+  head, position is false ("blade held"). A shield passes position when it is attached to the requested hand / forearm
+  and its face points roughly outward (away from the body). Do NOT judge straps, the inner grip or whether fingers show.
 - mask_fit: the new thing lies inside the editable area and is not cut off at the area's edge.
 - shape_3d: it reads as one clear solid piece, not too small for the area, not smeared, not flat decoration.
 Return JSON {"checks": {...}, "reason_ko": one short Korean sentence describing the main problem (or "합격" style
@@ -1366,3 +1366,29 @@ def _fake_tune(self, stars: int, review: str, context: list, lines: dict, job_id
 
 
 FakeAgentAdapter.agent_tune = _fake_tune
+
+
+# ── S24 2차: 기존 전역 조정 줄의 키를 1회 정하기 ──
+AGENT_TUNE_KEY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["key", "reason"],
+                         "properties": {"key": {"type": "string"}, "reason": {"type": "string"}}}
+AGENT_TUNE_KEY_SYSTEM = """You file one rule of a 3D edit agent under a key. The rule was learned from user feedback and is
+appended to the agent's "{target}" prompt. Return the basic English noun of the object the rule is about, lowercase, no
+adjectives (e.g. "shield", "sword", "boots", "hat"), or "general" if the rule is not about one specific kind of object.
+A rule about held objects in general is "general". reason: one short English sentence. Return JSON only."""
+
+
+def _agent_tune_key(self, line: str, target: str, job_id: str = "") -> dict:
+    return self._call("agent_tune_key", AGENT_TUNE_KEY_SYSTEM.replace("{target}", target), f"rule: {json.dumps(line)}",
+                      AGENT_TUNE_KEY_SCHEMA, lambda o: None, job_id, {"line": line, "target": target})
+
+
+AgentMixin.agent_tune_key = _agent_tune_key
+
+
+def _fake_tune_key(self, line: str, target: str, job_id: str = "") -> dict:
+    self._next("agent_tune_key", job_id)
+    m = re.search(r"\b(shield|sword|boots|hat|torch|axe)\b", line.lower())
+    return self._rec("agent_tune_key", job_id, {"key": m.group(1) if m else "general", "reason": "fake"})
+
+
+FakeAgentAdapter.agent_tune_key = _fake_tune_key

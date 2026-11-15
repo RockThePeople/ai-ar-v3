@@ -44,7 +44,8 @@ def build_admin(st) -> APIRouter:
                 "ratings": [{"rating_id": o["rating_id"], "t": o.get("created_at"), "asset_id": o.get("asset_id"),
                              "stars": o.get("stars"), "review": o.get("review"), "chain": R.public_chain(o),
                              "feedback_uri": o.get("feedback_uri"), "tuning": o.get("tuning")} for o in rows],
-                "tuning": R.tuning_rows(), "tuning_lines": R.tuning_lines(), "tuning_version": R.tuning_version()}
+                "tuning": R.tuning_rows(), "tuning_lines": R.tuning_lines(), "tuning_version": R.tuning_version(),
+                "tuning_rekey_log": R.kv("tuning_rekey_log", [])}
 
     @r.post("/admin/agent/register")
     async def admin_register(req: Request):

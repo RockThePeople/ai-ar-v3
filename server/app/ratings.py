@@ -63,6 +63,7 @@ class Ratings:
         self._apply_notes()
         if start_thread:
             threading.Thread(target=self._watch_loop, daemon=True, name="chain-watch").start()
+            threading.Thread(target=self.rekey_general, daemon=True, name="tuning-rekey").start()   # S24 2차, 1회
 
     # ── 상태 저장 ─────────────────────────────────────────────────
     def kv(self, k: str, default=None):
@@ -486,6 +487,44 @@ class Ratings:
             out[t] = {"general": list(v)} if isinstance(v, list) else {norm_key(k): list(x) for k, x in v.items()}
             out[t] = {k: x for k, x in out[t].items() if x}
         return out
+
+    def rekey_general(self) -> list:
+        """S24 2차: general 에 있는 줄마다 오케스트레이터 1회로 키를 정해 옮긴다(1회 이전, kv tuning_rekeyed).
+        결과 [{target, line, key, reason}] 는 kv tuning_rekey_log 와 agent_tuning(action rekey) 에. 호출 실패면 표시를 남기지 않는다."""
+        if self.kv("tuning_rekeyed", False):
+            return self.kv("tuning_rekey_log", [])
+        fn = getattr(self.eng.agent_llm, "agent_tune_key", None)
+        if fn is None:
+            return []
+        lines = self.tuning_lines()
+        log, moved = [], False
+        try:
+            for tgt in ("masking", "refine"):
+                for ln in list((lines.get(tgt) or {}).get("general") or []):
+                    out = fn(ln, tgt, job_id="tuning-rekey")
+                    key = norm_key(out.get("key"))
+                    log.append({"target": tgt, "line": ln, "key": key, "reason": out.get("reason"), "t": self.eng.clock()})
+                    if key != "general" and len((lines[tgt].get(key) or [])) < TUNE_MAX_LINES:
+                        lines[tgt]["general"].remove(ln)
+                        lines[tgt].setdefault(key, []).append(ln)
+                        moved = True
+        except Exception as e:                              # noqa: BLE001 — LLM 실패: 다음 기동 때 다시
+            print(f"[tuning] 키 이전 실패: {type(e).__name__}: {e}", flush=True)
+            return log
+        if moved:
+            for t in lines:
+                lines[t] = {k: x for k, x in lines[t].items() if x}
+            ver = self.tuning_version() + 1
+            self.set_kv("tuning_lines", lines)
+            self.set_kv("tuning_version", ver)
+            for r in log:
+                self.db.x("INSERT INTO agent_tuning(version,target,action,idx,before,after,rating_id,t,key) VALUES(?,?,?,?,?,?,?,?,?)",
+                          (ver, r["target"], "rekey", 0, json.dumps({"key": "general", "line": r["line"]}, ensure_ascii=False),
+                           json.dumps({"key": r["key"], "line": r["line"]}, ensure_ascii=False), None, r["t"], r["key"]))
+            self._apply_notes()
+        self.set_kv("tuning_rekey_log", log)
+        self.set_kv("tuning_rekeyed", True)
+        return log
 
     def _migrate_tuning(self) -> None:
         raw = self.kv("tuning_lines", None)

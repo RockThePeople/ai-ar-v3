@@ -570,7 +570,8 @@ class Engine:
             target = plan.get("old_object") or plan.get("target_part") or ""
             extra = ""
             if plan.get("op") in ("add", "replace"):       # S24: 손잡이 쥐기 + 그림 기준 좌우
-                extra = (hold_clause(plan.get("new_object"), j["instruction"], plan.get("target_part") or "")
+                extra = (hold_clause(plan.get("new_object"), j["instruction"], plan.get("target_part") or "",
+                                     (j.get("agent_hand_side") or {}).get("side"))
                          + side_clause(j.get("agent_hand_side")))
             gp = full_prompt(ip, target, plan.get("op"), plan.get("old_object"), plan.get("new_object"), extra=extra)
             ip_src, ip = "gemini", gp

@@ -10,7 +10,9 @@ def test_hold_clause_kinds():
     assert "grips the sword by its handle" in hold_clause("a short sword", "오른손에 칼을 쥐여줘", "right hand")
     assert "the blade points away" in hold_clause("sword", "오른손에 칼", "right hand")
     assert "the head points away" in hold_clause("a wooden torch", "왼손에 횃불", "left hand")
-    assert "strapped to the forearm" in hold_clause("a round shield", "왼손에 방패를 들게 해줘", "left hand")
+    s = hold_clause("a round shield", "왼손에 방패를 들게 해줘", "left hand", "left")
+    assert s == "The shield is held on the character's left forearm, its face pointing outward (away from the body). "
+    assert "strap" not in s and "inner grip" not in s
     assert hold_clause("a red hat", "머리에 모자", "head") == ""                    # 손이 아니면 없음
     assert hold_clause("a cat", "오른손에 고양이", "right hand") == ""               # 도구·방패가 아니면 없음
 
@@ -47,6 +49,7 @@ def test_hand_image_side_front_back_and_lasso():
 
 def test_judge_system_has_grip_rule():
     assert "gripped by its handle/hilt" in AGENT_JUDGE_SYSTEM and "blade held" in AGENT_JUDGE_SYSTEM
+    assert "Do NOT judge straps, the inner grip" in AGENT_JUDGE_SYSTEM and "roughly outward" in AGENT_JUDGE_SYSTEM
 
 
 def test_flow_prompt_has_hold_side_and_shape(env):

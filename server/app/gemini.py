@@ -53,14 +53,14 @@ SHIELD = _re.compile(r"\b(shield|buckler)\b", _re.I)
 HAND_KO = _re.compile(r"(손|hand)", _re.I)
 
 
-def hold_clause(new_object: Optional[str], instruction: str = "", target: str = "") -> str:
-    """S24 1: 손에 드는 물건이면 손잡이 쥐기 문장, 방패면 팔뚝·바깥 면 문장. 해당 없으면 빈 문자열."""
+def hold_clause(new_object: Optional[str], instruction: str = "", target: str = "", side: Optional[str] = None) -> str:
+    """S24 1: 손에 드는 물건이면 손잡이 쥐기 문장, 방패면 팔뚝·바깥 면 문장(2차: 세부 없이). 해당 없으면 빈 문자열."""
     obj = new_object or ""
     if not HAND_KO.search(f"{instruction} {target}"):
         return ""
     if SHIELD.search(obj):
-        return ("The shield is strapped to the forearm / held by its inner grip, its face pointing outward, covering the arm; "
-                "the fingers are behind the shield. ")
+        where = f"the character's {side} forearm" if side in ("left", "right") else "the forearm"
+        return f"The shield is held on {where}, its face pointing outward (away from the body). "
     m = HELD_TOOL.search(obj)
     if m:
         w = m.group(1).lower()

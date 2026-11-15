@@ -97,3 +97,22 @@ def test_admin_shows_key_column(env):
     d = env.get("/admin/api").json()
     assert d["tuning"][0]["key"] == "shield" and d["tuning_lines"]["refine"] == {"shield": [SHIELD_RULE]}
     assert "<th>키</th>" in env.get("/admin").text
+
+
+def test_rekey_general_once(env):
+    """S24 2차: general 줄마다 키를 정해 옮긴다(1회), 결과 기록, 두 번째는 호출 없음."""
+    R = _ratings(env)
+    R.set_kv("tuning_lines", {"masking": {"general": ["Keep a held object touching the palm."]},
+                              "refine": {"general": [SHIELD_RULE, "Describe the grip explicitly for any held object."]}})
+    log = R.rekey_general()
+    assert [(r["target"], r["key"]) for r in log] == [("masking", "general"), ("refine", "shield"), ("refine", "general")]
+    assert R.tuning_lines()["refine"] == {"general": ["Describe the grip explicitly for any held object."],
+                                          "shield": [SHIELD_RULE]}
+    assert R.kv("tuning_rekeyed") is True and R.kv("tuning_rekey_log")[1]["line"] == SHIELD_RULE
+    rows = [r for r in R.tuning_rows() if r["action"] == "rekey"]
+    assert len(rows) == 3 and {r["key"] for r in rows} == {"general", "shield"}
+    assert env.eng.agent_llm.notes["refine"]["shield"] == [SHIELD_RULE]
+    n = env.eng.agent_llm._n.get(("agent_tune_key", "tuning-rekey"), 0)
+    R.rekey_general()
+    assert env.eng.agent_llm._n.get(("agent_tune_key", "tuning-rekey"), 0) == n           # 1회 이전
+    assert env.get("/admin/api").json()["tuning_rekey_log"][1]["key"] == "shield"
