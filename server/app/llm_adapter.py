@@ -569,6 +569,7 @@ class FakeAdapter:
                changed_from: Optional[dict] = None, style: Optional[dict] = None, avoid: Optional[List[str]] = None,
                relphrase: bool = False, imperative: Optional[List[str]] = None, region: Optional[dict] = None,
                fix: Optional[List[str]] = None) -> dict:
+        with_notes(self, "", "refine", getattr(self, "note_keys", None))   # S24b: 붙일 줄 기록(가짜도 같은 선택)
         out = fake_refine(scene_prompt, instruction, reject_history[-1] if reject_history else None, relphrase=relphrase)
         if region is not None:                               # S13 가짜: 이미지는 보지 않는다. 바뀐 부위를 첫 구에
             nsp = out["new_scene_prompt"]
@@ -777,7 +778,8 @@ class ClaudeAdapter:
             log.update(style=style.get("style"), avoid=avoid)
         if relphrase:
             log.update(relphrase=True, imperative=imperative)
-        system = with_notes(self, REFINE_SYSTEM_REL if relphrase else REFINE_SYSTEM, "refine")   # S21 조정 문장
+        system = with_notes(self, REFINE_SYSTEM_REL if relphrase else REFINE_SYSTEM, "refine",
+                            getattr(self, "note_keys", None))   # S21 조정 문장, S24b 물건 키
         if fix:
             log["fix"] = fix
         if region is not None:
@@ -1184,9 +1186,10 @@ _OBOX = {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "nu
 AGENT_REFINE_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["op", "target_part", "target_part_ko", "new_object", "old_object", "keep_box", "old_object_box",
-                 "new_space_box", "found", "note_ko", "user_view_side"],
+                 "new_space_box", "found", "note_ko", "user_view_side", "object_keys"],
     "properties": {
         "op": {"type": "string", "enum": ["add", "replace", "remove", "recolor"]},
+        "object_keys": {"type": "array", "items": {"type": "string"}},
         "user_view_side": {"type": "string", "enum": ["front", "back", "left", "right", "unknown"]},
         "target_part": {"type": "string"}, "target_part_ko": {"type": "string"},
         "new_object": {"type": "string"}, "old_object": {"anyOf": [{"type": "string"}, {"type": "null"}]},
@@ -1215,6 +1218,8 @@ Return JSON:
 - note_ko: one short Korean sentence for the user (e.g. "오른손과 칼이 들어갈 자리만 남겼습니다").
 - user_view_side: which side of the character (or object) this image shows: "front" (face toward the camera), "back",
   "left" (the character's own left side faces the camera), "right", or "unknown".
+- object_keys: the basic English noun of each object involved — the new object and the old object — lowercase, no
+  adjectives (e.g. ["sword"], ["shield"], ["boots"], ["sword", "torch"] for replacing a torch with a sword).
 Rules:
 - Left/right: a plain position word (오른쪽·왼쪽) is the viewer's side of the image; a body part (오른손·왼손 ...) is the
   character's own side, which is the opposite image side when the character faces the camera.
@@ -1236,7 +1241,7 @@ def _check_refine_plan(o: dict) -> Optional[str]:
 
 
 def _agent_refine_plan(self, render: bytes, overlay: bytes, instruction: str, scene: str, feedback: Optional[str],
-                       job_id: str = "") -> dict:
+                       job_id: str = "", note_keys=None) -> dict:
     txt = (f"instruction: {json.dumps(instruction, ensure_ascii=False)}\n"
            f"object description: {json.dumps(scene, ensure_ascii=False)}"
            + (f"\nprevious attempt problem (fix it this time): {feedback}" if feedback else ""))
@@ -1244,7 +1249,7 @@ def _agent_refine_plan(self, render: bytes, overlay: bytes, instruction: str, sc
     if base is not None:
         self.effort = getattr(self, "mask_effort", None) or base
     try:
-        return self._call("agent_refine", with_notes(self, AGENT_REFINE_SYSTEM, "masking"),
+        return self._call("agent_refine", with_notes(self, AGENT_REFINE_SYSTEM, "masking", note_keys),
                           _labeled([("(1) render", render), ("(2) lasso area tinted", overlay)], txt),
                           AGENT_REFINE_SCHEMA, _check_refine_plan, job_id,
                           {"instruction": instruction, "feedback": feedback, "n_images": 2,
@@ -1258,8 +1263,9 @@ AgentMixin.agent_refine_plan = _agent_refine_plan
 
 
 def _fake_refine_plan(self, render: bytes, overlay: bytes, instruction: str, scene: str, feedback: Optional[str],
-                      job_id: str = "") -> dict:
+                      job_id: str = "", note_keys=None) -> dict:
     self._next("agent_refine", job_id)
+    with_notes(self, "", "masking", note_keys)          # 붙일 줄 기록(가짜도 같은 선택)
     op = self.op
     out = {"op": op, "target_part": "right hand", "target_part_ko": "오른손",
            "new_object": getattr(self, "new_object", None) or "the new object",
@@ -1268,7 +1274,8 @@ def _fake_refine_plan(self, render: bytes, overlay: bytes, instruction: str, sce
            "old_object_box": list(self.refine_boxes["old"]) if op in ("replace", "remove") else None,
            "new_space_box": list(self.refine_boxes["new"]) if op in ("add", "replace") else None,
            "found": self.mask_found, "note_ko": "지시 부위와 새 물건 자리만 남겼습니다(가짜)",
-           "user_view_side": getattr(self, "user_view_side", "front")}
+           "user_view_side": getattr(self, "user_view_side", "front"),
+           "object_keys": list(getattr(self, "object_keys", None) or [])}
     return self._rec("agent_refine", job_id, out)
 
 
@@ -1285,18 +1292,39 @@ FakeAgentAdapter.__init__ = _fake_init2
 
 
 # ══════════════════════════════════════════════════════════ S21 피드백 기반 미세 조정
-def with_notes(adapter, system: str, target: str) -> str:
-    """조정 문장(평가 리뷰에서 만든 일반 규칙)을 시스템 프롬프트 끝에. 없으면 그대로."""
-    lines = (getattr(adapter, "notes", None) or {}).get(target) or []
-    if not lines:
+def norm_key(k) -> str:
+    """조정 키: 영어 기본 명사 소문자(shield·sword·boots…), 비었거나 이상하면 general."""
+    k = re.sub(r"[^a-z ]", "", str(k or "").lower()).strip()
+    return " ".join(k.split()) or "general"
+
+
+def notes_for(adapter, target: str, keys=None) -> list:
+    """S24b: 대상의 조정 문장 중 키가 정확히 같은 줄 + general 만(벡터 검색 없음). → [(key, line)…]"""
+    d = (getattr(adapter, "notes", None) or {}).get(target) or {}
+    if isinstance(d, list):                                # 옛 형식(전역 목록) = general
+        d = {"general": d}
+    want = ["general"] + [k for k in dict.fromkeys(norm_key(k) for k in (keys or [])) if k != "general"]
+    return [(k, ln) for k in want for ln in d.get(k, [])]
+
+
+def with_notes(adapter, system: str, target: str, keys=None) -> str:
+    """조정 문장을 시스템 프롬프트 끝에(키가 같은 줄 + general). 붙인 줄은 adapter.last_notes[target] 에 남긴다."""
+    picked = notes_for(adapter, target, keys)
+    try:
+        adapter.last_notes = dict(getattr(adapter, "last_notes", None) or {},
+                                  **{target: {"keys": [norm_key(k) for k in (keys or [])], "lines": picked}})
+    except AttributeError:
+        pass
+    if not picked:
         return system
-    return system + "\nNotes from past user feedback:\n" + "\n".join(f"- {ln}" for ln in lines)
+    return system + "\nNotes from past user feedback:\n" + "\n".join(f"- {ln}" for _, ln in picked)
 
 
 AGENT_TUNE_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["target", "action", "index", "line", "specific_problem"],
+    "required": ["target", "action", "index", "line", "specific_problem", "key"],
     "properties": {"target": {"type": "string", "enum": ["masking", "refine", "none"]},
+                   "key": {"type": "string"},
                    "action": {"type": "string", "enum": ["add", "replace", "remove", "none"]},
                    "index": {"type": "integer"}, "line": {"type": "string"},
                    "specific_problem": {"type": "boolean"}}}
@@ -1308,6 +1336,9 @@ A user rated a finished edit (0-5 stars) and may have written a review. Propose 
 - line: ONE general English rule (at most 200 characters) that would prevent the problem next time. Never copy the
   user's words; write it as a rule for any object (e.g. "Keep a held object touching the palm; extend the volume to
   cover the grip."). Empty for none/remove.
+- key: the basic English noun of the object the rule is about, lowercase, no adjectives (e.g. "shield", "sword",
+  "boots"), or "general" if the rule applies to any object. Rules are stored per key and only used for edits of that
+  object; index refers to the current list under that key.
 - action: add a new rule, replace rule at index, or remove rule at index (indexes refer to the current list).
 Return JSON only."""
 
@@ -1325,11 +1356,12 @@ AgentMixin.agent_tune = _agent_tune
 
 def _fake_tune(self, stars: int, review: str, context: list, lines: dict, job_id: str = "") -> dict:
     self._next("agent_tune", job_id)
-    if stars >= 4 or not review.strip():
-        out = {"target": "none", "action": "none", "index": 0, "line": "", "specific_problem": False}
+    if stars >= 4 and not getattr(self, "tune_force", False) or not review.strip():
+        out = {"target": "none", "action": "none", "index": 0, "line": "", "specific_problem": False, "key": "general"}
     else:
-        out = {"target": "masking", "action": "add", "index": 0, "specific_problem": True,
-               "line": "Keep a held object touching the palm; extend the volume to cover the grip."}
+        out = {"target": getattr(self, "tune_target", "masking"), "action": "add", "index": 0, "specific_problem": True,
+               "key": getattr(self, "tune_key", "general"),
+               "line": getattr(self, "tune_line", None) or "Keep a held object touching the palm; extend the volume to cover the grip."}
     return self._rec("agent_tune", job_id, out)
 
 
