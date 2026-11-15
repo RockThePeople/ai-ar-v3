@@ -302,7 +302,8 @@ def hand_image_side(instruction: str, cells, occupied, cam: dict, view_az: float
     if len(C):
         got = image_side_of(C.tolist(), occupied, cam)
         rec["lasso"] = got
-        if got["side"] != "center":
+        # 옆 시점(정면 ±90°)에서는 화면 x 가 좌우가 아니라 앞뒤다 → 그림 기준 좌우를 내지 않는다(S24 실측 B-L)
+        if got["side"] != "center" and rec.get("view_offset") not in (90, 270):
             rec["image_side"], rec["source"] = got["side"], "lasso"
     if rec["image_side"] is None and rec["expected"]:
         rec["image_side"], rec["source"] = rec["expected"], "front_view"

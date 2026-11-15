@@ -38,7 +38,7 @@ def test_hand_image_side_front_back_and_lasso():
     assert r2["expected"] == "right" and r2["image_side"] == "right"
     # 옆 시점은 계산하지 않고 라쏘만
     r3 = am.hand_image_side("오른손에 칼을 쥐여줘", hand, occ, cams["az090"], 90, "az000")
-    assert r3["expected"] is None and r3["view_offset"] == 90
+    assert r3["expected"] is None and r3["view_offset"] == 90 and r3["image_side"] is None   # 옆 시점: 좌우 안 냄
     # 지시와 라쏘가 다르면 라쏘(사용자가 그린 곳)를 따르고 agree False
     r4 = am.hand_image_side("왼손에 방패", hand, occ, cams["az000"], 0, "az000")
     assert r4["expected"] == "right" and r4["image_side"] == "left" and r4["agree"] is False
