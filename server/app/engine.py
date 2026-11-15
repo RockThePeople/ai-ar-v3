@@ -22,7 +22,7 @@ from typing import Callable, Dict, List, Optional
 
 from .backends import StageError
 from .cropinpaint import crop_inpaint, decode_png
-from .llm_adapter import (LLMInvalid, LLMUnavailable, banned_words, imperative_words, make_adapter, placement_ok,
+from .llm_adapter import (LLMInvalid, LLMUnavailable, make_front_adapter, banned_words, imperative_words, make_adapter, placement_ok,
                           make_agent_adapter, FakeAgentAdapter,
                           strip_banned, strip_lateral, strip_realworld, style_from_request,
                           subject_head)
@@ -96,6 +96,7 @@ class Engine:
         self.gemini = None                                # S20f: 시험이 가짜 클라이언트를 넣는다(None = 환경변수로 실제)
         self.agent_llm = agent_llm or (FakeAgentAdapter(db.log_llm) if llm is not None else
                                        make_agent_adapter(s.mock, on_call=db.log_llm))
+        self.front_llm = make_front_adapter(self.agent_llm)   # S20g 2차 APP_FRONT_MODEL
         self.lock = threading.RLock()
         self.jobs: Dict[str, dict] = {}
         self.q: "queue.Queue[tuple]" = queue.Queue()
@@ -154,6 +155,7 @@ class Engine:
 
     def _finish(self, j: dict, state: str, code: Optional[str] = None, msg: Optional[str] = None, save: bool = True) -> None:
         j["state"], j["state_since"] = state, self.clock()
+        j["notice"] = None                                # 1.2.0 보충(S20g): 끝나면 null
         j["history"].append({"t": self.clock(), "state": state, "code": code})
         j["finished_at"] = self.clock()
         if code:
@@ -189,7 +191,8 @@ class Engine:
             return self.order.index(job_id) if job_id in self.order else None
 
     # ── 생성 ───────────────────────────────────────────────────────
-    def create_asset(self, qr_id: str, device: str, prompt: str, seed: int, mock_fail: Optional[str] = None) -> dict:
+    def create_asset(self, qr_id: str, device: str, prompt: str, seed: int, mock_fail: Optional[str] = None,
+                     mock_regen: bool = False) -> dict:
         with self.lock:
             if self.db.asset_by_qr(qr_id) is not None:
                 raise AppError(409, "QR_TAKEN", "이미 자산이 있거나 생성 중이다")
@@ -198,7 +201,7 @@ class Engine:
                       "VALUES(?,?,?,?,?,0,?,?)", (asset_id, qr_id, qr_id, device, None, self.clock(), "generate"))
             raw = self.db.qr_raw_prompt(qr_id)            # S14 그대로 모드: 생성도 입력 문장 그대로
             j = self._new_job("generate", asset_id, device, qr_id, prompt=prompt, seed=seed, mock_fail=mock_fail,
-                              raw_prompt=raw)
+                              raw_prompt=raw, **({"mock_regen": True} if mock_regen else {}))
         self._enqueue(j, "generate")
         return j
 
@@ -292,6 +295,9 @@ class Engine:
             out = self._front_check(j, out, prompt_en, seed, kw)
             if j["state"] != "generating":
                 return
+        elif self.s.front_fix and self.be.name == "mock" and not j.get("raw_prompt"):
+            self._mock_front(j)                           # 1.2.0 보충(S20g) 가짜 모드: front_check 1 s(+ X-Mock-Regen)
+        j["notice"] = None
         self._set(j, stage="chunking", progress=0.95)
         self.store.put_version(j["asset_id"], 1, out["blobs"])
         if out.get("slat_coords"):
@@ -306,7 +312,7 @@ class Engine:
     # ── S20g 생성 직후 정면·뒷면 얼굴 판단 ─────────────────────────────
     def _front_capable(self, j: dict) -> bool:
         return (self.s.front_fix and not j.get("raw_prompt") and self.be.name != "mock"
-                and hasattr(self.agent_llm, "agent_front"))
+                and hasattr(self.front_llm, "agent_front"))
 
     def asset_front(self, asset_id: str) -> Optional[str]:
         """저장된 정면(az000…), "none"(캐릭터 아님), None(묻지 않음)."""
@@ -318,6 +324,17 @@ class Engine:
         j.setdefault("gen_events", []).append({"t": round(self.clock(), 3), "text": text})
         print(f"[generate] {j['asset_id']}: {text}", flush=True)
         self._save(j)
+
+    def _mock_front(self, j: dict) -> None:
+        sc = self.s.mock_time_scale
+        self._set(j, stage="front_check", progress=0.9)
+        time.sleep(1.0 * sc)
+        if j.get("mock_regen"):
+            self._set(j, stage="regenerating", progress=0.9, notice=f"뒷면에 얼굴이 생겨 다시 만듭니다(2/{FRONT_TRIES})")
+            time.sleep(self.be.DUR["generate"] * sc)
+            self._set(j, stage="front_check", progress=0.92)
+            time.sleep(1.0 * sc)
+        j["front_check"] = {"mock": True, "tries": [{"seed": int(j["seed"]) + n} for n in range(2 if j.get("mock_regen") else 1)]}
 
     def _put_candidate(self, asset_id: str, out: dict) -> None:
         import shutil
@@ -358,8 +375,9 @@ class Engine:
                     rec.setdefault("errors", []).append("T2I 이미지 없음 — 다시 생성 못 함")
                     chosen = n - 1
                     break
-                self._gen_note(j, f"뒷면에 얼굴이 생겨 다시 만듭니다({n + 1}/{FRONT_TRIES})")
-                self._set(j, stage="generating", progress=0.9)
+                msg = f"뒷면에 얼굴이 생겨 다시 만듭니다({n + 1}/{FRONT_TRIES})"
+                self._gen_note(j, msg)
+                self._set(j, stage="regenerating", progress=0.9, notice=msg)
                 o2 = self._regen(j, rec, prompt_en, s, png, kw, f"generate_r{n}")
                 if j["state"] != "generating":
                     return out
@@ -368,10 +386,14 @@ class Engine:
                     break
                 out = o2
             self._put_candidate(aid, out)
+            self._set(j, stage="front_check", progress=0.92)
             t0 = time.perf_counter()
             try:
                 v = self.render_views(aid, 1)
-                r = self.agent_llm.agent_front({k: v["png"][k] for k in VIEW_NAMES}, job_id=j["job_id"])
+                rs = round(time.perf_counter() - t0, 1)
+                from .automask import shrink_png
+                r = self.front_llm.agent_front({k: shrink_png(v["png"][k], self.s.front_res) for k in VIEW_NAMES},
+                                               job_id=j["job_id"])
             except (StageError, LLMInvalid, LLMUnavailable) as e:      # 판단 못 하면 이 후보로(생성은 막지 않는다)
                 rec["tries"].append({"seed": s, "error": f"{type(e).__name__}: {e}"})
                 chosen = n
@@ -379,13 +401,15 @@ class Engine:
             rec["tries"].append({"seed": s, "front_view": r.get("front_view"), "is_character": r.get("is_character"),
                                  "faces_on_multiple_sides": bool(r.get("faces_on_multiple_sides")),
                                  "face_views": r.get("face_views"), "note": r.get("note"),
-                                 "check_s": round(time.perf_counter() - t0, 1)})
+                                 "check_s": round(time.perf_counter() - t0, 1), "render_s": rs,
+                                 "model": getattr(self.front_llm, "model", None), "res": self.s.front_res})
             if not r.get("faces_on_multiple_sides"):
                 chosen = n
                 break
         if chosen is None:                                # 셋 다 뒷면 얼굴 → 첫 번째(정해진 순서)
             if len(rec["tries"]) > 1:
                 self._gen_note(j, "세 번 모두 뒷면에 얼굴이 있어 첫 번째로 되돌립니다(뒷면 얼굴 남음)")
+                self._set(j, stage="regenerating", progress=0.93, notice="뒷면 얼굴이 남아 첫 번째 결과로 되돌립니다")
                 o2 = self._regen(j, rec, prompt_en, seed, png, kw, "generate_back")
                 if j["state"] != "generating":
                     return out

@@ -1394,6 +1394,16 @@ def _fake_tune_key(self, line: str, target: str, job_id: str = "") -> dict:
 FakeAgentAdapter.agent_tune_key = _fake_tune_key
 
 
+def make_front_adapter(base):
+    """S20g 2차 APP_FRONT_MODEL(기본 claude-sonnet-5-5): 생성 직후 판단만 이 모델. 오케스트레이터와 같으면 그대로. 기록은 같은 on_call."""
+    m = (os.environ.get("APP_FRONT_MODEL") or "claude-sonnet-5-5").strip()   # S20g 2차: 22/22 유지 가장 빠름(실측)
+    if not m or not isinstance(base, ClaudeAgentAdapter) or m == base.model:
+        return base
+    ad = ClaudeAgentAdapter(model=m, on_call=base.on_call, effort=base.effort)
+    ad.mask_effort = getattr(base, "mask_effort", None)
+    return ad
+
+
 # ── S20g 1-1·1-4: 생성 직후 4방향 판단 1회(정면 방향 + 여러 면 얼굴) ──
 AGENT_FRONT_SCHEMA = {
     "type": "object", "additionalProperties": False,

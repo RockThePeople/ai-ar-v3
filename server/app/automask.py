@@ -200,6 +200,17 @@ def grid_image(rgb: np.ndarray, label: str) -> np.ndarray:
     return img
 
 
+def shrink_png(png: bytes, res: int) -> bytes:
+    """S20g 2차: 판정용 축소 — 흰 배경 RGB 로 바꾸고 한 변이 res 이하가 될 때까지 2×2 평균."""
+    from .cropinpaint import decode_png, encode_png
+    a = to_rgb(decode_png(png))
+    if max(a.shape[:2]) <= res:
+        return png
+    while max(a.shape[:2]) > res:
+        a = half(a)
+    return encode_png(a)
+
+
 def half(a: np.ndarray) -> np.ndarray:
     """2×2 평균으로 반 크기."""
     h, w = a.shape[0] // 2 * 2, a.shape[1] // 2 * 2

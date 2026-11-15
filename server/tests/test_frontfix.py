@@ -145,3 +145,66 @@ def test_tail_only_on_side_or_back(env, monkeypatch):
         assert j["state"] == "committed", j
         p = env.eng.gemini.calls[0]
         assert (f"This is a {side} view of the character; {tail}" in p) is want
+
+
+# ── 2차: 계약 1.2.0 보충(S20g) stage front_check·regenerating, notice ──
+def test_stages_and_notice_real_path(env):
+    env.eng.s.front_fix = True
+    _gen_with_png(env)
+    env.eng.agent_llm.front_script = [FACE, CLEAN]
+    seen = []
+    real_set = env.eng._set
+
+    def spy(j, *a, **k):
+        real_set(j, *a, **k)
+        if j["kind"] == "generate":
+            seen.append((j["stage"], j.get("notice")))
+    env.eng._set = spy
+    aid = make_asset(env)
+    j = _gen_job(env, aid)
+    stages = [s for s, _ in seen]
+    assert stages.index("front_check") < stages.index("regenerating") < len(stages) - 1 - stages[::-1].index("front_check")
+    assert ("regenerating", "뒷면에 얼굴이 생겨 다시 만듭니다(2/3)") in seen
+    o = env.get(f"/app/v1/jobs/{j['job_id']}", headers=A).json()
+    assert o["state"] == "committed" and o["notice"] is None                     # 끝나면 null
+    assert "front_check" in [x["stage"] for x in j["stage_log"]]
+
+
+def test_notice_key_null_when_off(env):
+    aid = make_asset(env)
+    o = env.get(f"/app/v1/jobs/{_gen_job(env, aid)['job_id']}", headers=A).json()
+    assert "notice" in o and o["notice"] is None
+
+
+def _mock_app(tmp_path):
+    from fastapi.testclient import TestClient
+    from server.app.main import create_app
+    from server.app.llm_adapter import FakeAdapter
+    from server.app.store import ChunkStore
+    from server.tests.app_fakes import BASE_KEYS, cbin, png
+    from server.tests.test_app_server import _settings
+    st = ChunkStore(tmp_path)
+    st.put_version("mock-src", 1, {k: cbin(k) for k in BASE_KEYS})
+    fx = tmp_path / "mock_fixtures"
+    fx.mkdir()
+    for n in ("render", "mask", "edit"):
+        (fx / f"{n}.png").write_bytes(png(8, 8))
+    s = _settings(tmp_path, mock=True)
+    s.front_fix = True
+    app = create_app(s, start_thread=False, llm=FakeAdapter())
+    return TestClient(app), app.state.app.engine
+
+
+def test_mock_front_check_and_regen_header(tmp_path):
+    c, eng = _mock_app(tmp_path)
+    r = c.post("/app/v1/qr/m1/asset", json={"prompt": "jeep"}, headers=A).json()
+    eng.drain()
+    j = eng.get(r["job_id"])
+    st = [x["stage"] for x in j["stage_log"]]
+    assert "front_check" in st and "regenerating" not in st and j["state"] == "committed"
+    r2 = c.post("/app/v1/qr/m2/asset", json={"prompt": "jeep"}, headers={**A, "X-Mock-Regen": "1"}).json()
+    eng.drain()
+    j2 = eng.get(r2["job_id"])
+    st2 = [x["stage"] for x in j2["stage_log"]]
+    assert st2.count("regenerating") == 1 and st2.count("front_check") == 2
+    assert c.get(f"/app/v1/jobs/{r2['job_id']}", headers=A).json()["notice"] is None
