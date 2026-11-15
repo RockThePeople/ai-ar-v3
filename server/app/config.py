@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-APP_API = "1.1.1"
+APP_API = "1.2.0"
 
 
 def default_env_file() -> Path:
@@ -31,7 +31,22 @@ def load_env_file(path: Optional[Path] = None) -> Optional[Path]:
         k, v = k.strip(), v.strip().strip('"').strip("'")
         if v and k not in os.environ:
             os.environ[k] = v
+    if path is None:                                     # S21: 같은 폴더 api.env 도(사용자가 체인 키를 넣은 파일)
+        api = p.parent / "api.env"
+        if api.is_file() and api != p:
+            load_env_file(api)
     return p
+
+
+def chain_env() -> dict:
+    """S21 체인 값(사용자 02:10 이름 대체: CHAIN_RPC_URL ← ALCHEMY_RPC_URL ← ALCHEMY_API_KEY, CHAIN_OPERATOR_KEY ←
+    CHAIN_OPERATOR_PRIVKEY). 값은 기록하지 않는다."""
+    rpc = os.environ.get("CHAIN_RPC_URL") or os.environ.get("ALCHEMY_RPC_URL") or ""
+    if not rpc and os.environ.get("ALCHEMY_API_KEY"):
+        rpc = "https://eth-sepolia.g.alchemy.com/v2/" + os.environ["ALCHEMY_API_KEY"]
+    return {"rpc_url": rpc, "operator_key": os.environ.get("CHAIN_OPERATOR_KEY") or os.environ.get("CHAIN_OPERATOR_PRIVKEY") or "",
+            "pimlico_key": os.environ.get("PIMLICO_API_KEY") or "", "factory": os.environ.get("CHAIN_FACTORY") or "",
+            "policy_id": os.environ.get("PIMLICO_SPONSORSHIP_POLICY_ID") or ""}
 
 
 def _flag(name: str, default: str = "0") -> bool:
@@ -68,6 +83,8 @@ class Settings:
     gemini_cache_loose: bool = False  # S20f-2 GEMINI_CACHE_LOOSE(시험 전용): 캐시 키 = 자산·판본·시점·지시문·모델
     grow_from_image: bool = False  # S20f 2.6 APP_GROW_FROM_IMAGE: Gemini 결과가 라쏘보다 크면 빈 셀로 볼륨 넓히기
     inpaint_backend: str = "local"  # S20f APP_INPAINT_BACKEND: local(FLUX 워커) | gemini(에이전트 편집만, 마스크 없음)
+    chain: bool = True  # S21 APP_CHAIN: 체인 평가(값이 있고 chainId 11155111 일 때만 실제로 켜짐)
+    agent_tune: bool = True  # S21 APP_AGENT_TUNE: 평가 리뷰로 마스킹·보정 프롬프트 미세 조정
     automask: bool = False  # S20e APP_AUTOMASK: 1 이면 camera·volume_cells 없는 자동 마스킹(S20d). 기본 0 = 400
     agent_depth_ratio: float = 0.10  # S20e AGENT_DEPTH_RATIO: 깊이 여유 T = clamp(round(ratio·L), 3, 16)
     agent_merge_ratio: float = 0.13  # S20e AGENT_MERGE_RATIO: 합치기 상자 넓힘 M = clamp(round(ratio·L), 4, 16)
@@ -104,6 +121,8 @@ class Settings:
             agent_max_backtracks=int(os.environ.get("AGENT_MAX_BACKTRACKS") or 3),
             agent_max_mask_retries=int(os.environ.get("AGENT_MAX_MASK_RETRIES") or 2),
             automask=_flag("APP_AUTOMASK", "0"),
+            chain=_flag("APP_CHAIN", "1"),
+            agent_tune=_flag("APP_AGENT_TUNE", "1"),
             inpaint_backend=(os.environ.get("APP_INPAINT_BACKEND") or "local").strip(),
             grow_from_image=_flag("APP_GROW_FROM_IMAGE", "0"),
             agent_no_commit=_flag("APP_AGENT_NO_COMMIT", "0"),

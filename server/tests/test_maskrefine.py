@@ -140,7 +140,7 @@ def _lasso(env, aid, text="오른손에 칼을 들게 해줘", agent=True, heade
 
 def test_health_and_branching(env):
     h = env.get("/app/v1/health").json()
-    assert h["app_api"] == "1.1.1" and h["features"] == ["agent_edit", "agent_lasso"]
+    assert h["app_api"] == "1.2.0" and h["features"] == ["agent_edit", "agent_lasso", "chain_rating"]
     aid = make_asset(env)
     r = env.post(f"/app/v1/assets/{aid}/edits", headers=A, json={"base_version": 1, "instruction": "오른손에 칼"})
     assert r.status_code == 400 and r.json()["error_code"] == "INVALID_REQUEST"   # 자동 마스킹은 토글 뒤

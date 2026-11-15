@@ -33,7 +33,9 @@ def create_app(settings: Optional[Settings] = None, *, backend=None, clock=None,
             else RealBackend(s, store)
     kw = {"clock": clock} if clock else {}
     eng = Engine(s, db, store, backend, start_thread=start_thread, llm=llm, **kw)
-    st = SimpleNamespace(settings=s, db=db, store=store, engine=eng, backend=backend)
+    from .ratings import Ratings                    # S21 체인 평가
+    eng.ratings = Ratings(eng, start_thread=start_thread)
+    st = SimpleNamespace(settings=s, db=db, store=store, engine=eng, backend=backend, ratings=eng.ratings)
 
     app = FastAPI(title="vhl app server", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.app = st
@@ -42,6 +44,8 @@ def create_app(settings: Optional[Settings] = None, *, backend=None, clock=None,
     app.include_router(v2)
     from .debug import build_debug
     app.include_router(build_debug(st))
+    from .admin import build_admin                  # S21 2.6 운영자 화면
+    app.include_router(build_admin(st))
     from .clients import build_clients
     app.include_router(build_clients(st))
 

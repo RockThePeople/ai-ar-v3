@@ -46,6 +46,17 @@ class Review3DReq(BaseModel):
 
 class RatingReq(BaseModel):
     stars: int = Field(ge=0, le=5)
+    review: Optional[str] = Field(default=None, max_length=1000)      # S21 1.2.0
+    signer_pubkey: Optional[str] = None                                # S21: 0x04‖x‖y(기기 Keystore P-256)
+
+
+class PrepareReq(BaseModel):
+    signer_pubkey: Optional[str] = None
+
+
+class SubmittedReq(BaseModel):
+    user_op_hash: Optional[str] = None
+    signature: Optional[str] = None
 
 
 # ── 응답 ────────────────────────────────────────────────────────────
@@ -162,6 +173,7 @@ class HealthResp(BaseModel):
     mock: bool
     workers: Optional[Workers]
     features: List[str] = []                 # S20 10.4: "agent_edit"
+    chain: Optional[dict] = None             # S21 11.5
 
 
 class Sample(BaseModel):

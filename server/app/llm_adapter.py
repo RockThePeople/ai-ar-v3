@@ -777,7 +777,7 @@ class ClaudeAdapter:
             log.update(style=style.get("style"), avoid=avoid)
         if relphrase:
             log.update(relphrase=True, imperative=imperative)
-        system = REFINE_SYSTEM_REL if relphrase else REFINE_SYSTEM
+        system = with_notes(self, REFINE_SYSTEM_REL if relphrase else REFINE_SYSTEM, "refine")   # S21 조정 문장
         if fix:
             log["fix"] = fix
         if region is not None:
@@ -1055,7 +1055,8 @@ class AgentMixin:
         if base is not None:
             self.effort = getattr(self, "mask_effort", None) or base
         try:
-            return self._call("agent_mask", AGENT_MASK_SYSTEM, _labeled(imgs, txt), AGENT_MASK_SCHEMA, _check_mask_plan,
+            return self._call("agent_mask", with_notes(self, AGENT_MASK_SYSTEM, "masking"), _labeled(imgs, txt),
+                              AGENT_MASK_SCHEMA, _check_mask_plan,
                               job_id, {"instruction": instruction, "scene": scene, "feedback": feedback, "n_images": 4,
                                        "effort": getattr(self, "effort", None)})
         finally:
@@ -1240,7 +1241,7 @@ def _agent_refine_plan(self, render: bytes, overlay: bytes, instruction: str, sc
     if base is not None:
         self.effort = getattr(self, "mask_effort", None) or base
     try:
-        return self._call("agent_refine", AGENT_REFINE_SYSTEM,
+        return self._call("agent_refine", with_notes(self, AGENT_REFINE_SYSTEM, "masking"),
                           _labeled([("(1) render", render), ("(2) lasso area tinted", overlay)], txt),
                           AGENT_REFINE_SCHEMA, _check_refine_plan, job_id,
                           {"instruction": instruction, "feedback": feedback, "n_images": 2,
@@ -1277,3 +1278,55 @@ def _fake_init2(self, on_call=None):
 
 
 FakeAgentAdapter.__init__ = _fake_init2
+
+
+# ══════════════════════════════════════════════════════════ S21 피드백 기반 미세 조정
+def with_notes(adapter, system: str, target: str) -> str:
+    """조정 문장(평가 리뷰에서 만든 일반 규칙)을 시스템 프롬프트 끝에. 없으면 그대로."""
+    lines = (getattr(adapter, "notes", None) or {}).get(target) or []
+    if not lines:
+        return system
+    return system + "\nNotes from past user feedback:\n" + "\n".join(f"- {ln}" for ln in lines)
+
+
+AGENT_TUNE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["target", "action", "index", "line", "specific_problem"],
+    "properties": {"target": {"type": "string", "enum": ["masking", "refine", "none"]},
+                   "action": {"type": "string", "enum": ["add", "replace", "remove", "none"]},
+                   "index": {"type": "integer"}, "line": {"type": "string"},
+                   "specific_problem": {"type": "boolean"}}}
+AGENT_TUNE_SYSTEM = """You maintain a short list of general rules appended to two prompts of a 3D edit agent:
+"masking" (deciding which part of the lasso volume to keep/merge) and "refine" (writing the image-edit prompt).
+A user rated a finished edit (0-5 stars) and may have written a review. Propose AT MOST ONE small change.
+- specific_problem: true only if the review names a concrete visual problem (e.g. "the sword floats away from the hand").
+- If stars are 4-5 and there is no concrete problem, or the review is vague, return target "none", action "none".
+- line: ONE general English rule (at most 200 characters) that would prevent the problem next time. Never copy the
+  user's words; write it as a rule for any object (e.g. "Keep a held object touching the palm; extend the volume to
+  cover the grip."). Empty for none/remove.
+- action: add a new rule, replace rule at index, or remove rule at index (indexes refer to the current list).
+Return JSON only."""
+
+
+def _agent_tune(self, stars: int, review: str, context: list, lines: dict, job_id: str = "") -> dict:
+    txt = (f"stars: {stars}\nreview: {json.dumps(review, ensure_ascii=False)}\n"
+           f"current rules: {json.dumps(lines, ensure_ascii=False)}\n"
+           f"edits in the rated range (events, verdicts): {json.dumps(context, ensure_ascii=False)[:4000]}")
+    return self._call("agent_tune", AGENT_TUNE_SYSTEM, txt, AGENT_TUNE_SCHEMA, lambda o: None, job_id,
+                      {"stars": stars, "review": review, "n_context": len(context)})
+
+
+AgentMixin.agent_tune = _agent_tune
+
+
+def _fake_tune(self, stars: int, review: str, context: list, lines: dict, job_id: str = "") -> dict:
+    self._next("agent_tune", job_id)
+    if stars >= 4 or not review.strip():
+        out = {"target": "none", "action": "none", "index": 0, "line": "", "specific_problem": False}
+    else:
+        out = {"target": "masking", "action": "add", "index": 0, "specific_problem": True,
+               "line": "Keep a held object touching the palm; extend the volume to cover the grip."}
+    return self._rec("agent_tune", job_id, out)
+
+
+FakeAgentAdapter.agent_tune = _fake_tune

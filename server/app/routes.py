@@ -90,7 +90,9 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         return M.HealthResp(ok=True, app_api=APP_API, contract_version=int(CONTRACT_VERSION), mock=S.settings.mock,
                             workers=M.Workers(a5000=w.get("a5000", "down"), inpaint=w.get("inpaint", "down"),
                                               llm=llm),
-                            features=["agent_edit", "agent_lasso"] if S.settings.agent else []).model_dump(mode="json")
+                            features=(["agent_edit", "agent_lasso"] if S.settings.agent else [])
+                            + (["chain_rating"] if S.settings.chain else []),
+                            chain=S.engine.ratings.health() if S.settings.chain else None).model_dump(mode="json")
 
     @r.get("/samples")
     def samples():
@@ -254,9 +256,21 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     # ── 평가 ───────────────────────────────────────────────────────
     @r.post("/assets/{asset_id}/ratings", status_code=201)
     async def rate(asset_id: str, req: Request):
+        """S21 1.2.0(11.2): review·signer_pubkey. 공개키가 없거나 체인이 꺼지면 저장만(chain.status off)."""
         dev = device(req)
         b = await body(req, M.RatingReq)
-        return M.RatingResp(**S.engine.rate(asset_id, dev, b.stars)).model_dump(mode="json")
+        return _rt(lambda: S.engine.ratings.create(asset_id, dev, b.stars, b.review, b.signer_pubkey, str(req.base_url)))
+
+    def _rt(fn):
+        from .ratings import RatingError
+        try:
+            return fn()
+        except RatingError as e:
+            raise AppError(e.status, e.code, e.message)
+
+    @r.get("/agent-registration.json")
+    def agent_registration(req: Request):
+        return S.engine.ratings.registration(str(req.base_url))
 
     @r.get("/ratings/{rating_id}.json")
     def rating_file(rating_id: str):
@@ -266,6 +280,36 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         if not p.is_file():
             raise AppError(404, "INVALID_REQUEST", "평가 없음")
         return FileResponse(p, media_type="application/json")
+
+    @r.get("/ratings/{rating_id}")
+    def rating_get(rating_id: str):
+        return _rt(lambda: S.engine.ratings.get(rating_id))
+
+    @r.post("/ratings/{rating_id}/prepare")
+    async def rating_prepare(rating_id: str, req: Request):
+        b = await body(req, M.PrepareReq)
+        return _rt(lambda: S.engine.ratings.prepare(rating_id, b.signer_pubkey))
+
+    @r.post("/ratings/{rating_id}/submitted")
+    async def rating_submitted(rating_id: str, req: Request):
+        b = await body(req, M.SubmittedReq)
+        if not (b.user_op_hash or b.signature):
+            raise AppError(400, "INVALID_REQUEST", "user_op_hash 또는 signature 가 필요하다")
+        return _rt(lambda: S.engine.ratings.submitted(rating_id, b.user_op_hash, b.signature))
+
+    @v2.post("/mock-bundler")
+    async def mock_bundler(req: Request):
+        """가짜 모드 번들러(S21 2.7): eth_sendUserOperation 서명을 실제로 검사. 실제 모드에서는 404."""
+        if not S.settings.mock:
+            raise AppError(404, "INVALID_REQUEST", "가짜 모드에서만")
+        return JSONResponse(S.engine.ratings.mock_bundler(json.loads(await req.body() or b"{}")))
+
+    @v2.post("/bundler")
+    async def bundler_proxy(req: Request):
+        """실제 모드 번들러 중계(S21): Pimlico 키를 기기·health 에 내보내지 않는다. 가짜 모드는 /mock-bundler."""
+        if S.settings.mock or S.engine.ratings.client.status != "on":
+            raise AppError(404, "INVALID_REQUEST", "체인 실제 모드에서만")
+        return JSONResponse(S.engine.ratings.bundler_proxy(json.loads(await req.body() or b"{}")))
 
     # ── /v2 (계약 3.28.0 경로, 앱 저장소) ───────────────────────────
     @v2.get("/v2/assets/{asset_id}/manifest.v{version}.json")
