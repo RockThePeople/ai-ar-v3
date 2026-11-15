@@ -170,3 +170,23 @@ def test_real_backend_copy_contract_3_4b(tmp_path):
         raise AssertionError
     except StageError as e:
         assert e.code == "REVERT_UNSUPPORTED"
+
+
+def test_revert_waits_for_worker_lock(env, monkeypatch):
+    """반영 직후 A5000 미리 렌더 잠금(ASSET_LOCKED)은 기다렸다 다시."""
+    from server.app.backends import StageError
+    _on(env)
+    aid = make_asset(env)
+    _keep(env, aid, 1)
+    n = {"k": 0}
+    real = env.be.copy_version
+
+    def flaky(*a):
+        n["k"] += 1
+        if n["k"] < 3:
+            raise StageError("ASSET_LOCKED", "worker busy")
+        return real(*a)
+    env.be.copy_version = flaky
+    monkeypatch.setattr("server.app.engine.time.sleep", lambda s: None)
+    r = env.post(f"/app/v1/assets/{aid}/revert", headers=A, json={"base_version": 2, "to_version": 1})
+    assert r.status_code == 200 and n["k"] == 3

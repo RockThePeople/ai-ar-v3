@@ -1004,6 +1004,19 @@ class Engine:
             "AND c.version>=2 AND COALESCE(j.kind, '')<>'revert' ORDER BY c.version", (asset_id, lo))]
         return [vs[0], vs[-1]] if vs else None
 
+    REVERT_LOCK_WAIT_S = 60.0
+
+    def _copy_with_wait(self, asset_id: str, to: int, n: int):
+        """반영 직후에는 앱의 미리 렌더(4시점)가 A5000 자산을 잠깐 잠근다(실측 S25) → 워커 ASSET_LOCKED 는 3초 간격으로 다시."""
+        t0 = time.monotonic()
+        while True:
+            try:
+                return self.be.copy_version(asset_id, to, n)
+            except StageError as e:
+                if e.code != "ASSET_LOCKED" or time.monotonic() - t0 > self.REVERT_LOCK_WAIT_S:
+                    raise
+                time.sleep(3.0)
+
     def revert_on(self) -> bool:
         return bool(self.s.revert or self.s.mock)
 
@@ -1028,7 +1041,7 @@ class Engine:
             if base != n:
                 raise AppError(409, "VERSION_CONFLICT", f"최신 판본은 v{n}", {"latest_version": n})
             try:
-                wv = self.be.copy_version(asset_id, to, n)
+                wv = self._copy_with_wait(asset_id, to, n)
             except StageError as e:
                 raise AppError(409 if e.code in ("ASSET_LOCKED", "VERSION_CONFLICT", "VERSION_NOT_FOUND") else 503,
                                e.code, str(e))
