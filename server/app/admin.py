@@ -70,9 +70,15 @@ body{font-family:system-ui,sans-serif;margin:16px;color:#222;background:#fafafa}
 table{border-collapse:collapse;width:100%;font-size:12px}td,th{border-bottom:1px solid #eee;padding:4px;text-align:left;vertical-align:top}
 button{font-size:16px;padding:8px 18px;border-radius:6px;border:1px solid #2563eb;background:#2563eb;color:#fff;cursor:pointer}
 button.small{font-size:12px;padding:3px 8px;background:#fff;color:#b91c1c;border-color:#b91c1c}.cap{color:#666;font-size:12px}
-.ok{color:#15803d}.bad{color:#b91c1c}.mono{font-family:ui-monospace,monospace;font-size:11px;word-break:break-all}</style></head>
+.ok{color:#15803d}.bad{color:#b91c1c}.mono{font-family:ui-monospace,monospace;font-size:11px;word-break:break-all}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px}.grid .card{margin:0}
+.card h3{font-size:13px;margin:0 0 8px;color:#555;font-weight:600}.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;font-size:13px;align-items:baseline}
+.kv dt{color:#666}.kv dd{margin:0;word-break:break-all}.pill{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid currentColor}
+.hero{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}.hero .links a{margin-right:12px;font-size:13px}
+details{margin-top:8px;font-size:12px;color:#666}</style></head>
 <body><h1>VoxHammer-Light 3D Edit Agent — 운영자 화면</h1>
 <div class="card" id="reg"></div>
+<div class="grid" id="info"></div>
 <h2>평가 목록</h2><div class="card" id="sum"></div><div class="card"><table id="rt"></table></div>
 <h2>조정 기록(피드백 기반 미세 조정)</h2><div class="card" id="tune"></div>
 <script>
@@ -81,17 +87,26 @@ let D=null, fast=false;
 function ts(t){return t?new Date(t*1000).toLocaleString():''}
 function tx(h){return h?`<a class="mono" target="_blank" href="${D.explorer}/tx/${h}">${h.slice(0,10)}…</a>`:''}
 function addr(a){return a?`<a class="mono" target="_blank" href="${D.explorer}/address/${a}">${a.slice(0,8)}…${a.slice(-4)}</a>`:''}
-function regView(){const c=D.chain,o=D.operator,g=D.register;let h=`<div>네트워크 <b>Ethereum Sepolia (${c.chain_id})</b> · 체인 상태 <b class="${c.status==='on'?'ok':'bad'}">${E(c.status)}</b> ${c.error?'<span class="bad">'+E(c.error)+'</span>':''}</div>
-<div>IdentityRegistry <a class="mono" target="_blank" href="${D.explorer}/address/${D.identity}">${D.identity}</a> · ReputationRegistry <span class="mono">${E(c.reputation_registry)}</span> · 계정 팩토리 ${addr(c.factory)}</div>
-<div>운영자 ${addr(o.address)} · 잔액 ${o.balance_eth==null?'-':o.balance_eth.toFixed(5)+' ETH'} · 등록 파일 <a target="_blank" href="${D.registration_url}">agent-registration.json</a></div>`;
- const aid=c.agent_id;
- if(g.state==='sending'||g.state==='pending'){h+=`<div class="big">등록 중…</div><div>${g.state==='sending'?'tx 보내는 중':'tx 보냄 '+tx(g.tx_hash)+' → 블록 대기'}</div>`}
- else if(aid!=null){h+=`<div class="cap">등록됨</div><div class="big">agentId = ${aid}</div><div><a target="_blank" href="https://sepolia.etherscan.io/token/${D.identity}?a=${aid}">토큰 보기</a>${g.tx_hash?' · 등록 tx '+tx(g.tx_hash)+(g.seconds?' · 확정까지 '+g.seconds+' s':''):''}</div>
- <div style="margin-top:8px"><button class="small" onclick="again()">새로 등록</button></div>`}
- else{h+=`<div style="margin-top:10px"><button onclick="reg()">Register</button></div>`}
- if(g.state==='error')h+=`<div class="bad">실패: ${E(g.error)}</div>`;
- const hist=(g.history||[]);if(hist.length)h+=`<div class="cap">기록: ${hist.map(x=>'agentId '+x.agent_id+' ('+ts(x.t)+')').join(' · ')}</div>`;
- document.getElementById('reg').innerHTML=h;}
+function short(a){return a?a.slice(0,8)+'…'+a.slice(-4):'-'}
+function link(a){return a?`<a class="mono" target="_blank" title="${E(a)}" href="${D.explorer}/address/${a}">${short(a)}</a>`:'-'}
+function kv(rows){return '<dl class="kv">'+rows.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')+'</dl>'}
+function regView(){const c=D.chain,o=D.operator,g=D.register,aid=c.agent_id;
+ let st='';
+ if(g.state==='sending'||g.state==='pending')st=`<div class="big">등록 중…</div><div class="cap">${g.state==='sending'?'tx 보내는 중':'tx 보냄 '+tx(g.tx_hash)+' → 블록 대기'}</div>`;
+ else if(aid!=null)st=`<div class="cap">에이전트 ID (ERC-8004 IdentityRegistry 의 ERC-721 토큰 번호)</div><div class="big">#${aid}</div>
+ <div class="links"><a target="_blank" href="${D.explorer}/token/${D.identity}?a=${aid}">토큰(NFT) 보기</a><a target="_blank" href="${D.registration_url}">등록 파일</a>${g.tx_hash?'등록 tx '+tx(g.tx_hash)+(g.seconds?' <span class="cap">(확정 '+g.seconds+' s)</span>':''):''}</div>`;
+ else st=`<div class="cap">에이전트 미등록</div><div style="margin-top:6px"><button onclick="reg()">Register</button></div>`;
+ const side=aid!=null&&!['sending','pending'].includes(g.state)?'<button class="small" onclick="again()">새로 등록</button>':'';
+ let h=`<div class="hero"><div>${st}</div><div style="text-align:right"><span class="pill ${c.status==='on'?'ok':'bad'}">체인 ${E(c.status)}</span><div style="margin-top:8px">${side}</div></div></div>`;
+ if(c.error)h+=`<div class="bad cap">${E(c.error)}</div>`;
+ if(g.state==='error')h+=`<div class="bad">등록 실패: ${E(g.error)}</div>`;
+ const hist=(g.history||[]);if(hist.length)h+=`<details><summary>이전 agentId ${hist.length}건</summary>${hist.map(x=>'#'+x.agent_id+' ('+ts(x.t)+')').join(' · ')}</details>`;
+ document.getElementById('reg').innerHTML=h;
+ const bal=o.balance_eth==null?'-':`<b class="${o.balance_eth<0.01?'bad':''}">${o.balance_eth.toFixed(5)} ETH</b>${o.balance_eth<0.01?' <span class="bad cap">부족</span>':''}`;
+ document.getElementById('info').innerHTML=
+  `<div class="card"><h3>네트워크</h3>${kv([['체인','Ethereum Sepolia'],['chain id',c.chain_id],['번들러',c.bundler_url?'<span class="mono">'+E(c.bundler_url)+'</span> (서버 중계)':'<span class="bad">없음</span>']])}</div>`+
+  `<div class="card"><h3>운영자 계정</h3>${kv([['주소',link(o.address)],['잔액',bal]].concat(o.error?[['오류','<span class="bad">'+E(o.error)+'</span>']]:[]))}</div>`+
+  `<div class="card"><h3>컨트랙트</h3>${kv([['IdentityRegistry',link(D.identity)],['ReputationRegistry',link(c.reputation_registry)],['EntryPoint v0.7',link(c.entry_point)],['계정 팩토리',link(c.factory)]])}</div>`;}
 function rtView(){const s=D.summary;document.getElementById('sum').innerHTML=s?(s.error?'<span class="bad">getSummary 오류 '+E(s.error)+'</span>':`getSummary(agentId, 평가 계정 전부, "starred", "") → 건수 <b>${s.count}</b> · 값 <b>${s.value}</b> (소수 ${s.decimals})`):'<span class="cap">확정된 체인 평가 없음</span>';
  document.getElementById('rt').innerHTML='<tr><th>시각</th><th>자산</th><th>별점</th><th>리뷰</th><th>계정</th><th>user_op_hash</th><th>상태</th><th>tx</th><th>index</th><th>파일</th><th>체인 읽기</th><th>조정</th></tr>'+D.ratings.map(o=>{const c=o.chain||{},rd=c.onchain_read;
  return `<tr><td>${ts(o.t)}</td><td class="mono">${E(o.asset_id)}</td><td>${'★'.repeat(o.stars||0)}</td><td>${E(o.review)}</td><td>${addr(c.account)}</td><td class="mono">${E((c.user_op_hash||'').slice(0,12))}</td><td class="${c.status==='confirmed'?'ok':(c.status==='failed'?'bad':'')}">${E(c.status)}${c.error?'<div class="bad cap">'+E(c.error)+'</div>':''}</td><td>${tx(c.tx_hash)}</td><td>${c.feedback_index??''}</td><td><a target="_blank" href="${o.feedback_uri}">json</a></td><td>${rd?(rd.error?'<span class="bad">'+E(rd.error)+'</span>':(rd.match?'<span class="ok">일치</span>':'<span class="bad">불일치</span>')+' '+rd.value+'·'+rd.decimals+'·'+E(rd.tag1)):''}</td><td class="cap">${o.tuning?(o.tuning.applied?'판 '+o.tuning.version+' '+E(o.tuning.target)+'·'+E(o.tuning.key||'general'):E(o.tuning.reason||'none')):''}</td></tr>`}).join('');}
