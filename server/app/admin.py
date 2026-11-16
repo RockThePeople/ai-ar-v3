@@ -74,12 +74,12 @@ button.small{font-size:12px;padding:3px 8px;background:#fff;color:#b91c1c;border
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px}.grid .card{margin:0}
 .card h3{font-size:13px;margin:0 0 8px;color:#555;font-weight:600}.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;font-size:13px;align-items:baseline}
 .kv dt{color:#666}.kv dd{margin:0;word-break:break-all}.pill{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid currentColor}
-.hero{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}.hero .links a{margin-right:12px;font-size:13px}
+.hero{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}.hero .links{font-size:13px}.hero .links a{margin-right:12px}
 details{margin-top:8px;font-size:12px;color:#666}</style></head>
 <body><h1>VoxHammer-Light 3D Edit Agent — 운영자 화면</h1>
 <div class="card" id="reg"></div>
 <div class="grid" id="info"></div>
-<h2>평가 목록</h2><div class="card" id="sum"></div><div class="card"><table id="rt"></table></div>
+<h2>평가 목록</h2><div class="card" id="sum"></div><div class="cap" id="rtf"></div><div class="card"><table id="rt"></table></div>
 <h2>조정 기록(피드백 기반 미세 조정)</h2><div class="card" id="tune"></div>
 <script>
 const E=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -100,16 +100,19 @@ function regView(){const c=D.chain,o=D.operator,g=D.register,aid=c.agent_id;
  let h=`<div class="hero"><div>${st}</div><div style="text-align:right"><span class="pill ${c.status==='on'?'ok':'bad'}">체인 ${E(c.status)}</span><div style="margin-top:8px">${side}</div></div></div>`;
  if(c.error)h+=`<div class="bad cap">${E(c.error)}</div>`;
  if(g.state==='error')h+=`<div class="bad">등록 실패: ${E(g.error)}</div>`;
- const hist=(g.history||[]);if(hist.length)h+=`<details><summary>이전 agentId ${hist.length}건</summary>${hist.map(x=>'#'+x.agent_id+' ('+ts(x.t)+')').join(' · ')}</details>`;
+ const hist=(g.history||[]).filter(x=>String(x.agent_id)!==String(aid));if(hist.length)h+=`<details><summary>이전 agentId ${hist.length}건</summary>${hist.map(x=>'#'+x.agent_id+' ('+ts(x.t)+')').join(' · ')}</details>`;
  document.getElementById('reg').innerHTML=h;
  const bal=o.balance_eth==null?'-':`<b class="${o.balance_eth<0.01?'bad':''}">${o.balance_eth.toFixed(5)} ETH</b>${o.balance_eth<0.01?' <span class="bad cap">부족</span>':''}`;
  document.getElementById('info').innerHTML=
   `<div class="card"><h3>네트워크</h3>${kv([['체인','Ethereum Sepolia'],['chain id',c.chain_id],['번들러',c.bundler_url?'<span class="mono">'+E(c.bundler_url)+'</span> (서버 중계)':'<span class="bad">없음</span>']])}</div>`+
   `<div class="card"><h3>운영자 계정</h3>${kv([['주소',link(o.address)],['잔액',bal]].concat(o.error?[['오류','<span class="bad">'+E(o.error)+'</span>']]:[]))}</div>`+
   `<div class="card"><h3>컨트랙트</h3>${kv([['IdentityRegistry',link(D.identity)],['ReputationRegistry',link(c.reputation_registry)],['EntryPoint v0.7',link(c.entry_point)],['계정 팩토리',link(c.factory)]])}</div>`;}
-function rtView(){const s=D.summary;document.getElementById('sum').innerHTML=s?(s.error?'<span class="bad">getSummary 오류 '+E(s.error)+'</span>':`getSummary(agentId, 평가 계정 전부, "starred", "") → 건수 <b>${s.count}</b> · 값 <b>${s.value}</b> (소수 ${s.decimals})`):'<span class="cap">확정된 체인 평가 없음</span>';
- document.getElementById('rt').innerHTML='<tr><th>시각</th><th>자산</th><th>별점</th><th>리뷰</th><th>계정</th><th>user_op_hash</th><th>상태</th><th>tx</th><th>index</th><th>파일</th><th>체인 읽기</th><th>조정</th></tr>'+D.ratings.map(o=>{const c=o.chain||{},rd=c.onchain_read;
- return `<tr><td>${ts(o.t)}</td><td class="mono">${E(o.asset_id)}</td><td>${'★'.repeat(o.stars||0)}</td><td>${E(o.review)}</td><td>${addr(c.account)}</td><td class="mono">${E((c.user_op_hash||'').slice(0,12))}</td><td class="${c.status==='confirmed'?'ok':(c.status==='failed'?'bad':'')}">${E(c.status)}${c.error?'<div class="bad cap">'+E(c.error)+'</div>':''}</td><td>${tx(c.tx_hash)}</td><td>${c.feedback_index??''}</td><td><a target="_blank" href="${o.feedback_uri}">json</a></td><td>${rd?(rd.error?'<span class="bad">'+E(rd.error)+'</span>':(rd.match?'<span class="ok">일치</span>':'<span class="bad">불일치</span>')+' '+rd.value+'·'+rd.decimals+'·'+E(rd.tag1)):''}</td><td class="cap">${o.tuning?(o.tuning.applied?'판 '+o.tuning.version+' '+E(o.tuning.target)+'·'+E(o.tuning.key||'general'):E(o.tuning.reason||'none')):''}</td></tr>`}).join('');}
+let allR=false;
+function rtView(){const s=D.summary,aid=D.chain.agent_id,mine=o=>aid!=null&&String((o.chain||{}).agent_id)===String(aid);
+ const rows=allR?D.ratings:D.ratings.filter(mine),hid=D.ratings.length-D.ratings.filter(mine).length;
+ document.getElementById('rtf').innerHTML=`${allR?'전체 평가':'현재 agentId #'+E(aid)+' 의 평가만'} 표시 · ${rows.length}건`+(hid?` <label><input type="checkbox" ${allR?'checked':''} onchange="allR=this.checked;rtView()"> 다른 agentId·체인 없는 평가도 보기 (${hid}건)</label>`:'');document.getElementById('sum').innerHTML=s?(s.error?'<span class="bad">getSummary 오류 '+E(s.error)+'</span>':`getSummary(agentId, 평가 계정 전부, "starred", "") → 건수 <b>${s.count}</b> · 값 <b>${s.value}</b> (소수 ${s.decimals})`):'<span class="cap">확정된 체인 평가 없음</span>';
+ document.getElementById('rt').innerHTML='<tr><th>시각</th><th>자산</th><th>별점</th><th>리뷰</th><th>계정</th><th>user_op_hash</th><th>상태</th><th>tx</th><th>index</th><th>파일</th><th>체인 읽기</th><th>조정</th></tr>'+rows.map(o=>{const c=o.chain||{},rd=c.onchain_read;
+ return `<tr><td>${ts(o.t)}</td><td class="mono">${E(o.asset_id)}</td><td>${'★'.repeat(o.stars||0)}</td><td>${E(o.review)}</td><td>${addr(c.account)}</td><td class="mono">${E((c.user_op_hash||'').slice(0,12))}</td><td class="${c.status==='confirmed'?'ok':(c.status==='failed'?'bad':'')}">${E(c.status)}${c.error?'<div class="bad cap">'+E(c.error)+'</div>':''}</td><td>${tx(c.tx_hash)}</td><td>${c.feedback_index??''}</td><td><a target="_blank" href="${o.feedback_uri}">json</a></td><td>${rd?(rd.error?'<span class="bad">'+E(rd.error)+'</span>':(rd.match?'<span class="ok">일치</span>':'<span class="bad">불일치</span>')+' '+rd.value+'·'+rd.decimals+'·'+E(rd.tag1)):''}</td><td class="cap">${o.tuning?(o.tuning.applied?'판 '+o.tuning.version+' '+E(o.tuning.target)+'·'+E(o.tuning.key||'general'):E(o.tuning.reason||'none')):''}</td></tr>`}).join('')+(rows.length?'':'<tr><td colspan="12" class="cap">이 agentId 에 들어온 평가가 아직 없습니다</td></tr>');}
 function tuneView(){const L=D.tuning_lines;const cnt=d=>Object.values(d||{}).reduce((a,x)=>a+x.length,0);
  const cur=['masking','refine'].map(t=>Object.entries(L[t]||{}).map(([k,xs])=>xs.map(x=>`<tr><td>${t}</td><td class="mono">${E(k)}</td><td class="cap">${E(x)}</td></tr>`).join('')).join('')).join('');
  document.getElementById('tune').innerHTML=`<div>현재 판 <b>${D.tuning_version}</b> · masking ${cnt(L.masking)}줄 · refine ${cnt(L.refine)}줄 (키가 같은 편집 + general 에만 붙음)</div>`+
