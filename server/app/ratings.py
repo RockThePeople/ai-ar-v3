@@ -149,13 +149,14 @@ class Ratings:
               "agent": "vhl-edit-service", "client": o["device"], "created_at": o["created_at"]}
         return json.dumps(fb, ensure_ascii=False, sort_keys=True).encode()
 
-    def _write_file(self, o: dict, account: Optional[str]) -> None:
+    def _write_file(self, o: dict, account: Optional[str]) -> bytes:
         raw = self._feedback_file(o, account)
         p = self.s.data_dir / "ratings" / f"{o['rating_id']}.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(raw)
         o["feedback_hash"] = hashlib.sha256(raw).hexdigest()
         o["feedback_keccak"] = "0x" + cc.keccak256(raw).hex()
+        return raw
 
     def create(self, asset_id: str, device: str, stars: int, review: Optional[str], signer_pubkey: Optional[str],
                req_base: str) -> dict:
@@ -203,8 +204,8 @@ class Ratings:
         if self.mock:
             return self._mock_chain(o, x, y)
         account = self.client.account_for(x, y)
-        self._write_file(o, account)
-        uri = f"{o['public_base']}{o['feedback_uri']}"
+        raw = self._write_file(o, account)
+        uri = "data:application/json;charset=utf-8," + raw.decode("utf-8")
         try:
             cd = self.client.feedback_call(self.agent_id(), o["value"], uri, o["feedback_keccak"])
             b = self.client.build_user_op(x, y, cd)
