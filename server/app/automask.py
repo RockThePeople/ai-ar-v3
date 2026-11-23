@@ -687,6 +687,21 @@ def cells_in_silhouette(cells, S: np.ndarray, cam: dict) -> list:
     return C[ok & R[iy, ix]].tolist()
 
 
+#: Stage 1 latent 블록 한 변(셀). 64³ 점유 격자 → 16³ latent(TRELLIS ss 해상도) — 블록의 64셀이 전부 편집 대상일 때만 풀린다
+SS_BLOCK = GRID // 16
+
+
+def fill_blocks(cells) -> list:
+    """S27 개정 2: 셀이 하나라도 든 SS_BLOCK³ 블록의 셀 전부(점유 셀 포함)."""
+    C = np.asarray(cells, int).reshape(-1, 3)
+    if not len(C):
+        return []
+    blocks = np.unique(C // SS_BLOCK, axis=0)
+    off = np.stack(np.meshgrid(*([np.arange(SS_BLOCK)] * 3), indexing="ij"), -1).reshape(-1, 3)
+    out = (blocks[:, None, :] * SS_BLOCK + off[None]).reshape(-1, 3)
+    return out[np.all((out >= 0) & (out < GRID), axis=1)].tolist()
+
+
 def merge_residue(seeds: np.ndarray, U: np.ndarray, O: np.ndarray, occ: np.ndarray, S: np.ndarray, cam: dict,
                   T: int, M: int, room: int) -> dict:
     """2.6 6번 원래 물건 잔여물 합치기: 씨앗 U∩O 에서 26-이웃 점유 셀로 넓힘. 제한(모두): 고른 시점 투영이 S(새 물건 윤곽 +

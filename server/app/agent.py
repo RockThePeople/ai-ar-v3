@@ -556,13 +556,14 @@ class AgentRun:
         if (g.get("merge") or {}).get("skipped"):
             self.event("inpainting", "check", f"{plan.get('old_object') or '원래 물건'}의 라쏘 밖 부분이 몸통으로 번져 합치지 않았습니다",
                        detail=f"merge skipped: {g['merge']}")
+        auto = j.get("agent_source") == "auto_seed"
         keep = None                                       # S27 PR B: 처음 볼륨 자동 → 출발 볼륨 중 S 에 투영되는 셀만 남긴다
-        if j.get("agent_source") == "auto_seed" and g["s_mask"].any():
+        if auto and self.s.autoseed_volume != "seed" and g["s_mask"].any():
             keep = am.cells_in_silhouette(self.U, g["s_mask"], j["camera"])
             rec.update(seed_n=len(self.U), seed_kept=len(keep))
             if not keep and not g["n_grown"] and not g.get("n_merged"):
                 keep = None                               # 남는 셀이 하나도 없으면 지금 동작 그대로
-        if not g["n_grown"] and not g.get("n_merged") and (keep is None or len(keep) == len(self.U)):
+        if not auto and not g["n_grown"] and not g.get("n_merged"):
             return
         if g.get("n_merged"):
             self.event("inpainting", "tool", f"{plan.get('old_object') or '원래 물건'}의 라쏘 밖 부분 {g['n_merged']:,}셀을 합쳤습니다",
@@ -570,12 +571,18 @@ class AgentRun:
         base = keep if keep is not None else self.U
         final = [list(c) for c in {tuple(c) for c in base} | {tuple(c) for c in g["grown"]}
                  | {tuple(c) for c in g.get("merged", [])}]
-        if keep is not None:
-            rec["final_n"] = len(final)
-            self.event("inpainting", "tool", f"그림이 바뀐 자리로 편집 볼륨을 정했습니다(출발 {len(self.U):,}셀 중 {len(keep):,}셀 + 넓힘 "
-                       f"{g['n_grown']:,}셀 = {len(final):,}셀)",
-                       detail=f"auto_seed: seed cells projecting into diff silhouette S (1-cell touch) ∪ grown ∪ merged; "
-                              f"s_frac {g['s_frac']}")
+        if auto:                                          # S27 개정 2: Stage 1 블록(4³) 단위로 채운다(블록이 풀리게)
+            n_before = len(final)
+            filled = am.fill_blocks(final)
+            if len(filled) <= am.MAX_CELLS:
+                final = filled
+            rec.update(final_n=len(final), pre_block_n=n_before, block_fill=len(filled) <= am.MAX_CELLS,
+                       volume_mode=self.s.autoseed_volume)
+            kept = f"출발 {len(self.U):,}셀 중 {len(keep):,}셀" if keep is not None else f"출발 {len(self.U):,}셀 전체"
+            self.event("inpainting", "tool", f"그림이 바뀐 자리로 편집 볼륨을 정했습니다({kept} + 넓힘 {g['n_grown']:,}셀 → "
+                       f"블록 채움 {len(final):,}셀)",
+                       detail=f"auto_seed mode={self.s.autoseed_volume}: (seed∩S or seed) ∪ grown ∪ merged = {n_before} cells, "
+                              f"filled to {am.SS_BLOCK}³ blocks; s_frac {g['s_frac']}")
         self.render_with(j["camera"], final, j.get("render_view") or "picked")
         rd = self.s.data_dir / "jobs" / j["job_id"] / "render"
         for n in ("render.png", "mask.png"):
