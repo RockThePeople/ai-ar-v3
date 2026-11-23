@@ -40,7 +40,7 @@ def test_revert_api_manifest_history_can_rate(env):
     assert r.status_code == 200, r.text
     o = r.json()
     assert o == {"asset_id": aid, "version": 3, "reverted_from": 1, "manifest_uri": f"/v2/assets/{aid}/manifest.v3.json",
-                 "slat_coords_uri": f"/v2/assets/{aid}/slat_coords.v3.json"}
+                 "slat_coords_uri": f"/v2/assets/{aid}/slat_coords.v3.json", "model_uri": f"/v2/assets/{aid}/model.v3.glb"}
     m1 = env.get(f"/v2/assets/{aid}/manifest.v1.json").json()["chunks"]
     m3 = env.get(o["manifest_uri"]).json()["chunks"]
     assert {k: (e["uri"], e["hash"]) for k, e in m1.items()} == {k: (e["uri"], e["hash"]) for k, e in m3.items()}

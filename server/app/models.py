@@ -76,6 +76,7 @@ class QrResp(BaseModel):
     manifest_uri: Optional[str]
     slat_coords_uri: Optional[str]
     active_job: Optional[ActiveJob]
+    model_uri: Optional[str] = None          # S27 13.2: 판본 전체 glb(생성 중이면 null)
     can_rate: bool
     rate_range: Optional[List[int]]
 

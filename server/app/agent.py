@@ -245,6 +245,43 @@ class AgentRun:
         self.event("done", "done", f"미리보기만 남겼습니다(반영 안 함, 시험 모드 — A5000 판본 v{to})", {"result": mos})
         eng._finish(j, "committed")
 
+    # ── S27 라쏘 없는 에이전트 편집: 처음 볼륨 ────────────────────
+    def autoseed(self) -> None:
+        """S27 13.1: 기존 함수만 — views() → agent_mask → backproject → side_rule. 결과를 라쏘 자리
+        (user_camera = 고른 inpaint_view 카메라, user_cells = 역투영 셀)에 넣고, 그 뒤는 라쏘 흐름 그대로.
+        마스크 확인·다시 칠하기 없음. found 거짓·셀 0 → NO_TARGET."""
+        j, eng = self.j, self.eng
+        self.views()                                       # 이벤트 1: 자산을 네 방향에서 봤습니다(images.views)
+        self._state("masking", "masking", 0.1)
+        self._mock_no_target()
+        self._mock("mask")
+        if eng.be.name == "mock":                         # 8084 가짜 모드: 고정 방향(az090)·고정 셀(점유 셀 중 +x 쪽 끝)
+            xs = sorted({c[0] for c in self.occ})
+            cut = xs[max(0, len(xs) - max(1, len(xs) // 6))]
+            cells = sorted([list(c) for c in self.occ if c[0] >= cut])[:am.MAX_CELLS]
+            plan, view = {"found": True, "op": "add", "inpaint_view": "az090", "note_ko": "가짜 모드"}, "az090"
+        else:
+            plan = self._orch(self.llm.agent_mask, self.grid, j["instruction"], eng._scene(j["asset_id"]), None)
+            if not plan.get("found"):
+                self.event("masking", "error", f"지시한 부위를 찾지 못했습니다 — {plan.get('note_ko') or ''}".strip(" —"))
+                raise StageError("NO_TARGET", plan.get("note_ko") or "지시한 부위를 찾지 못했다")
+            bp = am.backproject(plan["regions"], self.cams, self.occ, plan["op"])
+            j["agent_mask"] = {k: bp[k] for k in ("n", "shrink", "scale", "too_large", "per_region")}
+            if bp["too_large"]:
+                raise StageError("MASK_TOO_LARGE", f"처음 볼륨 셀 {bp['n']} > {am.MAX_CELLS}(0.9배 축소 3번 뒤)")
+            cells = self.side_rule(plan, bp["cells"]) if bp["cells"] else []
+            self.side_hint = None                          # 기대 위치는 방향 고르기 뒤 다시 정한다(라쏘 흐름 그대로)
+            view = plan.get("inpaint_view") if plan.get("inpaint_view") in self.cams else "az000"
+            if not cells:
+                self.event("masking", "error", "지시한 부위를 찾지 못했습니다 — 처음 볼륨 셀이 없습니다")
+                raise StageError("NO_TARGET", "처음 볼륨 셀이 0 이다")
+        j["agent_seed_plan"] = plan
+        j["agent_autoseed"] = {"n_cells": len(cells), "view": view, "op": plan.get("op"),
+                               "target": plan.get("target_part_ko"),
+                               "side_flipped": bool((j.get("agent_side") or [{}])[-1].get("flipped"))}
+        j["user_camera"], j["user_cells"] = self.cams[view], [list(c) for c in cells]
+        eng._save(j)
+
     # ── S20e 사용자 라쏘 볼륨 다듬기 ─────────────────────────────
     def lasso_start(self) -> None:
         """사용자 카메라로 라쏘 볼륨 U 를 렌더하고, 판단에 줄 격자 이미지 2장(렌더, 라쏘 겹침)을 만든다."""
@@ -260,7 +297,9 @@ class AgentRun:
         self.grid_render = encode_png(am.grid_full(rgb))
         over = am.tint_mask(rgb, m)
         self.grid_lasso = encode_png(am.grid_full(over))
-        self.event("masking", "tool", f"그린 영역을 봤습니다(라쏘 {len(self.U):,}셀)", {"overlay": encode_png(am.half(over))})
+        text = (f"편집할 자리를 정했습니다({len(self.U):,}셀)" if j.get("agent_source") == "auto_seed"   # S27 이벤트 2
+                else f"그린 영역을 봤습니다(라쏘 {len(self.U):,}셀)")
+        self.event("masking", "tool", text, {"overlay": encode_png(am.half(over))})
 
     def _render_arrays(self):
         rd = self.s.data_dir / "jobs" / self.j["job_id"] / "render"
@@ -486,7 +525,7 @@ class AgentRun:
         d = eng._preview_dir(j, j["attempt"])
         edit = (d / "edit.png").read_bytes()
         self.event("inpainting", "tool", f"편집 이미지를 그렸습니다(시도 {j['attempt']})", {"edit": edit})
-        if j.get("agent_source") == "lasso" and self.s.inpaint_backend == "gemini" and self.s.grow_from_image:
+        if j.get("agent_source") in ("lasso", "auto_seed") and self.s.inpaint_backend == "gemini" and self.s.grow_from_image:
             if eng.be.name == "mock":                     # 8084 가짜 모드: 고정 문구·고정 이미지(볼륨은 그대로)
                 self._state("inpainting", "volume_grow", 0.55)
                 self.event("inpainting", "tool", "새 물건이 그린 영역보다 커서 볼륨을 넓혔습니다(+2,140셀)(가짜)",
@@ -561,10 +600,12 @@ class AgentRun:
         step = "mask"
         plan, region, m = None, None, None
         stop = None
-        lasso = j.get("agent_source") == "lasso"          # S20e: 사용자 라쏘 볼륨 다듬기(자동 마스킹 아님)
+        lasso = j.get("agent_source") in ("lasso", "auto_seed")   # S20e 라쏘 · S27 처음 볼륨 자동 뒤 라쏘 흐름
         gem = lasso and s.inpaint_backend == "gemini"     # S20f: 라쏘 U 그대로 + 잘 보이는 시점 + Gemini
         try:
             if lasso:
+                if j.get("agent_source") == "auto_seed":
+                    self.autoseed()
                 self.lasso_start()
             else:
                 self.views()

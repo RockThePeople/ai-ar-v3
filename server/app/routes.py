@@ -16,6 +16,7 @@ from . import models as M
 from .config import APP_API
 from .engine import prompts_of
 from .engine import ACTIVE, AppError
+from .glb import model_uri
 from .store import AssetNotFound, VersionNotFound
 
 QR_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -66,7 +67,7 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             created_at=j["created_at"], updated_at=j["updated_at"], elapsed_s=round(end - j["created_at"], 3),
             attempt=j.get("attempt"), max_attempts=j.get("max_attempts"),
             refine=j.get("refine"), preview=j.get("preview"), review=j.get("review"), prompts=prompts_of(j),
-            result=j.get("result"),
+            result=result_of(j),
             expires_at=j.get("expires_at"), error_code=j.get("error_code"), error_message=j.get("error_message"),
             notice=j.get("notice"))
         out = o.model_dump(mode="json")
@@ -92,6 +93,8 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
                             workers=M.Workers(a5000=w.get("a5000", "down"), inpaint=w.get("inpaint", "down"),
                                               llm=llm),
                             features=(["agent_edit", "agent_lasso"] if S.settings.agent else [])
+                            + (["agent_auto"] if S.settings.agent and S.settings.agent_autoseed else [])
+                            + ["glb"]
                             + (["chain_rating"] if S.settings.chain else [])
                             + (["revert"] if S.engine.revert_on() else []),
                             chain=S.engine.ratings.health() if S.settings.chain else None).model_dump(mode="json")
@@ -131,7 +134,8 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
             slat_coords_uri=f"/v2/assets/{a['asset_id']}/slat_coords.v{v}.json" if v > 0 else None,
             active_job=(M.ActiveJob(job_id=act["job_id"], kind=act["kind"], state=act["state"],
                                     is_mine=act["device"] == dev) if act else None),
-            can_rate=rng is not None, rate_range=rng).model_dump(mode="json")
+            can_rate=rng is not None, rate_range=rng,
+            model_uri=model_uri(a["asset_id"], v) if v > 0 else None).model_dump(mode="json")
 
     @r.post("/qr/{qr_id}/asset", status_code=202)
     async def qr_create(qr_id: str, req: Request):
@@ -154,6 +158,12 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
     async def edit_create(asset_id: str, req: Request):
         dev = device(req)
         b = await body(req, M.EditReq)                       # 1. 입력 형식
+        if b.camera is None and b.volume_cells is None and b.agent and S.settings.agent and S.settings.agent_autoseed:
+            # S27 13.1: 라쏘 없는 에이전트 편집 — 처음 볼륨·방향을 서버가 정하고 그 뒤는 라쏘 흐름 그대로
+            ma = req.headers.get("X-Mock-Agent") if S.settings.mock else None
+            j = S.engine.create_edit(asset_id, dev, b.base_version, b.instruction, None, None, mock_fail(req),
+                                     mock_agent=ma, agent_autoseed=True)
+            return M.EditCreated(job_id=j["job_id"]).model_dump(mode="json")
         if b.camera is None and b.volume_cells is None:      # S20 자동 마스킹 에이전트 편집 — S20e 부터 APP_AUTOMASK 뒤
             if not (S.settings.agent and S.settings.automask):
                 raise AppError(400, "INVALID_REQUEST", "camera·volume_cells 가 필요하다(자동 마스킹은 꺼져 있다, 1.1.1 10.1)")
@@ -337,6 +347,17 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         except (AssetNotFound, VersionNotFound) as e:
             raise AppError(404, "ASSET_NOT_FOUND", str(e))
 
+    @v2.get("/v2/assets/{asset_id}/model.v{version}.glb")
+    def model_glb(asset_id: str, version: int):
+        """S27 13.2: 판본 전체 glb(청크 경로와 같은 접근 규칙, /clients/glb 와 같은 조립·캐시)."""
+        from .glb import version_glb
+        visible_asset(asset_id)
+        try:
+            p = version_glb(S.settings.data_dir, S.store, asset_id, version)
+        except (AssetNotFound, VersionNotFound, KeyError) as e:
+            raise AppError(404, "ASSET_NOT_FOUND", str(e))
+        return FileResponse(p, media_type="model/gltf-binary")
+
     @v2.get("/v2/assets/{asset_id}/chunks/{name}")
     def chunk(asset_id: str, name: str):
         m = re.fullmatch(r"(-?\d+_-?\d+_-?\d+)\.v(\d+)\.cbin", name)
@@ -381,6 +402,15 @@ def build(app_state) -> tuple[APIRouter, APIRouter]:
         return build_slat_coords_payload(asset_id, version, coords)
 
     return r, v2
+
+
+def result_of(j: dict) -> Optional[dict]:
+    """S27 13.2: committed 인 생성·편집·되돌리기 작업의 result 에 model_uri(키 추가만, 저장된 기록은 그대로)."""
+    r = j.get("result")
+    if (r and j.get("state") == "committed" and j.get("kind") in ("generate", "edit", "revert")
+            and r.get("to_version") and r.get("manifest_uri")):
+        return dict(r, model_uri=model_uri(j["asset_id"], int(r["to_version"])))
+    return r
 
 
 def job_is_active(j: dict) -> bool:
