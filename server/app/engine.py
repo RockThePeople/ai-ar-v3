@@ -440,10 +440,11 @@ class Engine:
     # ── 편집 ───────────────────────────────────────────────────────
     def create_edit(self, asset_id: str, device: str, base_version: int, instruction: str, camera: Optional[dict],
                     cells: Optional[List[list]], mock_fail: Optional[str] = None, mock_agent: Optional[str] = None,
-                    agent_lasso: bool = False) -> dict:
+                    agent_lasso: bool = False, agent_autoseed: bool = False) -> dict:
         """검사 순서(1.0.1 3.3): 입력(라우트) → 404 → 403 → 잠금 → 판본.
         S20: camera·cells 가 둘 다 None 이면 에이전트 편집(1.1.0 10절, 라우트가 APP_AGENT·한쪽만 있음을 막는다)."""
         agent = (camera is None and cells is None) or agent_lasso   # S20e: 라쏘 + agent:true 도 에이전트
+        src = "auto_seed" if agent_autoseed else ("lasso" if agent_lasso else "auto")   # S27: 처음 볼륨 자동 + 라쏘 흐름
         with self.lock:
             a = self.db.live_asset(asset_id)
             if a is None or a["version"] == 0 and not a["is_sample"]:
@@ -465,10 +466,10 @@ class Engine:
                 kw = {"mode": "agent", "events": [], "agent_calls": 0, "mock_agent": mock_agent,
                       # S21 2.5: 어느 조정 판으로 돌았는지
                       "tuning_version": (self.ratings.tuning_version() if getattr(self, "ratings", None) else 0),
-                      "agent_source": "lasso" if agent_lasso else "auto", "user_camera": camera, "user_cells": cells,
+                      "agent_source": src, "user_camera": camera, "user_cells": cells,
                       "agent": {"model": getattr(self.agent_llm, "model", None), "attempt": 1, "backtracks": 0,
                                 # 계약 10.2 1.1.1 보충(S20f): Gemini 일 때 되돌아가기 1(편집 1회당 Gemini 최대 2회)
-                                "max_backtracks": 1 if (agent_lasso and self.s.inpaint_backend == "gemini")
+                                "max_backtracks": 1 if ((agent_lasso or agent_autoseed) and self.s.inpaint_backend == "gemini")
                                 else self.s.agent_max_backtracks, "mask_retries": 0,
                                 "max_mask_retries": self.s.agent_max_mask_retries, "verdict": None, "below_bar": False}}
             j = self._new_job("edit", asset_id, device, a["qr_id"], base_version=int(base_version), raw_prompt=raw,
@@ -1204,7 +1205,8 @@ class Engine:
             shutil.copytree(src, dst)                     # 같은 내용 → 미리 렌더도 그대로
         return {"asset_id": asset_id, "version": newv, "reverted_from": to,
                 "manifest_uri": f"/v2/assets/{asset_id}/manifest.v{newv}.json",
-                "slat_coords_uri": f"/v2/assets/{asset_id}/slat_coords.v{newv}.json"}
+                "slat_coords_uri": f"/v2/assets/{asset_id}/slat_coords.v{newv}.json",
+                "model_uri": f"/v2/assets/{asset_id}/model.v{newv}.glb"}          # S27 13.2
 
     def rate(self, asset_id: str, device: str, stars: int) -> dict:
         with self.lock:

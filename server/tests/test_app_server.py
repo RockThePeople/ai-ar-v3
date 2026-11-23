@@ -80,7 +80,7 @@ ALWAYS = ("job_id", "kind", "state", "stage", "asset_id", "is_mine", "progress",
 # ── health · 헤더 ──────────────────────────────────────────────────
 def test_health(env):
     h = env.get("/app/v1/health").json()
-    assert h["app_api"] == "1.2.1" and h["features"] == ["agent_edit", "agent_lasso", "chain_rating"] and h["ok"] is True and h["contract_version"] == 4 and h["mock"] is False
+    assert h["app_api"] == "1.3.0" and h["features"] == ["agent_edit", "agent_lasso", "glb", "chain_rating"] and h["ok"] is True and h["contract_version"] == 4 and h["mock"] is False
     assert set(h["workers"]) == {"a5000", "inpaint", "llm"}
 
 
@@ -100,7 +100,8 @@ def test_generate_flow(env):
     err(env.post("/app/v1/qr/booth-07/asset", json={"prompt": "x"}, headers=B), 409, "QR_TAKEN")
     env.eng.drain()
     j = job(env, r.json()["job_id"])
-    assert j["state"] == "committed" and j["result"] == {"to_version": 1, "manifest_uri": f"/v2/assets/{j['asset_id']}/manifest.v1.json"}
+    assert j["state"] == "committed" and j["result"] == {"to_version": 1, "manifest_uri": f"/v2/assets/{j['asset_id']}/manifest.v1.json",
+                                                   "model_uri": f"/v2/assets/{j['asset_id']}/model.v1.glb"}
     assert all(j[k] is not None for k in ALWAYS) and j["attempt"] is None
     q = env.get("/app/v1/qr/booth-07", headers=A).json()
     assert q["version"] == 1 and q["is_creator"] and q["active_job"] is None and q["can_rate"] is False and q["rate_range"] is None

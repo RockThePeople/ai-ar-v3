@@ -292,7 +292,7 @@ def test_tuning_rules(env):
 def test_health_chain_and_admin(env):
     _ratings(env)
     h = env.get("/app/v1/health").json()
-    assert h["app_api"] == "1.2.1" and "chain_rating" in h["features"]
+    assert h["app_api"] == "1.3.0" and "chain_rating" in h["features"]
     c = h["chain"]
     assert c["chain_id"] == 11155111 and c["entry_point"] == ENTRY_POINT and c["agent_id"] == 7 and c["factory"]
     assert "Register" in env.get("/admin").text

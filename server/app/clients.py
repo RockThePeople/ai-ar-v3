@@ -11,7 +11,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -192,16 +191,8 @@ def build_clients(S) -> APIRouter:
 
     # ── GLB (캐시, 개수 제한 없음) ─────────────────────────────────
     def _glb(key: str, blobs: Dict[str, bytes]) -> Path:
-        from ..glbbuild import build_glb
-        cache = data / "glb_clients"
-        cache.mkdir(parents=True, exist_ok=True)
-        out = cache / f"{key}.glb"
-        if not out.is_file():
-            with tempfile.TemporaryDirectory() as td:
-                for k, b in blobs.items():
-                    (Path(td) / f"{k}.cbin").write_bytes(b)
-                build_glb(Path(td), out)
-        return out
+        from .glb import cached                           # S27: 앱 /v2/assets/{id}/model.v{n}.glb 와 같은 조립·캐시(NORMAL 포함)
+        return cached(data, key, blobs)
 
     @r.get("/glb/{asset_id}/v{version}.glb")
     def glb_version(asset_id: str, version: int, req: Request):
