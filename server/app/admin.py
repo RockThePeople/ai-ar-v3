@@ -45,7 +45,7 @@ def build_admin(st) -> APIRouter:
                              "stars": o.get("stars"), "review": o.get("review"), "chain": R.public_chain(o),
                              "feedback_uri": o.get("feedback_uri"), "tuning": o.get("tuning")} for o in rows],
                 "tuning": R.tuning_rows(), "tuning_lines": R.tuning_lines(), "tuning_version": R.tuning_version(),
-                "tuning_rekey_log": R.kv("tuning_rekey_log", [])}
+                "tuning_rekey_log": R.kv("tuning_rekey_log", []), "tune_apply": bool(getattr(R.s, "tune_apply", True))}
 
     @r.post("/admin/agent/register")
     async def admin_register(req: Request):
@@ -115,7 +115,7 @@ function rtView(){const s=D.summary,aid=D.chain.agent_id,mine=o=>aid!=null&&Stri
  return `<tr><td>${ts(o.t)}</td><td class="mono">${E(o.asset_id)}</td><td>${'★'.repeat(o.stars||0)}</td><td>${E(o.review)}</td><td>${addr(c.account)}</td><td class="mono">${E((c.user_op_hash||'').slice(0,12))}</td><td class="${c.status==='confirmed'?'ok':(c.status==='failed'?'bad':'')}">${E(c.status)}${c.error?'<div class="bad cap">'+E(c.error)+'</div>':''}</td><td>${tx(c.tx_hash)}</td><td>${c.feedback_index??''}</td><td><a target="_blank" href="${o.feedback_uri}">json</a></td><td>${rd?(rd.error?'<span class="bad">'+E(rd.error)+'</span>':(rd.match?'<span class="ok">일치</span>':'<span class="bad">불일치</span>')+' '+rd.value+'·'+rd.decimals+'·'+E(rd.tag1)):''}</td><td class="cap">${o.tuning?(o.tuning.applied?'판 '+o.tuning.version+' '+E(o.tuning.target)+'·'+E(o.tuning.key||'general'):E(o.tuning.reason||'none')):''}</td></tr>`}).join('')+(rows.length?'':'<tr><td colspan="12" class="cap">이 agentId 에 들어온 평가가 아직 없습니다</td></tr>');}
 function tuneView(){const L=D.tuning_lines;const cnt=d=>Object.values(d||{}).reduce((a,x)=>a+x.length,0);
  const cur=['masking','refine'].map(t=>Object.entries(L[t]||{}).map(([k,xs])=>xs.map(x=>`<tr><td>${t}</td><td class="mono">${E(k)}</td><td class="cap">${E(x)}</td></tr>`).join('')).join('')).join('');
- document.getElementById('tune').innerHTML=`<div>현재 판 <b>${D.tuning_version}</b> · masking ${cnt(L.masking)}줄 · refine ${cnt(L.refine)}줄 (키가 같은 편집 + general 에만 붙음)</div>`+
+ document.getElementById('tune').innerHTML=`<div>현재 판 <b>${D.tuning_version}</b> · masking ${cnt(L.masking)}줄 · refine ${cnt(L.refine)}줄 (키가 같은 편집 + general 에만 붙음)${D.tune_apply===false?' · <b>기록만 — 프롬프트에 반영하지 않음</b>':''}</div>`+
  `<table><tr><th>대상</th><th>키</th><th>현재 문장</th></tr>${cur}</table>`+
  `<table><tr><th>판</th><th>대상</th><th>키</th><th>동작</th><th>전</th><th>후</th><th>근거 평가</th><th>시각</th></tr>`+D.tuning.map(t=>`<tr><td>${t.version}</td><td>${E(t.target)}</td><td class="mono">${E(t.key||'general')}</td><td>${E(t.action)}</td><td class="cap">${E(t.before)}</td><td class="cap">${E(t.after)}</td><td class="mono">${E(t.rating_id)}</td><td>${ts(t.t)}</td></tr>`).join('')+'</table>';}
 async function load(){D=await (await fetch('/admin/api')).json();regView();rtView();tuneView();fast=['sending','pending'].includes(D.register.state)}
