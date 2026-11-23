@@ -52,6 +52,10 @@ def build_admin(st) -> APIRouter:
         again = (req.query_params.get("again") == "1")
         return st.engine.ratings.start_register(str(req.base_url), again=again)
 
+    @r.post("/admin/tuning/reset")
+    def admin_tuning_reset():
+        return st.engine.ratings.reset_tuning()
+
     @r.get("/admin/agent/status")
     def admin_status():
         return st.engine.ratings.reg_status()
@@ -81,6 +85,7 @@ details{margin-top:8px;font-size:12px;color:#666}</style></head>
 <div class="grid" id="info"></div>
 <h2>평가 목록</h2><div class="card" id="sum"></div><div class="cap" id="rtf"></div><div class="card"><table id="rt"></table></div>
 <h2>조정 기록(피드백 기반 미세 조정)</h2><div class="card" id="tune"></div>
+<div><button class="small" onclick="resetTune()">조정 기록 초기화</button></div>
 <script>
 const E=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let D=null, fast=false;
@@ -100,17 +105,15 @@ function regView(){const c=D.chain,o=D.operator,g=D.register,aid=c.agent_id;
  let h=`<div class="hero"><div>${st}</div><div style="text-align:right"><span class="pill ${c.status==='on'?'ok':'bad'}">체인 ${E(c.status)}</span><div style="margin-top:8px">${side}</div></div></div>`;
  if(c.error)h+=`<div class="bad cap">${E(c.error)}</div>`;
  if(g.state==='error')h+=`<div class="bad">등록 실패: ${E(g.error)}</div>`;
- const hist=(g.history||[]).filter(x=>String(x.agent_id)!==String(aid));if(hist.length)h+=`<details><summary>이전 agentId ${hist.length}건</summary>${hist.map(x=>'#'+x.agent_id+' ('+ts(x.t)+')').join(' · ')}</details>`;
  document.getElementById('reg').innerHTML=h;
  const bal=o.balance_eth==null?'-':`<b class="${o.balance_eth<0.01?'bad':''}">${o.balance_eth.toFixed(5)} ETH</b>${o.balance_eth<0.01?' <span class="bad cap">부족</span>':''}`;
  document.getElementById('info').innerHTML=
   `<div class="card"><h3>네트워크</h3>${kv([['체인','Ethereum Sepolia'],['chain id',c.chain_id],['번들러',c.bundler_url?'<span class="mono">'+E(c.bundler_url)+'</span> (서버 중계)':'<span class="bad">없음</span>']])}</div>`+
   `<div class="card"><h3>운영자 계정</h3>${kv([['주소',link(o.address)],['잔액',bal]].concat(o.error?[['오류','<span class="bad">'+E(o.error)+'</span>']]:[]))}</div>`+
   `<div class="card"><h3>컨트랙트</h3>${kv([['IdentityRegistry',link(D.identity)],['ReputationRegistry',link(c.reputation_registry)],['EntryPoint v0.7',link(c.entry_point)],['계정 팩토리',link(c.factory)]])}</div>`;}
-let allR=false;
 function rtView(){const s=D.summary,aid=D.chain.agent_id,mine=o=>aid!=null&&String((o.chain||{}).agent_id)===String(aid);
- const rows=allR?D.ratings:D.ratings.filter(mine),hid=D.ratings.length-D.ratings.filter(mine).length;
- document.getElementById('rtf').innerHTML=`${allR?'전체 평가':'현재 agentId #'+E(aid)+' 의 평가만'} 표시 · ${rows.length}건`+(hid?` <label><input type="checkbox" ${allR?'checked':''} onchange="allR=this.checked;rtView()"> 다른 agentId·체인 없는 평가도 보기 (${hid}건)</label>`:'');document.getElementById('sum').innerHTML=s?(s.error?'<span class="bad">getSummary 오류 '+E(s.error)+'</span>':`getSummary(agentId, 평가 계정 전부, "starred", "") → 건수 <b>${s.count}</b> · 값 <b>${s.value}</b> (소수 ${s.decimals})`):'<span class="cap">확정된 체인 평가 없음</span>';
+ const rows=D.ratings.filter(mine);
+ document.getElementById('rtf').innerHTML=aid!=null?`현재 agentId #${E(aid)} 의 평가 ${rows.length}건`:'';document.getElementById('sum').innerHTML=s?(s.error?'<span class="bad">getSummary 오류 '+E(s.error)+'</span>':`getSummary(agentId, 평가 계정 전부, "starred", "") → 건수 <b>${s.count}</b> · 값 <b>${s.value}</b> (소수 ${s.decimals})`):'<span class="cap">확정된 체인 평가 없음</span>';
  document.getElementById('rt').innerHTML='<tr><th>시각</th><th>자산</th><th>별점</th><th>리뷰</th><th>계정</th><th>user_op_hash</th><th>상태</th><th>tx</th><th>index</th><th>파일</th><th>체인 읽기</th><th>조정</th></tr>'+rows.map(o=>{const c=o.chain||{},rd=c.onchain_read;
  return `<tr><td>${ts(o.t)}</td><td class="mono">${E(o.asset_id)}</td><td>${'★'.repeat(o.stars||0)}</td><td>${E(o.review)}</td><td>${addr(c.account)}</td><td class="mono">${E((c.user_op_hash||'').slice(0,12))}</td><td class="${c.status==='confirmed'?'ok':(c.status==='failed'?'bad':'')}">${E(c.status)}${c.error?'<div class="bad cap">'+E(c.error)+'</div>':''}</td><td>${tx(c.tx_hash)}</td><td>${c.feedback_index??''}</td><td><a target="_blank" href="${o.feedback_uri}">json</a></td><td>${rd?(rd.error?'<span class="bad">'+E(rd.error)+'</span>':(rd.match?'<span class="ok">일치</span>':'<span class="bad">불일치</span>')+' '+rd.value+'·'+rd.decimals+'·'+E(rd.tag1)):''}</td><td class="cap">${o.tuning?(o.tuning.applied?'판 '+o.tuning.version+' '+E(o.tuning.target)+'·'+E(o.tuning.key||'general'):E(o.tuning.reason||'none')):''}</td></tr>`}).join('')+(rows.length?'':'<tr><td colspan="12" class="cap">이 agentId 에 들어온 평가가 아직 없습니다</td></tr>');}
 function tuneView(){const L=D.tuning_lines;const cnt=d=>Object.values(d||{}).reduce((a,x)=>a+x.length,0);
@@ -120,6 +123,8 @@ function tuneView(){const L=D.tuning_lines;const cnt=d=>Object.values(d||{}).red
  `<table><tr><th>판</th><th>대상</th><th>키</th><th>동작</th><th>전</th><th>후</th><th>근거 평가</th><th>시각</th></tr>`+D.tuning.map(t=>`<tr><td>${t.version}</td><td>${E(t.target)}</td><td class="mono">${E(t.key||'general')}</td><td>${E(t.action)}</td><td class="cap">${E(t.before)}</td><td class="cap">${E(t.after)}</td><td class="mono">${E(t.rating_id)}</td><td>${ts(t.t)}</td></tr>`).join('')+'</table>';}
 async function load(){D=await (await fetch('/admin/api')).json();regView();rtView();tuneView();fast=['sending','pending'].includes(D.register.state)}
 async function poll(){if(!fast)return;const g=await (await fetch('/admin/agent/status')).json();D.register=g;if(g.agent_id!=null)D.chain.agent_id=g.agent_id;regView();fast=['sending','pending'].includes(g.state);if(!fast)load()}
+async function resetTune(){if(!confirm('조정 줄과 조정 이력을 모두 지웁니다. 계속할까요?'))return;
+ await fetch('/admin/tuning/reset',{method:'POST'});await load()}
 async function reg(){await fetch('/admin/agent/register',{method:'POST'});fast=true;await load();fast=true}
 async function again(){const n=D.ratings.filter(o=>(o.chain||{}).agent_id===D.chain.agent_id&&(o.chain||{}).status==='confirmed').length;
  if(!confirm((n?'⚠ 이 agentId 에 확정된 평가가 '+n+'건 있습니다. ':'')+'새 agentId 를 발급받아 현재 값으로 바꿉니다. 계속할까요?'))return;

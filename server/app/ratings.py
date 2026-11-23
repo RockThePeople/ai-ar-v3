@@ -609,6 +609,17 @@ class Ratings:
                             "verdict": (j.get("agent") or {}).get("verdict")})
         return out
 
+    def reset_tuning(self) -> dict:
+        """운영자 화면 초기화: 조정 줄·판·이력을 비우고 어댑터에서도 뗀다. 평가 기록은 그대로."""
+        with self.lock:
+            n = len(self.tuning_rows())
+            self.db.x("DELETE FROM agent_tuning")
+            self.set_kv("tuning_lines", {"masking": {}, "refine": {}})
+            self.set_kv("tuning_version", 0)
+            self.set_kv("tuning_rekey_log", [])
+            self._apply_notes()
+        return {"ok": True, "removed_rows": n}
+
     def tuning_rows(self) -> list:
         return [dict(r) for r in self.db.q("SELECT * FROM agent_tuning ORDER BY id DESC LIMIT 50")]
 
