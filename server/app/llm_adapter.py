@@ -187,7 +187,8 @@ _INPAINT_RULES = """
   Never mention the element it replaces (the old head, the old hat, ...).
   Then add ONE short phrase of surrounding context (e.g. "sitting on a snowman of packed white snow with a red knitted scarf").
   No position or side words (left, right, upper, lower, top-left, "on the ... side"): the mask decides where it goes.
-  Positive descriptions only, no commands, no style words beyond the asset style. At most 40 words.
+  Positive descriptions only, no commands, no style words beyond the asset style or a style the instruction asks
+  for. At most 40 words.
   Example: "A large carved orange Halloween jack-o'-lantern pumpkin head with triangular eyes and a jagged grin, a short green
   stem on top, sitting on a snowman of packed white snow with a red knitted scarf".
   If the whole subject is renamed (mask_ratio 0.6 or more), inpaint_prompt may equal new_scene_prompt shortened to 40 words."""
@@ -373,7 +374,9 @@ _BANNED_RE = re.compile(r"\b(" + "|".join(re.escape(w).replace(r"\ ", r"[\s-]+")
 #: 한국어 양식 주문 → 원문에 그 말이 있으면 금지어 검사에서 그 영어 단어를 허용한다
 _KO_STYLE = {"장난감": ("toy", "plastic toy"), "피규어": ("figure", "figurine"), "미니어처": ("miniature",),
              "만화": ("cartoon", "stylized"), "카툰": ("cartoon",), "로우폴리": ("low poly", "low-poly"),
-             "로우 폴리": ("low poly", "low-poly"), "치비": ("chibi",), "게임": ("game asset", "stylized")}
+             "로우 폴리": ("low poly", "low-poly"), "치비": ("chibi",), "게임": ("game asset", "stylized"),
+             "애니메이션": ("cartoon", "stylized"), "아니메": ("cartoon", "stylized"), "애니": ("cartoon", "stylized"),
+             "캐릭터풍": ("cartoon", "stylized"), "캐릭터 스타일": ("cartoon", "stylized")}   # S28
 
 
 def _canon(w: str) -> str:
@@ -435,8 +438,8 @@ NAMED_RULE = """
 
 #: S14 APP_FACEHINT: 사람·캐릭터·동물이면 얼굴이 보이게
 FACE_HINT = """
-- If the object is a person, character or animal, describe its head and a clearly visible face (eyes, nose, mouth)
-  facing the viewer; never hide the face behind a mask, helmet visor, hat brim or hair unless the request asks for it."""
+- If the object is a person or animal, describe its head and a clearly visible face (eyes, nose, mouth) facing the viewer;
+  never hide the face behind a mask, helmet visor, hat brim or hair unless the request asks for it."""   # S28: 얼굴이 보이게만
 
 DETAIL_STYLE_SYSTEM = """You expand a user's short request for a single 3D object into a detailed English description
 of the object as it exists in the real world, for a text-to-image model whose image is turned into a 3D model.
@@ -445,13 +448,17 @@ Return JSON with:
 - subject_detailed: one line. The object in a few words, then everything the user asked for, then 3 to 5 plausible
   visible parts (concrete shapes on the object), then the main colors and real materials.
   When style is null, describe the real thing at real-world proportions (a real person, a real vehicle).
-  When style is set, describe the object's parts, colors and materials only, with no size or scale words
-  (no "full-size", "life-size", "real"), so they do not fight the style.
+  When style is set, describe the object's parts, colors and materials together with that style's typical
+  proportions, face and surface look (e.g. anime → large eyes, a simple face, flat cel-shaded colors; chibi → a big
+  head on a small body; low poly → flat angular faces), with no size or scale words (no "full-size", "life-size",
+  "real"), so they do not fight the style.
   Never use these words unless the user's request itself uses them: figure, figurine, toy, plastic toy, miniature,
   cartoon, chibi, stylized, game asset, low poly.
 - style: only if the request explicitly asks for a look or style (e.g. "toy like", "miniature", "cartoon", "low poly",
-  "장난감 같은", "만화풍"), that style as a short English phrase (e.g. "toy-like", "cartoon", "low poly"). Otherwise null.
-  Keep style words out of subject_detailed; the server adds "<style> style" after it.
+  "anime", "장난감 같은", "만화풍", "애니메이션 풍", "캐릭터풍", "디즈니풍"), that style as a short English phrase
+  (e.g. "toy-like", "cartoon", "low poly", "anime", "character-style", "Disney-style"). Otherwise null.
+  A word that names the object itself is not a style ("캐릭터를 만들어줘", "a character" → style null).
+  Keep the style name out of subject_detailed (its typical features go in); the server adds "<style> style" after it.
 - style_words: the exact words from the request that ask for that style, copied as written (any language). null when style is null.
 Rules:
 - Keep every attribute the user stated (object type, colors, parts, materials, count). Never contradict or drop them.
@@ -463,8 +470,9 @@ Examples (format only; invent parts that fit the actual object):
 "a desk lamp" → {"subject_detailed": "A desk lamp, a weighted round base, a two-section jointed arm with coil springs,
 a cone-shaped shade, a push switch on the base, matte black painted steel with a brushed aluminum shade",
 "style": null, "style_words": null}
-"만화풍 우체통" → {"subject_detailed": "A curbside mailbox, a rounded top, a red side flag, a front pull-down door,
-a square wooden post, dark blue painted metal", "style": "cartoon", "style_words": "만화풍"}"""
+"만화풍 우체통" → {"subject_detailed": "A curbside mailbox, a chunky rounded top, an oversized red side flag, a front
+pull-down door, a short square post, bold flat dark blue color with thick simple shapes", "style": "cartoon",
+"style_words": "만화풍"}"""
 
 
 MAX_TEXT = 800        # 서버 안 LLM 출력·장면 문장 상한(S6). 앱 입력 1–300자는 계약대로 라우트가 검사한다
@@ -479,12 +487,16 @@ def is_english(text: str) -> bool:
 
 def style_note(style: Optional[str]) -> str:
     """S11: 보정(A1)에 알리는 자산 양식."""
+    own = (" If the instruction itself asks for a look or style for the changed element (e.g. \"애니메이션 풍 칼\", "
+           "\"an anime sword\"), describe that element in the style the instruction asks for, with that style's typical "
+           "shapes and surface look; this overrides the asset style and the no-style-words rule for that element only.")
     if style:
         return (f"asset style: {style}. The object is shown in a {style} style; keep the scene in that style and "
-                "add no other style words.")
+                f"describe the changed element with the typical shapes, proportions and surface look of the {style} "
+                "style so it matches the rest (add no other style words)." + own)
     return ("asset style: default realistic. The object is a real-world object at real-world proportions; describe the "
             "changed element as a real thing and use no style words (figure, toy, miniature, cartoon, stylized, "
-            "game asset, low poly) unless the instruction asks for them.")
+            "game asset, low poly) unless the instruction asks for them." + own)
 
 
 def _style_guard(out: dict, request: str, again: Callable[[List[str]], dict]) -> dict:
@@ -523,10 +535,11 @@ _FAKE_STYLE = (("toy like", "toy-like"), ("toy-like", "toy-like"), ("장난감 �
 #: 사용자 결정(2026-11-12): S11 이전 자산(양식 기록 없음)은 생성 원문의 양식어로 양식을 정한다. 장면 문장은 보지 않는다.
 #: 긴 말부터 찾는다. (찾을 말, 양식) — 영어는 단어 경계, 한국어는 부분 문자열
 _REQUEST_STYLE = (("toy-like", "toy-like"), ("toy like", "toy-like"), ("low-poly", "low poly"), ("low poly", "low poly"),
-                  ("cartoon", "cartoon"), ("miniature", "miniature"), ("chibi", "chibi"), ("toy", "toy-like"),
+                  ("cartoon", "cartoon"), ("miniature", "miniature"), ("chibi", "chibi"), ("anime", "anime"), ("toy", "toy-like"),
                   ("장난감 같은", "toy-like"), ("장난감", "toy-like"), ("만화풍", "cartoon"), ("만화", "cartoon"),
                   ("카툰", "cartoon"), ("미니어처", "miniature"), ("치비", "chibi"), ("로우폴리", "low poly"),
-                  ("로우 폴리", "low poly"))
+                  ("로우 폴리", "low poly"), ("애니메이션", "anime"), ("아니메", "anime"), ("애니", "anime"),
+                  ("캐릭터풍", "character-style"), ("캐릭터 스타일", "character-style"))   # S28
 
 
 def style_from_request(text: str):
