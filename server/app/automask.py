@@ -674,6 +674,19 @@ def grow_from_image(render_rgb: np.ndarray, edit_rgb: np.ndarray, u_mask: np.nda
     return out
 
 
+def cells_in_silhouette(cells, S: np.ndarray, cam: dict) -> list:
+    """S27 PR B: 셀 중 고른 시점 투영이 차이 실루엣 S(grow_from_image 와 같은 닿음 1칸 여유) 안에 드는 것."""
+    C = np.asarray(cells, int).reshape(-1, 3)
+    if not len(C) or not S.any():
+        return []
+    R = S | np.roll(S, 1, 0) | np.roll(S, -1, 0) | np.roll(S, 1, 1) | np.roll(S, -1, 1)
+    x, y, z = _grid_xy(centers(C), cam)
+    ok = (z > 0) & (x >= 0) & (x < 1000) & (y >= 0) & (y < 1000)
+    ix = np.clip((x / 1000 * GROW_RES).astype(int), 0, GROW_RES - 1)
+    iy = np.clip((y / 1000 * GROW_RES).astype(int), 0, GROW_RES - 1)
+    return C[ok & R[iy, ix]].tolist()
+
+
 def merge_residue(seeds: np.ndarray, U: np.ndarray, O: np.ndarray, occ: np.ndarray, S: np.ndarray, cam: dict,
                   T: int, M: int, room: int) -> dict:
     """2.6 6번 원래 물건 잔여물 합치기: 씨앗 U∩O 에서 26-이웃 점유 셀로 넓힘. 제한(모두): 고른 시점 투영이 S(새 물건 윤곽 +
