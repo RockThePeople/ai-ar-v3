@@ -537,7 +537,8 @@ class Ratings:
         return int(self.kv("tuning_version", 0))
 
     def _apply_notes(self) -> None:
-        lines = self.tuning_lines()
+        """APP_TUNE_APPLY=0: 줄은 kv·agent_tuning 에 그대로 쌓이고, 프롬프트에 붙일 줄만 비운다."""
+        lines = self.tuning_lines() if getattr(self.s, "tune_apply", True) else {}
         for ad in (self.eng.llm, self.eng.agent_llm):
             ad.notes = {t: {k: list(x) for k, x in d.items()} for t, d in lines.items()}
 

@@ -88,6 +88,7 @@ class Settings:
     front_res: int = 512  # S20g 2차 APP_FRONT_RES: 판정에 보내는 4방향 이미지 한 변(px, 렌더는 A5000 1024 고정)
     front_fix: bool = False  # S20g APP_FRONT_FIX: 생성 직후 정면·뒷면 얼굴 판단(다시 생성), 방향 고르기 정면 기준, 옆·뒤 꼬리
     agent_tune: bool = True  # S21 APP_AGENT_TUNE: 평가 리뷰로 마스킹·보정 프롬프트 미세 조정
+    tune_apply: bool = True  # APP_TUNE_APPLY: 0 이면 조정 줄은 기록만 하고 프롬프트에는 붙이지 않는다
     autoseed_volume: str = "s"  # S27 개정 2 APP_AUTOSEED_VOLUME: s = 출발 볼륨을 S 로 좁힘(V2) | seed = 출발 볼륨 전체(V1). 둘 다 블록 채우기
     agent_autoseed: bool = False  # S27 APP_AGENT_AUTOSEED: camera·volume_cells 없는 {"agent": true} 를 처음 볼륨 자동 + 라쏘 흐름으로
     automask: bool = False  # S20e APP_AUTOMASK: 1 이면 camera·volume_cells 없는 자동 마스킹(S20d). 기본 0 = 400
@@ -130,6 +131,7 @@ class Settings:
             autoseed_volume=(os.environ.get("APP_AUTOSEED_VOLUME") or "s"),
             chain=_flag("APP_CHAIN", "1"),
             agent_tune=_flag("APP_AGENT_TUNE", "1"),
+            tune_apply=_flag("APP_TUNE_APPLY", "1"),
             revert=_flag("APP_REVERT", "0"),
             front_fix=_flag("APP_FRONT_FIX", "0"),
             front_res=int(os.environ.get("APP_FRONT_RES") or 512),
