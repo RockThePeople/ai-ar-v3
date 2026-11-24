@@ -101,8 +101,7 @@ function regView(){const c=D.chain,o=D.operator,g=D.register,aid=c.agent_id;
  else if(aid!=null)st=`<div class="cap">에이전트 ID (ERC-8004 IdentityRegistry 의 ERC-721 토큰 번호)</div><div class="big">#${aid}</div>
  <div class="links"><a target="_blank" href="${D.explorer}/token/${D.identity}?a=${aid}">토큰(NFT) 보기</a><a target="_blank" href="${D.registration_url}">등록 파일</a>${g.tx_hash?'등록 tx '+tx(g.tx_hash)+(g.seconds?' <span class="cap">(확정 '+g.seconds+' s)</span>':''):''}</div>`;
  else st=`<div class="cap">에이전트 미등록</div><div style="margin-top:6px"><button onclick="reg()">Register</button></div>`;
- const side=aid!=null&&!['sending','pending'].includes(g.state)?'<button class="small" onclick="again()">새로 등록</button>':'';
- let h=`<div class="hero"><div>${st}</div><div style="text-align:right"><span class="pill ${c.status==='on'?'ok':'bad'}">체인 ${E(c.status)}</span><div style="margin-top:8px">${side}</div></div></div>`;
+ let h=`<div class="hero"><div>${st}</div><div style="text-align:right"><span class="pill ${c.status==='on'?'ok':'bad'}">체인 ${E(c.status)}</span></div></div>`;
  if(c.error)h+=`<div class="bad cap">${E(c.error)}</div>`;
  if(g.state==='error')h+=`<div class="bad">등록 실패: ${E(g.error)}</div>`;
  document.getElementById('reg').innerHTML=h;
@@ -126,8 +125,5 @@ async function poll(){if(!fast)return;const g=await (await fetch('/admin/agent/s
 async function resetTune(){if(!confirm('조정 줄과 조정 이력을 모두 지웁니다. 계속할까요?'))return;
  await fetch('/admin/tuning/reset',{method:'POST'});await load()}
 async function reg(){await fetch('/admin/agent/register',{method:'POST'});fast=true;await load();fast=true}
-async function again(){const n=D.ratings.filter(o=>(o.chain||{}).agent_id===D.chain.agent_id&&(o.chain||{}).status==='confirmed').length;
- if(!confirm((n?'⚠ 이 agentId 에 확정된 평가가 '+n+'건 있습니다. ':'')+'새 agentId 를 발급받아 현재 값으로 바꿉니다. 계속할까요?'))return;
- await fetch('/admin/agent/register?again=1',{method:'POST'});fast=true;await load();fast=true}
 load();setInterval(poll,1000);setInterval(()=>{if(!fast)load()},10000);
 </script></body></html>"""
