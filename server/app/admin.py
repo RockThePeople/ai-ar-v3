@@ -101,8 +101,7 @@ function regView(){const c=D.chain,o=D.operator,g=D.register,aid=c.agent_id;
  else if(aid!=null)st=`<div class="cap">에이전트 ID (ERC-8004 IdentityRegistry 의 ERC-721 토큰 번호)</div><div class="big">#${aid}</div>
  <div class="links"><a target="_blank" href="${D.explorer}/token/${D.identity}?a=${aid}">토큰(NFT) 보기</a><a target="_blank" href="${D.registration_url}">등록 파일</a>${g.tx_hash?'등록 tx '+tx(g.tx_hash)+(g.seconds?' <span class="cap">(확정 '+g.seconds+' s)</span>':''):''}</div>`;
  else st=`<div class="cap">에이전트 미등록</div><div style="margin-top:6px"><button onclick="reg()">Register</button></div>`;
- const side=aid!=null&&!['sending','pending'].includes(g.state)?'<button class="small" onclick="again()">새로 등록</button>':'';
- let h=`<div class="hero"><div>${st}</div><div style="text-align:right"><span class="pill ${c.status==='on'?'ok':'bad'}">체인 ${E(c.status)}</span><div style="margin-top:8px">${side}</div></div></div>`;
+ let h=`<div class="hero"><div>${st}</div><div style="text-align:right"><span class="pill ${c.status==='on'?'ok':'bad'}">체인 ${E(c.status)}</span></div></div>`;
  if(c.error)h+=`<div class="bad cap">${E(c.error)}</div>`;
  if(g.state==='error')h+=`<div class="bad">등록 실패: ${E(g.error)}</div>`;
  document.getElementById('reg').innerHTML=h;
@@ -118,7 +117,7 @@ function rtView(){const s=D.summary,aid=D.chain.agent_id,mine=o=>aid!=null&&Stri
  return `<tr><td>${ts(o.t)}</td><td class="mono">${E(o.asset_id)}</td><td>${'★'.repeat(o.stars||0)}</td><td>${E(o.review)}</td><td>${addr(c.account)}</td><td class="mono">${E((c.user_op_hash||'').slice(0,12))}</td><td class="${c.status==='confirmed'?'ok':(c.status==='failed'?'bad':'')}">${E(c.status)}${c.error?'<div class="bad cap">'+E(c.error)+'</div>':''}</td><td>${tx(c.tx_hash)}</td><td>${c.feedback_index??''}</td><td><a target="_blank" href="${o.feedback_uri}">json</a></td><td>${rd?(rd.error?'<span class="bad">'+E(rd.error)+'</span>':(rd.match?'<span class="ok">일치</span>':'<span class="bad">불일치</span>')+' '+rd.value+'·'+rd.decimals+'·'+E(rd.tag1)):''}</td><td class="cap">${o.tuning?(o.tuning.applied?'판 '+o.tuning.version+' '+E(o.tuning.target)+'·'+E(o.tuning.key||'general'):E(o.tuning.reason||'none')):''}</td></tr>`}).join('')+(rows.length?'':'<tr><td colspan="12" class="cap">이 agentId 에 들어온 평가가 아직 없습니다</td></tr>');}
 function tuneView(){const L=D.tuning_lines;const cnt=d=>Object.values(d||{}).reduce((a,x)=>a+x.length,0);
  const cur=['masking','refine'].map(t=>Object.entries(L[t]||{}).map(([k,xs])=>xs.map(x=>`<tr><td>${t}</td><td class="mono">${E(k)}</td><td class="cap">${E(x)}</td></tr>`).join('')).join('')).join('');
- document.getElementById('tune').innerHTML=`<div>현재 판 <b>${D.tuning_version}</b> · masking ${cnt(L.masking)}줄 · refine ${cnt(L.refine)}줄 (키가 같은 편집 + general 에만 붙음)${D.tune_apply===false?' · <b>기록만 — 프롬프트에 반영하지 않음</b>':''}</div>`+
+ document.getElementById('tune').innerHTML=`<div>현재 판 <b>${D.tuning_version}</b> · masking ${cnt(L.masking)}줄 · refine ${cnt(L.refine)}줄</div>`+
  `<table><tr><th>대상</th><th>키</th><th>현재 문장</th></tr>${cur}</table>`+
  `<table><tr><th>판</th><th>대상</th><th>키</th><th>동작</th><th>전</th><th>후</th><th>근거 평가</th><th>시각</th></tr>`+D.tuning.map(t=>`<tr><td>${t.version}</td><td>${E(t.target)}</td><td class="mono">${E(t.key||'general')}</td><td>${E(t.action)}</td><td class="cap">${E(t.before)}</td><td class="cap">${E(t.after)}</td><td class="mono">${E(t.rating_id)}</td><td>${ts(t.t)}</td></tr>`).join('')+'</table>';}
 async function load(){D=await (await fetch('/admin/api')).json();regView();rtView();tuneView();fast=['sending','pending'].includes(D.register.state)}
@@ -126,8 +125,5 @@ async function poll(){if(!fast)return;const g=await (await fetch('/admin/agent/s
 async function resetTune(){if(!confirm('조정 줄과 조정 이력을 모두 지웁니다. 계속할까요?'))return;
  await fetch('/admin/tuning/reset',{method:'POST'});await load()}
 async function reg(){await fetch('/admin/agent/register',{method:'POST'});fast=true;await load();fast=true}
-async function again(){const n=D.ratings.filter(o=>(o.chain||{}).agent_id===D.chain.agent_id&&(o.chain||{}).status==='confirmed').length;
- if(!confirm((n?'⚠ 이 agentId 에 확정된 평가가 '+n+'건 있습니다. ':'')+'새 agentId 를 발급받아 현재 값으로 바꿉니다. 계속할까요?'))return;
- await fetch('/admin/agent/register?again=1',{method:'POST'});fast=true;await load();fast=true}
 load();setInterval(poll,1000);setInterval(()=>{if(!fast)load()},10000);
 </script></body></html>"""
